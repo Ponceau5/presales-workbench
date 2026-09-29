@@ -17,6 +17,9 @@ pnpm-lock.yaml
 # Local-only source documents and previews. Repository contains code and mock fixtures.
 public/project-data/
 public/shared/
+server/.local/
+__pycache__/
+*.pyc
 
 # Editor directories and files
 .vscode/*

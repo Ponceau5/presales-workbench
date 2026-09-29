@@ -6,6 +6,26 @@ React + TypeScript + Vite 本地原型。全部项目共用 F1–F13 流程、�
 
 Git 仓库只管理源码与演示逻辑。本机 `public/project-data/`、`public/shared/` 中的真实项目资料和预览不提交到 GitHub；克隆仓库后相关预览需要从授权的本地资料目录重新准备。Mock 操作、路由和结构化测试不依赖这些大文件。
 
+## 本机协作 API 切片
+
+`server/app.py` 提供独立的 FastAPI 测试服务：上传 PDF/UTF-8 文件、按页查看原文、Mock 关键词提取候选要求、软件产品核对、销售/研发交接答复、应答批准与写回，以及新版本对旧要求的局部失效。它使用 SQLite 保存本机演示数据，单文件上限 100 MB；尚未接入现有 React 页面。这个服务仅用于验证后端数据与岗位交接规则，不是正式认证或完整文档解析。
+
+```sh
+cd /Users/a48750/Desktop/AA工作台/售前Agent/原型/presales-workbench
+python3 -m venv /Users/a48750/Desktop/AI专用/Codex/presales-workbench/venv
+/Users/a48750/Desktop/AI专用/Codex/presales-workbench/venv/bin/pip install -r server/requirements.txt
+/Users/a48750/Desktop/AI专用/Codex/presales-workbench/venv/bin/uvicorn app:app --app-dir server --host 127.0.0.1 --port 8000
+```
+
+接口文档为 http://127.0.0.1:8000/docs 。演示账号与前端相同，统一密码 `demo2026`；先调用 `POST /api/session`，把返回的 token 作为 `Authorization: Bearer …`。数据默认写入被 Git 忽略的 `server/.local/`，可用 `PRESALES_DATA_DIR` 指向其他本地目录。停止服务用终端 Ctrl+C。
+
+```sh
+cd server
+PYTHONDONTWRITEBYTECODE=1 /Users/a48750/Desktop/AI专用/Codex/presales-workbench/venv/bin/python -m unittest -v test_app.py
+```
+
+Mock 提取只筛选部分技术关键词，并标明 `coverage=keyword_only`；不保证全文覆盖或语义正确。原文核对与客户应答批准是两次不同的动作。正式版需以项目成员身份、数据库事务、对象存储、后台解析及 LangGraph/AG-UI 替换本机演示实现。
+
 ## 运行
 
 ```sh
