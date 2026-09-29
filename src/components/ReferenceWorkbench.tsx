@@ -1,4 +1,5 @@
 import { SoftwareIntake } from "@/components/SoftwareIntake";
+import { LocalSourceReview } from "@/components/LocalSourceReview";
 import { StageHandoffs } from "@/components/Collaboration";
 import { invalidInputs } from "@/lib/collaboration";
 import { softwareArtifact } from "@/lib/agentTasks";
@@ -82,6 +83,7 @@ export function ReferenceWorkbench({
     state.role === "软件产品" &&
       !new URLSearchParams(window.location.search).has("item"),
   );
+  const [localReview, setLocalReview] = useState(false);
   const [review, setReview] = useState<ReferenceReviewState>(() =>
     readProjectReview(projectId, state),
   );
@@ -301,6 +303,15 @@ export function ReferenceWorkbench({
       return `${i.category} · ${i.title} · R${value.revision} · ${value.written && value.status === "approved" ? "已确认" : "待确认"} · ${i.owner}\n${value.text}\n实现方式：${value.implementation || "未选定"}；成本依据：${value.costBasis || "未登记"}\n确认：${value.resolution || "未登记"}；依据：${value.evidence || "未登记"}`;
     })
     .join("\n\n");
+  if (localReview) return (
+    <section className="reference-workbench">
+      <header className="reference-workbench-heading">
+        <h2>F5 · 本机资料核对</h2>
+        <button className="btn secondary" onClick={() => setLocalReview(false)}>返回工作区</button>
+      </header>
+      <LocalSourceReview projectId={projectId} />
+    </section>
+  );
   return (
     <section className="reference-workbench">
       <header className="reference-workbench-heading">
@@ -339,6 +350,7 @@ export function ReferenceWorkbench({
         <button className="btn secondary" onClick={() => setIntake(!intake)}>
           {intake ? "专业工作区" : "资料提取与核对"}
         </button>
+        {stage !== "F3" && <button className="btn secondary" onClick={() => setLocalReview(true)}>本机资料核对</button>}
         <button
           className="btn secondary"
           onClick={() => setShowAudit(!showAudit)}

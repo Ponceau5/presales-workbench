@@ -14,6 +14,16 @@ from app import app, db  # noqa: E402
 
 
 class WorkflowApiTest(unittest.TestCase):
+    def test_browser_origin_preflight(self):
+        response = self.client.options(
+            "/api/session",
+            headers={"Origin": "http://127.0.0.1:3000",
+                     "Access-Control-Request-Method": "POST"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["access-control-allow-origin"],
+                         "http://127.0.0.1:3000")
+
     @classmethod
     def setUpClass(cls):
         cls.client = TestClient(app)
@@ -137,11 +147,22 @@ class WorkflowApiTest(unittest.TestCase):
             headers=self.auth("software"), json={"expected_revision": 3},
         )
         self.assertEqual(published.status_code, 200, published.text)
+        active_facts = self.client.get(
+            "/api/projects/RCJM1/facts", headers=self.auth("software")
+        )
+        self.assertEqual(len(active_facts.json()), 1)
+        project_handoffs = self.client.get(
+            "/api/projects/RCJM1/handoffs", headers=self.auth("software")
+        )
+        self.assertEqual(len(project_handoffs.json()), 2)
         changed = self.upload(
             original.replace("history shall", "alarm snapshots shall"), "V2"
         )
         self.assertEqual(changed.status_code, 200, changed.text)
         self.assertEqual(changed.json()["invalidated"], 1)
+        self.assertEqual(self.client.get(
+            "/api/projects/RCJM1/facts", headers=self.auth("software")
+        ).json(), [])
         with db() as connection:
             old_video = connection.execute(
                 "SELECT status FROM requirements WHERE id=?", (requirement_id,)

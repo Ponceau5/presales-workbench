@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { Layers3 } from "lucide-react";
 import { useWorkbench } from "@/state/workbench";
+import { authenticate } from "@/lib/accounts";
+import { connectLocalApi, clearLocalApiSession } from "@/lib/localApi";
 export default function Login() {
   const { state, dispatch } = useWorkbench();
   const navigate = useNavigate();
@@ -16,8 +18,18 @@ export default function Login() {
       <section>
         <h1>登录工作空间</h1>
         <form
-          onSubmit={(e) => {
+          onSubmit={async (e) => {
             e.preventDefault();
+            if (!authenticate(username, password)) {
+              dispatch({ type: "login", username, password });
+              return;
+            }
+            try {
+              await connectLocalApi(username.trim(), password);
+            } catch {
+              // The browser-only mock stays usable without the optional local API.
+              clearLocalApiSession();
+            }
             dispatch({ type: "login", username, password });
             navigate("/");
           }}

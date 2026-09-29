@@ -9,6 +9,7 @@ import { PersonalTasks } from "@/components/PersonalTasks";
 import Login from "@/pages/Login";
 import Activity from "@/pages/Activity";
 import { accounts } from "@/lib/accounts";
+import { clearLocalApiSession } from "@/lib/localApi";
 import KnowledgeLibrary from "@/pages/KnowledgeLibrary";
 import Resources from "@/pages/Resources";
 import { ProjectAssistant } from "@/components/ProjectAssistant";
@@ -96,6 +97,7 @@ export default function App() {
   });
   const stateRef = useRef(state);
   const dispatch = useCallback((action: Action) => {
+    if (action.type === "logout" && !stateRef.current.running) clearLocalApiSession();
     const current = mergeShared(stateRef.current, loadShared());
     const next = reducer(current, action);
     stateRef.current = next;

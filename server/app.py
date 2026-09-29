@@ -17,6 +17,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
@@ -41,6 +42,12 @@ ROLE_BY_ACCOUNT = {
 DEMO_PASSWORD = os.environ.get("PRESALES_DEMO_PASSWORD", "demo2026")
 SESSIONS: dict[str, str] = {}
 app = FastAPI(title="售前工作台 · 本机测试 API", version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://127.0.0.1:3000", "http://localhost:3000"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
+)
 
 
 def now() -> str:
@@ -369,6 +376,15 @@ def inbox(account: str = Depends(actor)):
         )]
 
 
+@app.get("/api/projects/{project_id}/handoffs")
+def project_handoffs(project_id: str, account: str = Depends(actor)):
+    with db() as connection:
+        return [dict(row) for row in connection.execute(
+            "SELECT * FROM handoffs WHERE project_id=? ORDER BY created_at DESC",
+            (project_id,),
+        )]
+
+
 class Reply(BaseModel):
     answer: str = Field(min_length=3)
 
@@ -469,5 +485,17 @@ def events(project_id: str, account: str = Depends(actor)):
     with db() as connection:
         return [dict(row) for row in connection.execute(
             "SELECT * FROM audit WHERE project_id=? ORDER BY created_at DESC",
+            (project_id,),
+        )]
+
+
+@app.get("/api/projects/{project_id}/facts")
+def facts(project_id: str, account: str = Depends(actor)):
+    with db() as connection:
+        return [dict(row) for row in connection.execute(
+            "SELECT f.*, r.quote, d.title AS source_title, d.version AS source_version "
+            "FROM facts f JOIN requirements r ON r.id=f.requirement_id "
+            "JOIN documents d ON d.id=f.document_id "
+            "WHERE r.project_id=? AND f.active=1 ORDER BY f.published_at DESC",
             (project_id,),
         )]

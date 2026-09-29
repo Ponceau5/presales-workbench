@@ -8,7 +8,7 @@ Git 仓库只管理源码与演示逻辑。本机 `public/project-data/`、`publ
 
 ## 本机协作 API 切片
 
-`server/app.py` 提供独立的 FastAPI 测试服务：上传 PDF/UTF-8 文件、按页查看原文、Mock 关键词提取候选要求、软件产品核对、销售/研发交接答复、应答批准与写回，以及新版本对旧要求的局部失效。它使用 SQLite 保存本机演示数据，单文件上限 100 MB；尚未接入现有 React 页面。这个服务仅用于验证后端数据与岗位交接规则，不是正式认证或完整文档解析。
+`server/app.py` 提供 FastAPI 测试服务：上传 PDF/UTF-8 文件、按页查看原文、Mock 关键词提取候选要求、软件产品核对、销售/研发/解决方案交接答复、应答批准与写回，以及新版本对旧要求的局部失效。它使用 SQLite 保存本机演示数据，单文件上限 100 MB。F5 页面「本机资料核对」已接入这组接口；原有浏览器 Mock 工件与这组 SQLite 记录目前是两套独立演示数据，不能互相视为已写回。这仍不是正式认证或完整文档解析。
 
 ```sh
 cd /Users/a48750/Desktop/AA工作台/售前Agent/原型/presales-workbench
@@ -17,7 +17,7 @@ python3 -m venv /Users/a48750/Desktop/AI专用/Codex/presales-workbench/venv
 /Users/a48750/Desktop/AI专用/Codex/presales-workbench/venv/bin/uvicorn app:app --app-dir server --host 127.0.0.1 --port 8000
 ```
 
-接口文档为 http://127.0.0.1:8000/docs 。演示账号与前端相同，统一密码 `demo2026`；先调用 `POST /api/session`，把返回的 token 作为 `Authorization: Bearer …`。数据默认写入被 Git 忽略的 `server/.local/`，可用 `PRESALES_DATA_DIR` 指向其他本地目录。停止服务用终端 Ctrl+C。
+接口文档为 http://127.0.0.1:8000/docs 。演示账号与前端相同，统一密码 `demo2026`。先启动 API，再从前端登录，进入项目 F5 →「本机资料核对」：上传文件、执行提取、核对原文、派发问题；接收岗位用自己的账号登录并答复；软件产品刷新后完成批准与写回。浏览器仅在当前标签页会话保存本机 API token。数据默认写入被 Git 忽略的 `server/.local/`，可用 `PRESALES_DATA_DIR` 指向其他本地目录。停止服务用终端 Ctrl+C。
 
 ```sh
 cd server
@@ -92,7 +92,7 @@ Mock 无 Key 可完整演示，本地规则输出候选与核对项，未实现�
 
 FastAPI 管理身份、项目 ACL、Key、文档版本、审批和审计；不信任浏览器权限。LangGraph 编排读取→提取→匹配→计算/转换→差异→人工确认→写回。确认前检查当前工件版本，避免覆盖并发修改。AG-UI 返回进度、依据、候选、待确认与交接事件。海量文件采用服务端分页、权限检索和预览，不继续打包前端。
 
-尚未实现真实多人并发、CRM/CM 写入、对外发送、生产认证或真实 Agent runtime。正式职责见 QUESTIONS.md，角色试用覆盖与限制见 ROLE_REVIEW.md。
+尚未实现统一前后端事实池、真实多人并发、CRM/CM 写入、对外发送、生产认证或真实 Agent runtime。正式职责见 QUESTIONS.md，角色试用覆盖与限制见 ROLE_REVIEW.md。
 
 
 ## 多人交接演示
