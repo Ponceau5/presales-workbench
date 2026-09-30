@@ -12,6 +12,9 @@ import { Link } from "react-router";
 import { ArrowUpRight, Search, CheckCheck } from "lucide-react";
 import { useWorkbench } from "@/state/workbench";
 import { projectTasks } from "@/lib/projectTasks";
+import { localApi, localApiReady } from "@/lib/localApi";
+import type { ProjectTask } from "@/lib/projectTasks";
+type LocalTask = { id: string; project_id: string; requirement_id?: string; title: string; status: string; owner: string };
 export function PersonalTasks() {
   const { state, dispatch } = useWorkbench();
   const [delivery, setDelivery] = useState<Delivery | null>(null);
@@ -21,13 +24,40 @@ export function PersonalTasks() {
   const [filter, setFilter] = useState("全部");
   const [project, setProject] = useState("全部项目");
   const [query, setQuery] = useState("");
+  const [localTasks, setLocalTasks] = useState<LocalTask[]>([]);
+  const connected = localApiReady(state.accountId);
+  const [apiOnline, setApiOnline] = useState(connected);
+  useEffect(() => {
+    if (!connected) return;
+    let active = true;
+    const load = () => void localApi<LocalTask[]>("/api/tasks")
+      .then((rows) => { if (active) { setLocalTasks(rows); setApiOnline(true); } })
+      .catch(() => { if (active) { setLocalTasks([]); setApiOnline(false); } });
+    load();
+    const interval = window.setInterval(load, 15000);
+    window.addEventListener("focus", load);
+    return () => { active = false; window.clearInterval(interval); window.removeEventListener("focus", load); };
+  }, [connected]);
   useEffect(() => {
     const update = () => refresh((n) => n + 1);
     window.addEventListener("presales-reference-change", update);
     return () =>
       window.removeEventListener("presales-reference-change", update);
   }, []);
-  const tasks = projectTasks(state);
+  const serverF5 = connected && apiOnline && ["software", "sales", "dev", "solution"].includes(state.accountId || "");
+  const browserTasks = projectTasks(state).filter((task) => !serverF5 || task.stage !== "F5");
+  const apiTasks: ProjectTask[] = localTasks.map((task) => ({
+    id: `api:${task.id}`,
+    title: task.title,
+    projectId: task.project_id,
+    projectName: state.projects.find((item) => item.id === task.project_id)?.name || task.project_id,
+    stage: "F5",
+    status: task.status,
+    url: `/projects/${task.project_id}?view=review&stage=F5&source=local${task.requirement_id ? `&requirement=${task.requirement_id}` : ""}`,
+    priority: task.status === "版本失效" || task.status === "待答复",
+    owner: task.owner,
+  }));
+  const tasks = [...(serverF5 ? apiTasks : []), ...browserTasks];
   const visible = tasks.filter(
     (t) =>
       (filter === "全部" || t.status === filter) &&
@@ -55,6 +85,10 @@ export function PersonalTasks() {
             "待开始",
             "待确认",
             "待复核",
+            "待核对",
+            "待答复",
+            "待专业判断",
+            "待重审",
             "待交接",
             "待写回",
             "待跟进",

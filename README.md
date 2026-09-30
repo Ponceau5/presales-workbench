@@ -17,14 +17,14 @@ python3 -m venv /Users/a48750/Desktop/AI专用/Codex/presales-workbench/venv
 /Users/a48750/Desktop/AI专用/Codex/presales-workbench/venv/bin/uvicorn app:app --app-dir server --host 127.0.0.1 --port 8000
 ```
 
-接口文档为 http://127.0.0.1:8000/docs 。演示账号与前端相同，统一密码 `demo2026`。先启动 API，再从前端登录，进入项目 F5 →「本机资料核对」：上传文件、执行提取、核对原文、派发问题；接收岗位用自己的账号登录并答复；软件产品刷新后完成批准与写回。浏览器仅在当前标签页会话保存本机 API token。数据默认写入被 Git 忽略的 `server/.local/`，可用 `PRESALES_DATA_DIR` 指向其他本地目录。停止服务用终端 Ctrl+C。
+接口文档为 http://127.0.0.1:8000/docs 。演示账号与前端相同，统一密码 `demo2026`。先启动 API，再从前端登录，F5 默认进入本机资料核对；无 API 时默认进入浏览器 Mock 演示。Rack Central 可点击「导入本机 BMS 原件」读取已放在 `public/project-data/rcjm1/` 的实际 PDF，不会把原件提交进 Git；原件缺失时可手动上传 PDF/UTF-8 文件。随后执行候选提取、核对原文、派发问题；接收岗位在「我的任务」收到待答复事项，进入同一来源要求后提交意见；软件产品在任务页看到待处理答复，复核后完成批准与写回。浏览器仅在当前标签页会话保存本机 API token。数据默认写入被 Git 忽略的 `server/.local/`，可用 `PRESALES_DATA_DIR` 指向其他本地目录。停止服务用终端 Ctrl+C。
 
 ```sh
 cd server
 PYTHONDONTWRITEBYTECODE=1 /Users/a48750/Desktop/AI专用/Codex/presales-workbench/venv/bin/python -m unittest -v test_app.py
 ```
 
-Mock 提取只筛选部分技术关键词，并标明 `coverage=keyword_only`；不保证全文覆盖或语义正确。原文核对与客户应答批准是两次不同的动作。正式版需以项目成员身份、数据库事务、对象存储、后台解析及 LangGraph/AG-UI 替换本机演示实现。
+Mock 提取扫描所有可解析页面，按页限量生成技术关键词候选（最多 200 条），并标明 `coverage=keyword_only`；不保证全文覆盖或语义正确。导入时缓存页文本，候选可按页定位原文、搜索与按状态筛选。未核对候选可重新提取；已有人工处理记录时必须上传新版本，不能覆盖复核结果。原文核对与客户应答批准是两次不同的动作。正式版需以项目成员身份、数据库事务、对象存储、后台解析及 LangGraph/AG-UI 替换本机演示实现。
 
 ## 运行
 

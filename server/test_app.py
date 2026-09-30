@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from pypdf import PdfWriter
 
 TEMP = tempfile.TemporaryDirectory()
 os.environ["PRESALES_DATA_DIR"] = TEMP.name
@@ -14,6 +15,31 @@ from app import app, db  # noqa: E402
 
 
 class WorkflowApiTest(unittest.TestCase):
+    def test_local_demo_source_import_is_explicit_and_idempotent(self):
+        source = Path(TEMP.name) / "sample.pdf"
+        writer = PdfWriter()
+        writer.add_blank_page(width=200, height=200)
+        with source.open("wb") as handle:
+            writer.write(handle)
+        os.environ["PRESALES_DEMO_BMS_FILE"] = str(source)
+        try:
+            denied = self.client.post(
+                "/api/projects/RCJM1/demo-source", headers=self.auth("dev")
+            )
+            self.assertEqual(denied.status_code, 403)
+            first = self.client.post(
+                "/api/projects/RCJM1/demo-source", headers=self.auth("software")
+            )
+            self.assertEqual(first.status_code, 200, first.text)
+            self.assertFalse(first.json()["already_imported"])
+            second = self.client.post(
+                "/api/projects/RCJM1/demo-source", headers=self.auth("software")
+            )
+            self.assertEqual(second.json()["id"], first.json()["id"])
+            self.assertTrue(second.json()["already_imported"])
+        finally:
+            os.environ.pop("PRESALES_DEMO_BMS_FILE", None)
+
     def test_browser_origin_preflight(self):
         response = self.client.options(
             "/api/session",
@@ -78,6 +104,19 @@ class WorkflowApiTest(unittest.TestCase):
         self.assertEqual(extracted.json()["coverage"], "keyword_only")
         candidates = extracted.json()["requirements"]
         self.assertEqual(len(candidates), 2)
+        with db() as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM document_pages WHERE document_id=?",
+                (document_id,),
+            ).fetchone()[0], 1)
+        refreshed = self.client.post(
+            f"/api/documents/{document_id}/extract?force=true",
+            headers=self.auth("software"),
+        )
+        self.assertEqual(refreshed.status_code, 200, refreshed.text)
+        candidates = refreshed.json()["requirements"]
+        self.assertTrue(any(item["status"] == "待核对" for item in
+            self.client.get("/api/tasks", headers=self.auth("software")).json()))
         video = next(item for item in candidates if "video" in item["quote"].lower())
         requirement_id = video["id"]
         verified = self.client.post(
@@ -87,6 +126,10 @@ class WorkflowApiTest(unittest.TestCase):
                   "note": "已与原文逐句核对"},
         )
         self.assertEqual(verified.status_code, 200, verified.text)
+        self.assertEqual(self.client.post(
+            f"/api/documents/{document_id}/extract?force=true",
+            headers=self.auth("software"),
+        ).status_code, 409)
         self.assertEqual(
             self.client.post(
                 f"/api/requirements/{requirement_id}/publish",
@@ -103,6 +146,8 @@ class WorkflowApiTest(unittest.TestCase):
             )
             self.assertEqual(result.status_code, 200, result.text)
             handoffs[owner] = result.json()["id"]
+        self.assertTrue(any(item["status"] == "待答复" for item in
+            self.client.get("/api/tasks", headers=self.auth("sales")).json()))
         decision = {"expected_revision": 2, "action": "approve",
                     "disposition": "待澄清后有条件响应",
                     "customer_answer": "按确认的追溯范围提供调取能力。",
@@ -129,6 +174,8 @@ class WorkflowApiTest(unittest.TestCase):
                 json={"answer": "范围已按演示假设确认，需客户最终书面确认"},
             )
             self.assertEqual(reply.status_code, 200, reply.text)
+        self.assertTrue(any(item["status"] == "待处理答复" for item in
+            self.client.get("/api/tasks", headers=self.auth("software")).json()))
         approved = self.client.post(
             f"/api/requirements/{requirement_id}/decision",
             headers=self.auth("software"), json=decision,
@@ -156,7 +203,8 @@ class WorkflowApiTest(unittest.TestCase):
         )
         self.assertEqual(len(project_handoffs.json()), 2)
         changed = self.upload(
-            original.replace("history shall", "alarm snapshots shall"), "V2"
+            original.replace("OPC client and server", "OPC  client and server")
+            .replace("history shall", "alarm snapshots shall"), "V2"
         )
         self.assertEqual(changed.status_code, 200, changed.text)
         self.assertEqual(changed.json()["invalidated"], 1)

@@ -1,5 +1,6 @@
 import { SoftwareIntake } from "@/components/SoftwareIntake";
 import { LocalSourceReview } from "@/components/LocalSourceReview";
+import { localApiReady } from "@/lib/localApi";
 import { StageHandoffs } from "@/components/Collaboration";
 import { invalidInputs } from "@/lib/collaboration";
 import { softwareArtifact } from "@/lib/agentTasks";
@@ -83,7 +84,9 @@ export function ReferenceWorkbench({
     state.role === "软件产品" &&
       !new URLSearchParams(window.location.search).has("item"),
   );
-  const [localReview, setLocalReview] = useState(false);
+  const [localReview, setLocalReview] = useState(
+    stage === "F5" && localApiReady(state.accountId),
+  );
   const [review, setReview] = useState<ReferenceReviewState>(() =>
     readProjectReview(projectId, state),
   );
@@ -307,7 +310,7 @@ export function ReferenceWorkbench({
     <section className="reference-workbench">
       <header className="reference-workbench-heading">
         <h2>F5 · 本机资料核对</h2>
-        <button className="btn secondary" onClick={() => setLocalReview(false)}>返回工作区</button>
+        <button className="btn secondary" onClick={() => setLocalReview(false)}>浏览器 Mock 演示</button>
       </header>
       <LocalSourceReview projectId={projectId} />
     </section>

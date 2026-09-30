@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useWorkbench } from "@/state/workbench";
 import { localApi, localApiReady } from "@/lib/localApi";
+import { useSearchParams } from "react-router";
 
 type Document = { id: string; title: string; version: string; filename: string; created_at: string };
 type Requirement = {
@@ -20,9 +21,15 @@ const recipients = [
   ["dev", "研发意见"],
   ["solution", "解决方案意见"],
 ] as const;
+const statusLabel: Record<string, string> = {
+  candidate: "待核对", verified: "已核对", approved: "应答已批准",
+  published: "已写回", rejected: "已驳回", stale: "版本失效",
+};
 
 export function LocalSourceReview({ projectId }: { projectId: string }) {
   const { state } = useWorkbench();
+  const [params] = useSearchParams();
+  const requestedRequirement = params.get("requirement");
   const account = state.accountId;
   const connected = localApiReady(account);
   const [documents, setDocuments] = useState<Document[]>([]);
@@ -31,9 +38,9 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
   const [facts, setFacts] = useState<Fact[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   const [selectedDocument, setSelectedDocument] = useState("");
-  const [selectedRequirement, setSelectedRequirement] = useState("");
+  const [selectedRequirement, setSelectedRequirement] = useState(requestedRequirement || "");
   const [source, setSource] = useState("");
-  const [title, setTitle] = useState("BMS 技术规格");
+  const [title, setTitle] = useState(projectId === "RCJM1" ? "Rack Central · BMS Technical Specification" : "项目来源文件");
   const [version, setVersion] = useState("V1");
   const [file, setFile] = useState<File | null>(null);
   const [requirementText, setRequirementText] = useState("");
@@ -43,6 +50,8 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
   const [answer, setAnswer] = useState("");
   const [disposition, setDisposition] = useState("");
   const [customerAnswer, setCustomerAnswer] = useState("");
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -59,18 +68,33 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
     setHandoffs(transfers);
     setFacts(published);
     setEvents(history);
-    setSelectedDocument((current) => current || docs[0]?.id || "");
+    setSelectedDocument((current) => current || rows.find((row) => row.id === requestedRequirement)?.document_id || docs[0]?.id || "");
     setSelectedRequirement((current) => current || rows[0]?.id || "");
-  }, [projectId]);
+  }, [projectId, requestedRequirement]);
   useEffect(() => {
     if (!connected) return;
     queueMicrotask(() => void refresh().catch((error: Error) => setMessage(error.message)));
   }, [connected, refresh]);
 
-  const current = requirements.find((row) => row.id === selectedRequirement);
+  const visibleRows = requirements.filter((row) => row.document_id === selectedDocument);
+  const queueRows = visibleRows.filter((row) =>
+    (statusFilter === "all" || row.status === statusFilter) &&
+    `${row.quote} ${row.text} ${row.page}`.toLowerCase().includes(query.trim().toLowerCase()),
+  );
+  const current = queueRows.find((row) => row.id === selectedRequirement) || queueRows[0];
   const related = handoffs.filter((item) => item.requirement_id === current?.id && !item.outdated);
   const inbox = handoffs.filter((item) => item.owner === account && !item.outdated);
-  const visibleRows = requirements.filter((row) => row.document_id === selectedDocument);
+  const demoImported = documents.some((item) => item.title === "Rack Central · BMS Technical Specification");
+  function narrowQueue(nextQuery: string, nextStatus: string) {
+    setQuery(nextQuery);
+    setStatusFilter(nextStatus);
+    const filtered = visibleRows.filter((row) =>
+      (nextStatus === "all" || row.status === nextStatus) &&
+      `${row.quote} ${row.text} ${row.page}`.toLowerCase().includes(nextQuery.trim().toLowerCase()),
+    );
+    if (!filtered.some((row) => row.id === selectedRequirement))
+      setSelectedRequirement(filtered[0]?.id || "");
+  }
   useEffect(() => {
     if (!current || !connected) return;
     let active = true;
@@ -111,11 +135,21 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
   return (
     <section className="local-review">
       <header className="local-review-header">
-        <h3>本机资料核对</h3>
+        <h3>来源与要求</h3>
         <span>{documents.length} 份文件 · {requirements.length} 条候选 · {inbox.filter((i) => i.status === "pending").length} 项待答复</span>
         <button className="btn secondary" onClick={() => void refresh()} disabled={busy}>刷新</button>
       </header>
       {message && <p className="local-review-message" role="status">{message}</p>}
+      {projectId === "RCJM1" && !demoImported && (account === "sales" || account === "software" || account === "pm") && (
+        <div className="local-review-demo-import">
+          <span>Rack Central · BMS Technical Specification</span>
+          <button className="btn secondary" disabled={busy} onClick={() => void act(async () => {
+            const imported = await localApi<{ id: string; already_imported: boolean }>(`/api/projects/${projectId}/demo-source`, { method: "POST" });
+            setSelectedDocument(imported.id);
+            setSelectedRequirement("");
+          }, "本机 BMS 原件已入库，可执行候选提取")}>导入本机 BMS 原件</button>
+        </div>
+      )}
       {(account === "sales" || account === "software" || account === "pm") && (
         <form className="local-review-upload" onSubmit={(event) => {
           event.preventDefault();
@@ -151,20 +185,28 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
         </section>
       )}
       <div className="local-review-toolbar">
-        <select aria-label="来源版本" value={selectedDocument} onChange={(event) => { setSelectedDocument(event.target.value); setSelectedRequirement(""); }}>
+        <select aria-label="来源版本" value={selectedDocument} onChange={(event) => { setSelectedDocument(event.target.value); setSelectedRequirement(""); setQuery(""); setStatusFilter("all"); }}>
           <option value="">选择来源文件</option>
           {documents.map((doc) => <option value={doc.id} key={doc.id}>{doc.title} · {doc.version} · {doc.filename}</option>)}
         </select>
-        {selectedDocument && account === "software" && <button className="btn primary" disabled={busy} onClick={() => void act(() => localApi(`/api/documents/${selectedDocument}/extract`, { method: "POST" }), "已生成关键词候选；请逐条对照原文核对")}>Mock 提取候选</button>}
+        {selectedDocument && account === "software" && <button className="btn primary" disabled={busy || visibleRows.some((row) => row.status !== "candidate")} onClick={() => void act(() => localApi(`/api/documents/${selectedDocument}/extract${visibleRows.length ? "?force=true" : ""}`, { method: "POST" }), "已生成关键词候选；请逐条对照原文核对")}>{visibleRows.length ? "重新提取未核对候选" : "Mock 提取候选"}</button>}
         <small>关键词提取仅生成候选，不代表全文覆盖</small>
       </div>
       <div className="local-review-grid">
         <nav aria-label="来源要求队列" className="local-review-queue">
-          {visibleRows.map((row) => <button className={row.id === selectedRequirement ? "selected" : ""} key={row.id} onClick={() => setSelectedRequirement(row.id)}>
-            <span>第 {row.page} 页 · {row.status}</span>
+          <div className="local-review-queue-tools">
+            <input aria-label="搜索候选要求" placeholder="搜索原文 / 页码" value={query} onChange={(event) => narrowQueue(event.target.value, statusFilter)} />
+            <select aria-label="筛选处理状态" value={statusFilter} onChange={(event) => narrowQueue(query, event.target.value)}>
+              <option value="all">全部 {visibleRows.length}</option>
+              {Object.entries(statusLabel).map(([value, label]) => <option key={value} value={value}>{label} {visibleRows.filter((row) => row.status === value).length}</option>)}
+            </select>
+          </div>
+          {queueRows.map((row) => <button className={row.id === current?.id ? "selected" : ""} key={row.id} onClick={() => setSelectedRequirement(row.id)}>
+            <span>第 {row.page} 页 · {statusLabel[row.status] || row.status}</span>
             <strong>{row.quote}</strong>
           </button>)}
           {!visibleRows.length && <p>此版本尚无候选。上传并执行提取后，可在这里逐条核对。</p>}
+          {visibleRows.length > 0 && !queueRows.length && <p>没有匹配的要求。</p>}
         </nav>
         <section className="local-review-source">
           <h4>来源原文 {current ? `· 第 ${current.page} 页` : ""}</h4>

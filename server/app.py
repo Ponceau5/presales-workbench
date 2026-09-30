@@ -80,6 +80,11 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS ix_documents_project_title
               ON documents(project_id, title, created_at);
+            CREATE TABLE IF NOT EXISTS document_pages (
+              document_id TEXT NOT NULL, page INTEGER NOT NULL, text TEXT NOT NULL,
+              PRIMARY KEY(document_id, page),
+              FOREIGN KEY(document_id) REFERENCES documents(id)
+            );
             CREATE TABLE IF NOT EXISTS requirements (
               id TEXT PRIMARY KEY, project_id TEXT NOT NULL, document_id TEXT NOT NULL,
               page INTEGER NOT NULL, quote TEXT NOT NULL, text TEXT NOT NULL,
@@ -173,6 +178,21 @@ def pages(path: Path) -> list[str]:
         raise HTTPException(status_code=422, detail="文本文件须为 UTF-8") from error
 
 
+def stored_pages(connection: sqlite3.Connection, document: sqlite3.Row) -> list[str]:
+    cached = connection.execute(
+        "SELECT text FROM document_pages WHERE document_id=? ORDER BY page",
+        (document["id"],),
+    ).fetchall()
+    if cached:
+        return [row["text"] for row in cached]
+    parsed = pages(Path(document["path"]))
+    connection.executemany(
+        "INSERT OR REPLACE INTO document_pages VALUES (?,?,?)",
+        [(document["id"], number, text) for number, text in enumerate(parsed, 1)],
+    )
+    return parsed
+
+
 @app.post("/api/projects/{project_id}/documents")
 async def upload_document(
     project_id: str,
@@ -199,7 +219,8 @@ async def upload_document(
                 output.write(chunk)
         if not size:
             raise HTTPException(status_code=422, detail="空文件")
-        new_text = "\n".join(pages(destination))
+        parsed_pages = pages(destination)
+        new_text = " ".join("\n".join(parsed_pages).split())
         with db() as connection:
             previous = connection.execute(
                 "SELECT id FROM documents WHERE project_id=? AND title=? ORDER BY created_at DESC LIMIT 1",
@@ -211,6 +232,11 @@ async def upload_document(
                  Path(file.filename or "source").name, str(destination),
                  digest.hexdigest(), account, now()),
             )
+            connection.executemany(
+                "INSERT INTO document_pages VALUES (?,?,?)",
+                [(identifier, number, text)
+                 for number, text in enumerate(parsed_pages, 1)],
+            )
             stale = 0
             if previous:
                 prior = connection.execute(
@@ -218,7 +244,7 @@ async def upload_document(
                     (previous["id"],),
                 ).fetchall()
                 for requirement in prior:
-                    if requirement["quote"] not in new_text:
+                    if " ".join(requirement["quote"].split()) not in new_text:
                         connection.execute(
                             "UPDATE requirements SET status='stale', revision=revision+1, updated_at=? WHERE id=?",
                             (now(), requirement["id"]),
@@ -250,11 +276,41 @@ def list_documents(project_id: str, account: str = Depends(actor)):
         )]
 
 
+@app.post("/api/projects/{project_id}/demo-source")
+async def import_demo_source(project_id: str, account: str = Depends(actor)):
+    require_account(account, {"sales", "software", "pm"})
+    if project_id != "RCJM1":
+        raise HTTPException(status_code=404, detail="该项目没有配置本机演示来源")
+    source = Path(os.environ.get(
+        "PRESALES_DEMO_BMS_FILE",
+        Path(__file__).resolve().parents[1] / "public/project-data/rcjm1/bms-spec.pdf",
+    ))
+    if not source.is_file() or source.suffix.lower() != ".pdf":
+        raise HTTPException(status_code=404, detail="本机 BMS 原始文件不可用，请手动上传")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    title = "Rack Central · BMS Technical Specification"
+    with db() as connection:
+        existing = connection.execute(
+            "SELECT id, version FROM documents WHERE project_id=? AND title=? AND sha256=? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (project_id, title, digest),
+        ).fetchone()
+    if existing:
+        return {"id": existing["id"], "version": existing["version"],
+                "sha256": digest, "already_imported": True}
+    with source.open("rb") as handle:
+        uploaded = UploadFile(file=handle, filename=source.name)
+        result = await upload_document(
+            project_id, title, "SHA-" + digest[:8], uploaded, account,
+        )
+    return {**result, "already_imported": False}
+
+
 @app.get("/api/documents/{document_id}/pages/{page}")
 def source_page(document_id: str, page: int, account: str = Depends(actor)):
     with db() as connection:
         document = row_or_404(connection, "documents", document_id)
-    content = pages(Path(document["path"]))
+        content = stored_pages(connection, document)
     if page < 1 or page > len(content):
         raise HTTPException(status_code=404, detail="页码不存在")
     return {"document_id": document_id, "version": document["version"],
@@ -265,18 +321,25 @@ KEYWORDS = re.compile(r"\b(OPC|BACnet|Modbus|SNMP|alarm|redundan\w*|histor\w*|vi
 
 
 @app.post("/api/documents/{document_id}/extract")
-def extract(document_id: str, account: str = Depends(actor)):
+def extract(document_id: str, force: bool = False, account: str = Depends(actor)):
     require_account(account, {"software", "pm"})
     with db() as connection:
         document = row_or_404(connection, "documents", document_id)
         existing = connection.execute(
             "SELECT * FROM requirements WHERE document_id=? ORDER BY page", (document_id,),
         ).fetchall()
-        if existing:
+        if existing and not force:
             return {"mode": "mock", "coverage": "keyword_only",
                     "requirements": [dict(row) for row in existing]}
+        if existing and force:
+            if any(row["status"] != "candidate" for row in existing):
+                raise HTTPException(status_code=409, detail="已有人工处理记录，不能覆盖候选；请上传新版本")
+            connection.execute("DELETE FROM requirements WHERE document_id=?", (document_id,))
+            log(connection, document["project_id"], account, "mock_reextracted",
+                document_id, f"重新提取未核对候选 {len(existing)} 条")
         found = []
-        for page_number, page_text in enumerate(pages(Path(document["path"])), 1):
+        for page_number, page_text in enumerate(stored_pages(connection, document), 1):
+            page_found = 0
             for line in page_text.splitlines():
                 quote = " ".join(line.split()).strip()
                 if len(quote) < 24 or not KEYWORDS.search(quote):
@@ -289,9 +352,10 @@ def extract(document_id: str, account: str = Depends(actor)):
                               "status": "candidate", "revision": 1,
                               "disposition": None, "customer_answer": None,
                               "reviewer": None, "note": None, "updated_at": now()})
-                if len(found) >= 30:
+                page_found += 1
+                if page_found >= 4:
                     break
-            if len(found) >= 30:
+            if len(found) >= 200:
                 break
         for item in found:
             connection.execute(
@@ -499,3 +563,48 @@ def facts(project_id: str, account: str = Depends(actor)):
             "WHERE r.project_id=? AND f.active=1 ORDER BY f.published_at DESC",
             (project_id,),
         )]
+
+
+@app.get("/api/tasks")
+def tasks(account: str = Depends(actor)):
+    result = []
+    with db() as connection:
+        if account in {"sales", "dev", "solution"}:
+            for row in connection.execute(
+                "SELECT h.*, r.quote, d.version AS source_version "
+                "FROM handoffs h JOIN requirements r ON r.id=h.requirement_id "
+                "JOIN documents d ON d.id=r.document_id "
+                "WHERE h.owner=? AND h.status='pending' AND h.outdated=0 "
+                "ORDER BY h.created_at DESC", (account,),
+            ):
+                result.append({"id": row["id"], "project_id": row["project_id"],
+                               "requirement_id": row["requirement_id"],
+                               "title": row["question"], "status": "待答复",
+                               "owner": row["sender"] + " → " + row["owner"],
+                               "source_version": row["source_version"]})
+        if account == "software":
+            labels = {"candidate": "待核对", "verified": "待专业判断",
+                      "rejected": "待重审", "approved": "待写回", "stale": "版本失效"}
+            for row in connection.execute(
+                "SELECT r.project_id, r.status, d.id AS document_id, d.title, d.version, "
+                "COUNT(*) AS total FROM requirements r JOIN documents d ON d.id=r.document_id "
+                "WHERE r.status IN ('candidate','verified','rejected','approved','stale') "
+                "GROUP BY r.project_id, r.status, d.id ORDER BY r.project_id, d.created_at DESC, r.status"
+            ):
+                display_version = "本机原件" if row["version"].startswith("SHA-") else row["version"]
+                result.append({"id": row["document_id"] + ":" + row["status"],
+                               "project_id": row["project_id"],
+                               "title": f"{row['title']} · {display_version} · {row['total']} 条要求",
+                               "status": labels[row["status"]],
+                               "owner": "软件产品", "count": row["total"]})
+            for row in connection.execute(
+                "SELECT h.id, h.project_id, h.requirement_id, h.owner, h.question "
+                "FROM handoffs h JOIN requirements r ON r.id=h.requirement_id "
+                "WHERE h.status='answered' AND h.outdated=0 "
+                "AND r.status IN ('verified','rejected') ORDER BY h.answered_at DESC"
+            ):
+                result.append({"id": row["id"], "project_id": row["project_id"],
+                               "requirement_id": row["requirement_id"],
+                               "title": row["question"], "status": "待处理答复",
+                               "owner": row["owner"] + " → 软件产品"})
+    return result

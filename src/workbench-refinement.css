@@ -1029,6 +1029,8 @@
 
 .local-review { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow: hidden; }
 .local-review-empty { padding: 24px; }
+.local-review-demo-import { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.local-review-demo-import button { margin-left: auto; }
 .local-review-header, .local-review-toolbar, .local-review-upload { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
 .local-review-header h3 { margin: 0; font-size: 15px; }
 .local-review-header span { color: var(--text-secondary); margin-left: auto; font-size: 12px; }
@@ -1044,6 +1046,10 @@
 .local-review-grid > * { min-width: 0; padding: 14px; border-right: 1px solid var(--line); }
 .local-review-grid > *:last-child { border-right: 0; }
 .local-review-queue { max-height: 70vh; overflow: auto; }
+.local-review-queue-tools { position: sticky; top: -14px; z-index: 1; display: flex; gap: 5px; padding: 0 0 10px; background: var(--surface); }
+.local-review-queue-tools input, .local-review-queue-tools select { min-width: 0; padding: 6px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--text); font-size: 11px; }
+.local-review-queue-tools input { width: 56%; }
+.local-review-queue-tools select { width: 44%; }
 .local-review-queue button { display: block; width: 100%; padding: 10px 8px; border: 0; border-bottom: 1px solid var(--line); background: none; color: var(--text); text-align: left; cursor: pointer; }
 .local-review-queue button.selected { background: var(--accent-soft); }
 .local-review-queue span { display: block; color: var(--text-secondary); font-size: 11px; margin-bottom: 4px; }
