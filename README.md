@@ -4,32 +4,37 @@ React + TypeScript + Vite 本地原型。全部项目共用 F1–F13 流程、�
 
 项目流程的路线、岗位和写回/接收门槛集中在 `src/lib/workflowEngine.ts`。F2 可并行交付 F3/F4/F5/F6；F14 贯穿全流程。每份工件单独交接和失效，详细测试版边界见 Obsidian《测试版架构与流程引擎方案》。
 
-Git 仓库只管理源码与演示逻辑。本机 `public/project-data/`、`public/shared/` 中的真实项目资料和预览不提交到 GitHub；克隆仓库后相关预览需要从授权的本地资料目录重新准备。Mock 操作、路由和结构化测试不依赖这些大文件。
+公开 Git 仓库只管理源码与演示逻辑。本机 `public/project-data/`、`public/shared/` 中的真实项目资料和预览不提交到 GitHub；克隆仓库后相关预览需要从授权的本地资料目录重新准备。Mock 操作、路由和结构化测试不依赖这些大文件。此仓库目前未附开源许可证，公开可读不等于获得复制、修改或再分发授权。
 
 ## 本机协作 API 切片
 
 `server/app.py` 提供 FastAPI 测试服务：上传 PDF/UTF-8 文件、按页查看原文、Mock 关键词提取候选要求、软件产品核对、销售/研发/解决方案交接答复、应答批准与写回，以及新版本对旧要求的局部失效。它使用 SQLite 保存本机演示数据，单文件上限 100 MB。F5 页面「本机资料核对」已接入这组接口；原有浏览器 Mock 工件与这组 SQLite 记录目前是两套独立演示数据，不能互相视为已写回。这仍不是正式认证或完整文档解析。
 
+先按下方「运行」步骤克隆仓库，再在第二个终端启动本机 API：
+
 ```sh
-cd /Users/a48750/Desktop/AA工作台/售前Agent/原型/presales-workbench
-python3 -m venv /Users/a48750/Desktop/AI专用/Codex/presales-workbench/venv
-/Users/a48750/Desktop/AI专用/Codex/presales-workbench/venv/bin/pip install -r server/requirements.txt
-/Users/a48750/Desktop/AI专用/Codex/presales-workbench/venv/bin/uvicorn app:app --app-dir server --host 127.0.0.1 --port 8000
+cd presales-workbench
+python3 -m venv .venv
+.venv/bin/pip install -r server/requirements.txt
+.venv/bin/uvicorn app:app --app-dir server --host 127.0.0.1 --port 8000
 ```
 
 接口文档为 http://127.0.0.1:8000/docs 。演示账号与前端相同，统一密码 `demo2026`。先启动 API，再从前端登录，F5 默认进入本机资料核对；无 API 时默认进入浏览器 Mock 演示。Rack Central 可点击「导入本机 BMS 原件」读取已放在 `public/project-data/rcjm1/` 的实际 PDF，不会把原件提交进 Git；原件缺失时可手动上传 PDF/UTF-8 文件。随后执行候选提取、核对原文、派发问题；接收岗位在「我的任务」收到待答复事项，进入同一来源要求后提交意见；软件产品在任务页看到待处理答复，复核后完成批准与写回。浏览器仅在当前标签页会话保存本机 API token。数据默认写入被 Git 忽略的 `server/.local/`，可用 `PRESALES_DATA_DIR` 指向其他本地目录。停止服务用终端 Ctrl+C。
 
 ```sh
 cd server
-PYTHONDONTWRITEBYTECODE=1 /Users/a48750/Desktop/AI专用/Codex/presales-workbench/venv/bin/python -m unittest -v test_app.py
+PYTHONDONTWRITEBYTECODE=1 ../.venv/bin/python -m unittest -v test_app.py
 ```
 
 Mock 提取扫描所有可解析页面，按页限量生成技术关键词候选（最多 200 条），并标明 `coverage=keyword_only`；不保证全文覆盖或语义正确。导入时缓存页文本，候选可按页定位原文、搜索与按状态筛选。未核对候选可重新提取；已有人工处理记录时必须上传新版本，不能覆盖复核结果。原文核对与客户应答批准是两次不同的动作。正式版需以项目成员身份、数据库事务、对象存储、后台解析及 LangGraph/AG-UI 替换本机演示实现。
 
 ## 运行
 
+新同事需要先安装 Node.js 和 Python 3，然后在自己的电脑上获取源码。仅在 GitHub 浏览代码不会运行页面；每个人的 `127.0.0.1` 都指向自己的电脑。
+
 ```sh
-cd /Users/a48750/Desktop/AA工作台/售前Agent/原型/presales-workbench
+git clone https://github.com/Ponceau5/presales-workbench.git
+cd presales-workbench
 npm ci
 npm run dev
 ```
