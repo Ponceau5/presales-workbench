@@ -144,9 +144,9 @@ export const stages: StageDefinition[] = [
   },
   {
     id: 'F7',
-    title: '成本汇总与供应链询价',
+    title: '成本协作与销售报价初稿',
     owner: '销售 / 供应链 / 财务',
-    goal: '把已确认配置转换为询价输入，标明价格来源与缺项。',
+    goal: '销售发起多岗位成本回填，汇总底表后结合客情和竞争形成报价初稿。',
     input:
       '合成清单：设备 A 10 件、设备 B 5 件；软件服务 1 项；所有金额为空，不导入真实价格。',
     source: '演示配置清单 V1 · 询价输入 V1',
@@ -162,7 +162,7 @@ export const stages: StageDefinition[] = [
         evidence: '演示成本结构 V1 · 不含任何价格',
       },
     ],
-    question: '请补充报价来源、币种、有效期、服务范围与物流 / 关税输入。',
+    question: '请补充成本来源、币种与换算依据、服务范围、海外费用，以及销售定价判断。',
     next: ['F8'],
     change: '设备 A 数量从 10 件增加至 12 件。',
     changedText:
@@ -170,16 +170,16 @@ export const stages: StageDefinition[] = [
   },
   {
     id: 'F8',
-    title: '客户 BOQ 映射与报价',
+    title: '客户 BOQ 对照与拆分',
     owner: '销售 / 解决方案',
-    goal: '将内部清单映射到客户结构，确认数量与金额闭合。',
+    goal: '逐项对应客户 BOQ 与内部配置，由销售记录拆分规则、分配数量和报价并核对差异。',
     input:
       '合成 BOQ V1：客户项 C-01 对应设备 A ×10，C-02 对应设备 B ×5；总价未提供。',
     source: '演示 BOQ V1 + 合成内部清单 V1',
     outputs: [
       {
-        title: 'BOQ 映射候选',
-        text: 'C-01 ↔ 设备 A；C-02 ↔ 设备 B。数量 10 / 5 一致。名称相近只作为候选匹配，需要销售确认拆分规则。',
+        title: 'BOQ 演示样本',
+        text: '合成样本只有两项和数量；真实项目工作区先用客户表选取分项演示逐项对应、数量分配与核对。完整流程仍待销售实操案例细化。',
         evidence: '演示 BOQ V1 · C-01 / C-02',
       },
       {
@@ -188,7 +188,7 @@ export const stages: StageDefinition[] = [
         evidence: '演示报价字段 V1 · 金额为空',
       },
     ],
-    question: '请确认 BOQ 对应关系、楼栋拆分规则及获准使用的价格数据。',
+    question: '请先按客户分项选择内部物料、写项目拆分依据、核对技术对应和数量差异；后续用销售实际案例校正这版流程。',
     next: ['F9'],
     change: '客户 C-01 从整体项拆为两项。',
     changedText:
@@ -204,7 +204,7 @@ export const stages: StageDefinition[] = [
     outputs: [
       {
         title: '商务明细草稿',
-        text: '准备物料、数量、币种、价格和来源字段。物料号与批准价格为空，禁止转为正式 CM 报价明细。',
+        text: '准备物料、数量、币种、价格和来源字段。物料号与批准价格为空，禁止转为正式 CRM 报价明细。',
         evidence: '演示内部报价字段 V1',
       },
       {

@@ -16,6 +16,7 @@ import { pipelineSteps } from "@/lib/presales";
 import { stagesForProject } from "@/lib/projectStages";
 import { stageFlow } from "@/lib/workflowEngine";
 import { roleWork } from "@/lib/workspace";
+import { boqGroupIssues, boqGroups, commercialReadiness, inventoryFor, readCommercialState } from "@/lib/commercialWorkflow";
 import { Tag } from "@/components/WorkbenchUI";
 const positions: Record<string, [number, number]> = {
   F1: [20, 160],
@@ -70,6 +71,10 @@ export function ProjectFlow({
   const stages = stagesForProject(referenceProjectId || state.currentProjectId);
   const def = stages.find((d) => d.id === selected);
   const data = state.stageStates[selected];
+  const commercial = (referenceProjectId || state.currentProjectId) === 'RCJM1'
+    ? readCommercialState('RCJM1') : null;
+  const commercialLines = commercial ? inventoryFor(commercial.baseline) : [];
+  const commercialReady = commercial ? commercialReadiness(commercial, commercialLines) : null;
   const relatedResources = referenceProjectId
     ? state.resources.filter(
         (r) =>
@@ -103,6 +108,12 @@ export function ProjectFlow({
           ? "复核中"
           : "待复核";
     }
+    if (commercial && commercialReady && id === 'F7')
+      return `成本 ${commercialLines.length - commercialReady.missingCosts.length}/${commercialLines.length} · ${commercial.draftPriceRm !== null && commercial.draftPriceRm !== undefined ? '初稿待复核' : '待报价'}`;
+    if (commercial && commercialReady && id === 'F8')
+      return `BOQ ${boqGroups.filter(group => commercial.mappings[group.id]?.confirmed && boqGroupIssues(commercial, group.id, commercialLines).ready).length}/${boqGroups.length} 已核对`;
+    if (commercialReady && id === 'F9')
+      return commercialReady.ready ? '录入稿就绪' : '录入稿待补';
     if (id === "F14")
       return Object.values(state.changeStatus).every((s) => s === "done") &&
         Object.values(state.stageStates).every((s) => !s.change || s.written)

@@ -8,6 +8,7 @@ import {
   ReferenceFacts,
 } from "@/components/ReferenceWorkbench";
 import StageWorkbench from "@/pages/StageWorkbench";
+import CommercialWorkbench from "@/pages/CommercialWorkbench";
 import { roles } from "@/lib/workspace";
 import { rackIssues } from "@/lib/portfolio";
 import { Link, useParams, useSearchParams } from "react-router";
@@ -116,6 +117,8 @@ export default function Home() {
             stage="F5"
             projectId={project.id}
           />
+        ) : project.id === 'RCJM1' && ['F7','F8','F9'].includes(params.get('stage') || '') ? (
+          <CommercialWorkbench key={`${project.id}:${state.role}`} stage={params.get('stage') || 'F7'} projectId={project.id} role={state.role} />
         ) : (
           <>
             <StageWorkbench
