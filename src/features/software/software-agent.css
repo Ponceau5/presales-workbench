@@ -1,0 +1,39 @@
+.software-agent-layout { display:grid; grid-template-columns:minmax(0, 1.15fr) minmax(340px, .85fr); min-height:min(72vh, 760px); }
+.software-workspace-tabs { display:flex; gap:20px; padding:0 18px; border-bottom:1px solid var(--line); }
+.software-workspace-tabs button { padding:11px 2px; border:0; border-bottom:2px solid transparent; background:none; color:var(--text-secondary); font-weight:600; }
+.software-workspace-tabs button.active { border-color:var(--accent); color:var(--text); }
+.software-workspace-tabs span { margin-left:5px; font-size:11px; font-weight:500; }
+.software-agent-empty { padding:50px 22px; color:var(--text-secondary); text-align:center; }
+.local-review-upload-details { border-bottom:1px solid var(--line); }
+.local-review-upload-details > summary { padding:10px 14px; color:var(--text-secondary); font-size:12px; cursor:pointer; }
+.local-review-upload-details .local-review-upload { border-top:1px solid var(--line); border-bottom:0; }
+.software-agent-conversation { display:flex; flex-direction:column; min-width:0; min-height:0; border-right:1px solid var(--line); }
+.software-agent-conversation-head, .software-agent-source header { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:14px 18px; border-bottom:1px solid var(--line); }
+.software-agent-conversation-head h4 { margin:0 0 3px; font-size:16px; }
+.software-agent-conversation-head span, .software-agent-source header span { color:var(--text-secondary); font-size:12px; }
+.software-agent-messages { flex:1; min-height:310px; max-height:62vh; overflow:auto; padding:20px; }
+.software-agent-start { max-width:580px; margin:10vh auto 0; }
+.software-agent-start h3 { font-size:22px; font-weight:650; letter-spacing:-.02em; }
+.software-agent-start p { margin:8px 0 22px; color:var(--text-secondary); }
+.software-agent-start > div { display:flex; flex-wrap:wrap; gap:8px; }
+.software-agent-start button { padding:9px 12px; border:1px solid var(--line); border-radius:9px; background:var(--surface); color:var(--text); text-align:left; }
+.software-agent-start button:hover, .software-agent-citations button:hover { border-color:var(--accent); background:var(--accent-soft); }
+.software-agent-exchange { display:grid; gap:14px; max-width:720px; margin:0 auto 25px; }
+.software-agent-user { justify-self:end; max-width:82%; padding:10px 14px; border-radius:12px 12px 3px 12px; background:var(--accent-soft); line-height:1.6; }
+.software-agent-answer { display:grid; gap:10px; line-height:1.7; }
+.software-agent-answer > p { white-space:pre-wrap; }
+.software-agent-answer > span, .software-agent-answer > small { color:var(--text-secondary); font-size:11px; }
+.software-agent-citations { display:grid; gap:6px; }
+.software-agent-citations button { padding:8px 10px; border:1px solid var(--line); border-radius:7px; background:var(--surface); color:var(--text); text-align:left; font-size:12px; line-height:1.5; }
+.software-agent-composer { padding:12px 18px 14px; border-top:1px solid var(--line); }
+.software-agent-composer > p { margin:0 0 8px; color:var(--text-secondary); font-size:12px; }
+.software-agent-composer > div:first-of-type { display:flex; align-items:flex-end; gap:8px; padding:6px; border:1px solid var(--line); border-radius:11px; background:var(--surface); }
+.software-agent-composer textarea { flex:1; resize:vertical; border:0; outline:0; background:transparent; color:var(--text); padding:7px; min-width:0; }
+.software-agent-composer > div:first-of-type button { display:grid; place-items:center; width:32px; height:32px; border:0; border-radius:7px; background:var(--accent); color:#fff; }
+.software-agent-actions { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.software-agent-actions span { margin-right:auto; color:var(--text-secondary); font-size:11px; }
+.software-agent-actions button { display:flex; align-items:center; gap:6px; }
+.software-agent-source { min-width:0; display:flex; flex-direction:column; background:var(--surface); }
+.software-agent-source pre { margin:0; padding:20px 22px; overflow:auto; max-height:73vh; white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; font-size:12px; line-height:1.75; }
+.software-agent-source mark { background:#f9dc7e; color:#222; }
+@media (max-width: 1000px) { .software-agent-layout { grid-template-columns:1fr; } .software-agent-conversation { border-right:0; border-bottom:1px solid var(--line); } .software-agent-source pre { max-height:320px; } }

@@ -13,7 +13,7 @@ TEMP = tempfile.TemporaryDirectory()
 os.environ["PRESALES_DATA_DIR"] = TEMP.name
 
 from app import app, db  # noqa: E402
-from kimi import KimiError  # noqa: E402
+from model_gateway import ModelError, answer_about_source  # noqa: E402
 
 
 class WorkflowApiTest(unittest.TestCase):
@@ -89,7 +89,7 @@ class WorkflowApiTest(unittest.TestCase):
         self.client.post(f"/api/documents/{document_id}/extract",
                          headers=self.auth("software"))
         with patch.dict(os.environ, {"MOONSHOT_API_KEY": "test-placeholder"}), patch(
-            "app.extract_requirements", side_effect=KimiError("模型临时不可用"),
+            "app.extract_requirements", side_effect=ModelError("模型临时不可用"),
         ):
             response = self.client.post(
                 f"/api/documents/{document_id}/extract-live",
@@ -131,6 +131,62 @@ class WorkflowApiTest(unittest.TestCase):
             "/api/projects/KIMI-EMPTY/requirements", headers=self.auth("software"),
         ).json()
         self.assertEqual({row["id"] for row in after}, {row["id"] for row in before})
+
+    def test_deepseek_source_question_is_grounded_and_logged(self):
+        source = "BMS shall provide alarm history retrieval.\nThe operator can filter alarms."
+        uploaded = self.client.post(
+            "/api/projects/DS-TEST/documents", headers=self.auth("software"),
+            data={"title": "BMS sample", "version": "V1"},
+            files={"file": ("sample.txt", source.encode(), "text/plain")},
+        )
+        document_id = uploaded.json()["id"]
+        endpoint = f"/api/documents/{document_id}/ask"
+        self.assertEqual(self.client.post(endpoint, headers=self.auth("dev"),
+                                          json={"page": 1, "question": "告警要求是什么？"}).status_code, 403)
+        with patch.dict(os.environ, {"PRESALES_MODEL_PROVIDER": "deepseek",
+                                  "DEEPSEEK_API_KEY": "test-placeholder"}), patch(
+            "app.answer_about_source", return_value={
+                "answer": "需要告警历史检索。", "quotes": ["BMS shall provide alarm history retrieval."],
+                "follow_up": "核对过滤条件"},
+        ):
+            response = self.client.post(endpoint, headers=self.auth("software"),
+                                        json={"page": 1, "question": "告警要求是什么？"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["provider"], "deepseek")
+        history = self.client.get(f"/api/documents/{document_id}/questions?page=1",
+                                  headers=self.auth("software")).json()
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["quotes"], ["BMS shall provide alarm history retrieval."])
+
+    def test_deepseek_extraction_labels_candidates(self):
+        source = "BMS shall provide alarm history retrieval for operators."
+        uploaded = self.client.post(
+            "/api/projects/DS-EXTRACT/documents", headers=self.auth("software"),
+            data={"title": "BMS sample", "version": "V1"},
+            files={"file": ("sample.txt", source.encode(), "text/plain")},
+        )
+        document_id = uploaded.json()["id"]
+        with patch.dict(os.environ, {"PRESALES_MODEL_PROVIDER": "deepseek",
+                                  "DEEPSEEK_API_KEY": "test-placeholder"}), patch(
+            "app.extract_requirements", return_value=[
+                {"quote": source, "requirement": "支持告警历史检索"}],
+        ):
+            result = self.client.post(f"/api/documents/{document_id}/extract-live",
+                                      headers=self.auth("software"), json={"pages": [1]})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()["provider"], "deepseek")
+        rows = self.client.get("/api/projects/DS-EXTRACT/requirements",
+                               headers=self.auth("software")).json()
+        self.assertEqual(rows[0]["extractor"], "deepseek")
+
+    def test_question_discards_unverifiable_model_quote(self):
+        with patch("model_gateway.request_chat", return_value=(
+            '{"answer":"一定满足","quotes":["fabricated quote"],"follow_up":""}'
+        )):
+            result = answer_about_source("BMS shall provide alarm history retrieval.", 1,
+                                         "产品满足吗？")
+        self.assertEqual(result["quotes"], [])
+        self.assertIn("没有找到", result["answer"])
 
     def test_local_demo_source_import_is_explicit_and_idempotent(self):
         source = Path(TEMP.name) / "sample.pdf"

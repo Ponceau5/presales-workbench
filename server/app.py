@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -16,7 +17,8 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
-from kimi import KimiError, extract_requirements, model_name, test_connection
+from model_gateway import (ModelError, answer_about_source, extract_requirements,
+                           model_config, test_connection)
 
 def load_local_env() -> None:
     """Load only known server settings from the untracked local env file."""
@@ -29,7 +31,9 @@ def load_local_env() -> None:
             continue
         name, value = line.split("=", 1)
         name = name.strip()
-        if name in {"MOONSHOT_API_KEY", "MOONSHOT_MODEL", "MOONSHOT_BASE_URL"}:
+        if name in {"MOONSHOT_API_KEY", "MOONSHOT_MODEL", "MOONSHOT_BASE_URL",
+                    "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "DEEPSEEK_BASE_URL",
+                    "PRESALES_MODEL_PROVIDER"}:
             os.environ.setdefault(name, value.strip().strip('"').strip("'"))
 
 
@@ -139,6 +143,15 @@ def init_db() -> None:
               FOREIGN KEY(requirement_id) REFERENCES requirements(id),
               FOREIGN KEY(run_id) REFERENCES agent_runs(id)
             );
+            CREATE TABLE IF NOT EXISTS agent_questions (
+              id TEXT PRIMARY KEY, project_id TEXT NOT NULL, document_id TEXT NOT NULL,
+              page INTEGER NOT NULL, actor TEXT NOT NULL, question TEXT NOT NULL,
+              answer TEXT NOT NULL, quotes_json TEXT NOT NULL, follow_up TEXT NOT NULL,
+              provider TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL,
+              FOREIGN KEY(document_id) REFERENCES documents(id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_agent_questions_document_page
+              ON agent_questions(document_id, page, created_at);
             """
         )
 
@@ -195,17 +208,19 @@ def login(payload: Login):
 
 @app.get("/api/model/status")
 def model_status(account: str = Depends(actor)):
-    return {"configured": bool(os.environ.get("MOONSHOT_API_KEY", "").strip()),
-            "provider": "Kimi", "model": model_name()}
+    config = model_config()
+    return {"configured": config.configured, "provider": config.provider,
+            "model": config.model}
 
 
 @app.post("/api/model/test")
 def model_test(account: str = Depends(actor)):
     try:
         test_connection()
-    except KimiError as error:
+    except ModelError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
-    return {"connected": True, "provider": "Kimi", "model": model_name()}
+    config = model_config()
+    return {"connected": True, "provider": config.provider, "model": config.model}
 
 
 def pages(path: Path) -> list[str]:
@@ -360,6 +375,66 @@ def source_page(document_id: str, page: int, account: str = Depends(actor)):
             "page": page, "text": content[page - 1]}
 
 
+class SourceQuestion(BaseModel):
+    page: int = Field(ge=1)
+    question: str = Field(min_length=2, max_length=500)
+
+
+@app.get("/api/documents/{document_id}/questions")
+def list_source_questions(document_id: str, page: int, account: str = Depends(actor)):
+    with db() as connection:
+        row_or_404(connection, "documents", document_id)
+        rows = connection.execute(
+            "SELECT * FROM (SELECT * FROM agent_questions WHERE document_id=? AND page=? "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 50) "
+            "ORDER BY created_at", (document_id, page),
+        ).fetchall()
+    return [{**dict(row), "quotes": json.loads(row["quotes_json"])} for row in rows]
+
+
+@app.post("/api/documents/{document_id}/ask")
+def ask_source(document_id: str, payload: SourceQuestion,
+               account: str = Depends(actor)):
+    require_account(account, {"software"})
+    config = model_config()
+    if not config.configured:
+        raise HTTPException(status_code=503, detail="请先在服务端配置模型 API Key")
+    with db() as connection:
+        document = row_or_404(connection, "documents", document_id)
+        source_pages = stored_pages(connection, document)
+        if payload.page > len(source_pages):
+            raise HTTPException(status_code=422, detail="页码超出文件范围")
+        if not source_pages[payload.page - 1].strip():
+            raise HTTPException(status_code=422, detail="此页没有可读取的原文")
+        previous = connection.execute(
+            "SELECT question, answer FROM agent_questions WHERE document_id=? AND page=? "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 3",
+            (document_id, payload.page),
+        ).fetchall()
+    try:
+        result = answer_about_source(source_pages[payload.page - 1], payload.page,
+                                     payload.question.strip(),
+                                     [(row["question"], row["answer"]) for row in reversed(previous)])
+    except ModelError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    record = {"id": str(uuid4()), "project_id": document["project_id"],
+              "document_id": document_id, "page": payload.page, "actor": account,
+              "question": payload.question.strip(), "answer": result["answer"],
+              "quotes": result["quotes"], "follow_up": result["follow_up"],
+              "provider": config.provider, "model": config.model, "created_at": now()}
+    with db() as connection:
+        connection.execute(
+            "INSERT INTO agent_questions VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (record["id"], record["project_id"], record["document_id"], record["page"],
+             record["actor"], record["question"], record["answer"],
+             json.dumps(record["quotes"], ensure_ascii=False), record["follow_up"],
+             record["provider"], record["model"], record["created_at"]),
+        )
+        log(connection, document["project_id"], account, "source_question", record["id"],
+            f"来源 {document_id}；第 {payload.page} 页；模型 {config.model}；引用 {len(record['quotes'])} 条")
+    return record
+
+
 KEYWORDS = re.compile(r"\b(OPC|BACnet|Modbus|SNMP|alarm|redundan\w*|histor\w*|video|server)\b", re.I)
 
 
@@ -422,8 +497,9 @@ class LiveExtraction(BaseModel):
 def extract_live(document_id: str, payload: LiveExtraction,
                  account: str = Depends(actor)):
     require_account(account, {"software"})
-    if not os.environ.get("MOONSHOT_API_KEY", "").strip():
-        raise HTTPException(status_code=503, detail="请先在服务端配置 MOONSHOT_API_KEY")
+    config = model_config()
+    if not config.configured:
+        raise HTTPException(status_code=503, detail="请先在服务端配置模型 API Key")
     selected = sorted(set(payload.pages))
     if len(selected) != len(payload.pages):
         raise HTTPException(status_code=422, detail="页码不能重复")
@@ -442,8 +518,8 @@ def extract_live(document_id: str, payload: LiveExtraction,
         run_id = str(uuid4())
         connection.execute(
             "INSERT INTO agent_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (run_id, document["project_id"], document_id, account, "live",
-             model_name(), ",".join(str(page) for page in selected), "running",
+            (run_id, document["project_id"], document_id, account, config.provider,
+             config.model, ",".join(str(page) for page in selected), "running",
              0, 0, None, now(), None),
         )
     candidates = []
@@ -497,10 +573,10 @@ def extract_live(document_id: str, payload: LiveExtraction,
                 "skipped_count=?, finished_at=? WHERE id=?",
                 (len(candidates), skipped, now(), run_id),
             )
-            log(connection, document["project_id"], account, "kimi_extracted", run_id,
+            log(connection, document["project_id"], account, "model_extracted", run_id,
                 f"来源 {document_id}；页 {selected}；原文匹配候选 {len(candidates)} 条；跳过 {skipped} 条")
     except Exception as error:
-        detail = error.args[0] if isinstance(error, KimiError) else "提取未完成，原有要求未改变"
+        detail = error.args[0] if isinstance(error, ModelError) else "提取未完成，原有要求未改变"
         with db() as connection:
             connection.execute(
                 "UPDATE agent_runs SET status='failed', error=?, finished_at=? WHERE id=?",
@@ -509,7 +585,7 @@ def extract_live(document_id: str, payload: LiveExtraction,
         if isinstance(error, HTTPException):
             raise
         raise HTTPException(status_code=502, detail=detail) from error
-    return {"run_id": run_id, "mode": "live", "model": model_name(),
+    return {"run_id": run_id, "mode": "live", "provider": config.provider, "model": config.model,
             "coverage": "selected_pages_only", "pages": selected,
             "candidate_count": len(candidates), "skipped_count": skipped,
             "requirements": candidates}
@@ -520,10 +596,12 @@ def list_requirements(project_id: str, account: str = Depends(actor)):
     with db() as connection:
         return [dict(row) for row in connection.execute(
             "SELECT r.*, d.version AS source_version, d.title AS source_title, "
-            "CASE WHEN cs.run_id IS NULL THEN 'mock' ELSE 'kimi' END AS extractor, "
+            "CASE WHEN cs.run_id IS NULL THEN 'mock' "
+            "WHEN ar.mode='live' THEN 'kimi' ELSE ar.mode END AS extractor, "
             "cs.run_id AS extraction_run_id "
             "FROM requirements r JOIN documents d ON d.id=r.document_id "
             "LEFT JOIN candidate_sources cs ON cs.requirement_id=r.id "
+            "LEFT JOIN agent_runs ar ON ar.id=cs.run_id "
             "WHERE r.project_id=? ORDER BY d.created_at DESC, r.page", (project_id,),
         )]
 

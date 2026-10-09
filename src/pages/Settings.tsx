@@ -26,14 +26,14 @@ export default function Settings() {
     null,
   );
   const [reset, setReset] = useState(false);
-  const [serverModel, setServerModel] = useState<{ configured: boolean; model: string } | null>(null);
+  const [serverModel, setServerModel] = useState<{ configured: boolean; provider: string; model: string } | null>(null);
   const [serverTesting, setServerTesting] = useState(false);
   const [serverResult, setServerResult] = useState<string | null>(null);
   const serverReady = localApiReady(state.accountId);
   useEffect(() => {
     if (!serverReady) return;
     let active = true;
-    void localApi<{ configured: boolean; model: string }>("/api/model/status")
+    void localApi<{ configured: boolean; provider: string; model: string }>("/api/model/status")
       .then((value) => { if (active) setServerModel(value); })
       .catch(() => { if (active) setServerModel(null); });
     return () => { active = false; };
@@ -43,7 +43,7 @@ export default function Settings() {
     setServerResult(null);
     try {
       await localApi("/api/model/test", { method: "POST" });
-      setServerResult("Kimi 连接成功");
+      setServerResult("模型连接成功");
     } catch (error) {
       setServerResult(error instanceof Error ? error.message : "连接失败");
     } finally {
@@ -219,13 +219,13 @@ export default function Settings() {
           </Section>
         </div>
         <div>
-          <Section title="服务端 Kimi">
-            <p>{!serverReady ? "本机 API 未连接" : serverModel?.configured ? `${serverModel.model} · 已配置` : "未配置 API Key"}</p>
+          <Section title="服务端模型">
+            <p>{!serverReady ? "本机 API 未连接" : serverModel?.configured ? `${serverModel.provider === "deepseek" ? "DeepSeek" : "Kimi"} · ${serverModel.model} · 已配置` : "未配置 API Key"}</p>
             <button className="btn secondary" disabled={!serverModel?.configured || serverTesting} onClick={() => void testServerModel()}>
               {serverTesting ? "测试中" : "测试服务端连接"}
             </button>
             {serverResult && <p role="status">{serverResult}</p>}
-            <p className="muted small">F5 原文提取使用服务端 Key；只在 `.env.local` 配置。</p>
+            <p className="muted small">F5 问答与提取使用服务端 Key；只在 `.env.local` 配置。</p>
           </Section>
           <Section title="浏览器 Key 仅适用于原型">
             <div className="security-note">
