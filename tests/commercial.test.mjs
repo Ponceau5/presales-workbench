@@ -9,16 +9,76 @@ function moduleUrl(file, imports = {}) {
   return `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`
 }
 const configUrl = moduleUrl('src/lib/configVersions.ts')
-const { inventoryFor, initialCommercialState, readCommercialState, commercialReadiness, convertedAmount, importCostCsv, toCsv, parseCsv, mappingIssues, crmMappingIssues, boqGroupIssues, boqGroups, pricingBreakdown } = await import(moduleUrl('src/lib/commercialWorkflow.ts', {'./configVersions':configUrl}))
+const { inventoryFor, initialCommercialState, readCommercialState, commercialReadiness, convertedAmount, importCostCsv, toCsv, parseCsv, mappingIssues, crmMappingIssues, boqGroupIssues, boqGroups, pricingBreakdown, quoteRateReady, toQuoteAmount, quotePricingTotal, quoteCurrencyPatch } = await import(moduleUrl('src/lib/commercialWorkflow.ts', {'./configVersions':configUrl}))
 
-test('旧版手填总报价保留供参考，不误当作逐项确认后的报价版', () => {
+test('旧 RM 数据保留原币和旧总价，只有可靠的人民币原价可迁入新成本', () => {
   const previousStorage = Object.getOwnPropertyDescriptor(globalThis,'localStorage')
-  Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem: key => key === 'presales-commercial-v2:RCJM1:20260906' ? JSON.stringify({...initialCommercialState(),draftPriceRm:12345,quoteConfirmedAt:undefined}) : null}})
+  Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem: key => key === 'presales-commercial-v2:RCJM1:20260906' ? JSON.stringify({...initialCommercialState(),draftPriceRm:12345,quoteConfirmedAt:undefined,costs:{'BMS-1':{amount:60,sourceAmount:100,sourceCurrency:'CNY',fxToRm:0.6,status:'confirmed',evidence:'CRM价格',owner:'产品',updatedAt:''},'BMS-2':{amount:50,sourceAmount:50,sourceCurrency:'RM',fxToRm:1,status:'confirmed',evidence:'供应商报价',owner:'采购',updatedAt:''}}}) : null}})
   try {
     const state = readCommercialState('RCJM1','20260906')
-    assert.equal(state.draftPriceRm,null)
+    assert.equal(state.draftPriceCny,null)
     assert.equal(state.legacyDraftPriceRm,12345)
+    assert.equal(state.quoteCurrency,'RM')
+    assert.equal(state.costs['BMS-1'].amount,100)
+    assert.equal(state.costs['BMS-2'].amount,null)
+    assert.equal(state.costs['BMS-2'].sourceAmount,50)
+    assert.equal(state.costs['BMS-2'].status,'pending')
   } finally { if (previousStorage) Object.defineProperty(globalThis,'localStorage',previousStorage); else delete globalThis.localStorage }
+})
+
+test('人民币本位计价后按项目汇率转换对外报价，缺汇率来源不输出外币价', () => {
+  const state = initialCommercialState()
+  assert.equal(state.quoteCurrency,'CNY')
+  assert.equal(convertedAmount(100,'CNY',null),100)
+  assert.equal(convertedAmount(100,'RM',1.5),150)
+  assert.equal(convertedAmount(100,'RM',Infinity),null)
+  state.quoteCurrency = 'RM'
+  state.quoteFxFromCny = 0.6
+  assert.equal(quoteRateReady(state),false)
+  assert.equal(toQuoteAmount(150,state),null)
+  state.quoteFxEvidence = '财务项目汇率 2026-10-09'
+  assert.equal(toQuoteAmount(150,state),90)
+  state.quoteFxFromCny = Infinity
+  assert.equal(quoteRateReady(state),false)
+  state.quoteCurrency = 'CNY'
+  assert.equal(toQuoteAmount(150,state),150)
+})
+
+test('外币报价按行折算后汇总，明细合价与总价保持一致', () => {
+  const state = initialCommercialState()
+  state.pricingRules.purchase = 1
+  state.quoteCurrency = 'RM'
+  state.quoteFxFromCny = 0.5
+  state.quoteFxEvidence = '项目报价汇率'
+  const lines = [{id:'A',name:'A',material:'',kind:'外购设备',quantity:1},{id:'B',name:'B',material:'',kind:'外购设备',quantity:1}]
+  for (const line of lines) state.costs[line.id] = {amount:0.01,status:'confirmed',evidence:'询价',owner:'采购',updatedAt:''}
+  const pricing = pricingBreakdown(state,lines)
+  assert.equal(pricing.finalTotal,0.02)
+  assert.equal(quotePricingTotal(state,pricing),0.02)
+  assert.equal(toQuoteAmount(pricing.finalTotal,state),0.01)
+})
+
+test('切换项目报价币种时备份旧 BOQ 和 CRM 金额，旧确认状态失效', () => {
+  const state = initialCommercialState()
+  state.quoteCurrency = 'RM'
+  state.quoteFxFromCny = 0.6
+  state.quoteFxEvidence = '财务汇率'
+  state.quotes.A = {phase1:100,phase2:0,phase3:0,note:''}
+  state.crmPrices['A:1:line'] = 100
+  state.mappings.A = {lineIds:['line'],confirmed:true,note:'原分配'}
+  const patch = quoteCurrencyPatch(state,'USD','2026-10-09T00:00:00Z')
+  assert.deepEqual(patch.quotes,{})
+  assert.deepEqual(patch.crmPrices,{})
+  assert.equal(patch.mappings.A.confirmed,false)
+  assert.equal(patch.quoteCurrencyHistory[0].currency,'RM')
+  assert.equal(patch.quoteCurrencyHistory[0].fxFromCny,0.6)
+  assert.equal(patch.quoteCurrencyHistory[0].fxEvidence,'财务汇率')
+  assert.equal(patch.quoteCurrencyHistory[0].quotes.A.phase1,100)
+  assert.equal(patch.quoteFxFromCny,null)
+  const ratePatch = quoteCurrencyPatch(state,'RM','2026-10-09T00:00:00Z')
+  assert.deepEqual(ratePatch.quotes,{})
+  assert.equal(ratePatch.quoteCurrencyHistory[0].currency,'RM')
+  assert.equal(ratePatch.quoteCurrencyHistory[0].fxFromCny,0.6)
 })
 
 test('分类系数生成建议价，销售逐项改价后重算总价与毛利基数', () => {
@@ -105,15 +165,15 @@ test('财务税费必须确认处理口径，缺成本依据不能进入交接',
 })
 
 test('原币金额需要有效换算率，零金额与空金额保持不同', () => {
-  assert.equal(convertedAmount(100,'CNY',null),null)
-  assert.equal(convertedAmount(100,'CNY',0.6),60)
-  assert.equal(convertedAmount(0,'CNY',0.6),0)
+  assert.equal(convertedAmount(100,'RM',null),null)
+  assert.equal(convertedAmount(100,'RM',1.5),150)
+  assert.equal(convertedAmount(0,'RM',1.5),0)
   assert.equal(convertedAmount(null,'RM',1),null)
 })
 
 test('询价 CSV 支持逗号、引号和换行，拒绝错版本与无依据的确认价', () => {
   const lines = inventoryFor('20260906')
-  const header = ['配置版本','清单ID','单位成本RM','状态','依据/询价来源','建议责任方']
+  const header = ['配置版本','清单ID','单位成本CNY','状态','依据/询价来源','建议责任方']
   const csv = toCsv([header,['20260906',lines[0].id,123.45,'confirmed','供应商 "A", 报价\nV2','供应链'],['20260720',lines[1].id,22,'confirmed','旧版报价','供应链'],['20260906',lines[2].id,33,'confirmed','','供应链']])
   assert.equal(parseCsv(csv).length,4)
   const result = importCostCsv(csv,'20260906',lines)
@@ -122,20 +182,20 @@ test('询价 CSV 支持逗号、引号和换行，拒绝错版本与无依据的
   assert.equal(result.records[lines[0].id].evidence,'供应商 "A", 报价\nV2')
 })
 
-test('批量回填保留原币、换算率与来源，拒绝不一致的 RM 金额', () => {
+test('批量回填保留原币、换算率与来源，拒绝不一致的 CNY 金额', () => {
   const lines = inventoryFor('20260906')
-  const header = ['配置版本','清单ID','单位成本RM','状态','依据/询价来源','原币单位成本','原币币种','1原币折RM','汇率来源']
+  const header = ['配置版本','清单ID','单位成本CNY','状态','依据/询价来源','原币单位成本','原币币种','1原币折CNY','汇率来源']
   const csv = toCsv([header,
-    ['20260906',lines[0].id,60,'confirmed','供应商报价 A',100,'CNY',0.6,'财务汇率 2026-09-20'],
-    ['20260906',lines[1].id,61,'confirmed','供应商报价 B',100,'CNY',0.6,'财务汇率 2026-09-20'],
-    ['20260906',lines[2].id,'','confirmed','供应商报价 C',100,'CNY',0.6,''],
+    ['20260906',lines[0].id,150,'confirmed','供应商报价 A',100,'RM',1.5,'财务汇率 2026-09-20'],
+    ['20260906',lines[1].id,151,'confirmed','供应商报价 B',100,'RM',1.5,'财务汇率 2026-09-20'],
+    ['20260906',lines[2].id,'','confirmed','供应商报价 C',100,'RM',1.5,''],
   ])
   const result = importCostCsv(csv,'20260906',lines)
   assert.equal(result.count,1)
   assert.equal(result.errors.length,2)
-  assert.equal(result.records[lines[0].id].amount,60)
+  assert.equal(result.records[lines[0].id].amount,150)
   assert.equal(result.records[lines[0].id].sourceAmount,100)
-  assert.equal(result.records[lines[0].id].sourceCurrency,'CNY')
+  assert.equal(result.records[lines[0].id].sourceCurrency,'RM')
   assert.equal(result.records[lines[0].id].fxEvidence,'财务汇率 2026-09-20')
 })
 
@@ -145,6 +205,7 @@ test('BOQ 分项核对需要物料、拆分规则、数量、技术记录和客�
   const first = boqGroups[0].id
   const second = boqGroups[1].id
   const state = initialCommercialState()
+  state.quoteConfirmedAt = '2026-10-09T00:00:00Z'
   state.mappings[first] = {lineIds:[line.id],confirmed:false,note:'按区域拆分',technicalConfirmed:true,technicalReview:'技术确认对应',allocations:{[line.id]:[300,0,0]}}
   state.quotes[first] = {phase1:1000,phase2:0,phase3:0,note:''}
   assert.equal(boqGroupIssues(state,first,lines).ready,true)

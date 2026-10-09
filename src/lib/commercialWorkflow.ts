@@ -3,7 +3,7 @@ import { configVersions } from './configVersions'
 export type Baseline = '20260720' | '20260906'
 export type CostStatus = 'pending' | 'estimate' | 'confirmed'
 export type CostCurrency = 'RM' | 'CNY' | 'USD'
-export type CostRecord = { amount: number | null; status: CostStatus; evidence: string; owner: string; updatedAt: string; sourceAmount?: number | null; sourceCurrency?: CostCurrency; fxToRm?: number | null; fxEvidence?: string }
+export type CostRecord = { amount: number | null; status: CostStatus; evidence: string; owner: string; updatedAt: string; sourceAmount?: number | null; sourceCurrency?: CostCurrency; fxToCny?: number | null; fxEvidence?: string; legacyAmountRm?: number | null }
 export type PhaseQuantities = [number, number, number]
 export type MappingRecord = { lineIds: string[]; confirmed: boolean; note: string; technicalConfirmed?: boolean; technicalReview?: string; quantityNote?: string; allocations?: Record<string, PhaseQuantities> }
 export type QuoteRecord = { phase1: number | null; phase2: number | null; phase3: number | null; note: string }
@@ -12,7 +12,7 @@ export type PriceCategory = 'internal' | 'purchase' | 'software' | 'project' | '
 export type PricingRules = Record<PriceCategory, number | null>
 export const defaultPricingRules = (): PricingRules => ({ internal: 3.3, purchase: 1.3, software: null, project: null, extras: 1 })
 export type CostRequest = { route: CostRoute; sentAt: string; remindedAt: string; reminderCount: number; channel: string; note: string }
-export type ExtraCost = { amount: number | null; evidence: string; status: 'pending' | 'estimate' | 'confirmed' | 'notApplicable'; reason: string; treatment?: 'cost' | 'separate'; sourceAmount?: number | null; sourceCurrency?: CostCurrency; fxToRm?: number | null; fxEvidence?: string }
+export type ExtraCost = { amount: number | null; evidence: string; status: 'pending' | 'estimate' | 'confirmed' | 'notApplicable'; reason: string; treatment?: 'cost' | 'separate'; sourceAmount?: number | null; sourceCurrency?: CostCurrency; fxToCny?: number | null; fxEvidence?: string; legacyAmountRm?: number | null }
 export const extraCostDefinitions = [
   { id: 'factoryAcceptance', name: '客户厂验费用', owner: '销售', route: 'sales', template: '主表 37 行' },
   { id: 'packaging', name: '出口包装费', owner: '销售', route: 'sales', template: '主表 43 行' },
@@ -48,9 +48,13 @@ export type CommercialState = {
   lineFactorOverrides: Record<string, number | null>
   linePriceOverrides: Record<string, number | null>
   extraPriceOverrides: Record<string, number | null>
-  draftPriceRm: number | null
+  draftPriceCny: number | null
   quoteConfirmedAt: string
   legacyDraftPriceRm: number | null
+  quoteCurrency: CostCurrency
+  quoteFxFromCny: number | null
+  quoteFxEvidence: string
+  quoteCurrencyHistory: { currency: CostCurrency; fxFromCny: number | null; fxEvidence: string; quotes: Record<string, QuoteRecord>; crmPrices: Record<string, number | null>; savedAt: string }[]
   businessTerms: string
   crmApproval: { status: 'draft' | 'submitted' | 'revision' | 'approved'; reference: string; note: string; updatedAt: string }
   crmOpportunity: string
@@ -67,7 +71,7 @@ const source = [
 ]
 export const sourceFile = (baseline: Baseline) => configVersions[source.find(x => x.id === baseline)!.index].file
 export const initialCommercialState = (): CommercialState => ({
-  baseline: '20260906', costs: {}, mappings: {}, quotes: {}, crmPrices: {}, materialOverrides: {}, requests: {}, extraCosts: {}, pricingBasis: '', pricingRules: defaultPricingRules(), lineFactorOverrides: {}, linePriceOverrides: {}, extraPriceOverrides: {}, draftPriceRm: null, quoteConfirmedAt: '', legacyDraftPriceRm: null, businessTerms: '',
+  baseline: '20260906', costs: {}, mappings: {}, quotes: {}, crmPrices: {}, materialOverrides: {}, requests: {}, extraCosts: {}, pricingBasis: '', pricingRules: defaultPricingRules(), lineFactorOverrides: {}, linePriceOverrides: {}, extraPriceOverrides: {}, draftPriceCny: null, quoteConfirmedAt: '', legacyDraftPriceRm: null, quoteCurrency: 'CNY', quoteFxFromCny: null, quoteFxEvidence: '', quoteCurrencyHistory: [], businessTerms: '',
   crmApproval: { status: 'draft', reference: '', note: '', updatedAt: '' }, crmOpportunity: '', updatedAt: '',
 })
 export function activeCommercialBaseline(projectId: string): Baseline {
@@ -78,14 +82,25 @@ export function activeCommercialBaseline(projectId: string): Baseline {
   return '20260906'
 }
 export function readCommercialState(projectId: string, baseline: Baseline = activeCommercialBaseline(projectId)): CommercialState {
+  const defaults = { ...initialCommercialState(), baseline }
   try {
-    const raw = localStorage.getItem(`presales-commercial-v2:${projectId}:${baseline}`)
-    if (raw) {
-      const data = JSON.parse(raw) as CommercialState
-      if (data.baseline === baseline) return { ...initialCommercialState(), ...data, draftPriceRm: data.quoteConfirmedAt ? data.draftPriceRm : null, legacyDraftPriceRm: data.legacyDraftPriceRm ?? (!data.quoteConfirmedAt ? data.draftPriceRm : null), pricingRules: { ...defaultPricingRules(), ...data.pricingRules }, lineFactorOverrides: data.lineFactorOverrides || {}, linePriceOverrides: data.linePriceOverrides || {}, extraPriceOverrides: data.extraPriceOverrides || {} }
+    const raw = localStorage.getItem(`presales-commercial-v3:${projectId}:${baseline}`)
+    if (raw) { const data = JSON.parse(raw) as CommercialState; if (data.baseline === baseline) return { ...defaults, ...data, quoteCurrencyHistory: data.quoteCurrencyHistory || [], pricingRules: { ...defaultPricingRules(), ...data.pricingRules } } }
+    const legacyRaw = localStorage.getItem(`presales-commercial-v2:${projectId}:${baseline}`)
+    if (legacyRaw) {
+      const data = JSON.parse(legacyRaw) as Partial<CommercialState> & { draftPriceRm?: number | null; costs?: Record<string, CostRecord & { fxToRm?: number | null }>; extraCosts?: Record<string, ExtraCost & { fxToRm?: number | null }> }
+      if (data.baseline === baseline) {
+        const migrateMoney = <T extends CostRecord | ExtraCost>(record: T): T => {
+          const sourceCurrency = record.sourceCurrency || 'RM'
+          const original = record.sourceAmount ?? (sourceCurrency === 'RM' ? record.amount : null)
+          const cny = sourceCurrency === 'CNY' ? original : null
+          return { ...record, sourceAmount: original, sourceCurrency, amount: cny, fxToCny: sourceCurrency === 'CNY' ? 1 : null, fxEvidence: sourceCurrency === 'CNY' ? record.fxEvidence : '', status: record.status === 'notApplicable' ? 'notApplicable' : cny === null ? 'pending' : record.status, legacyAmountRm: record.amount }
+        }
+        return { ...defaults, ...data, quoteCurrency: 'RM', quoteFxFromCny: null, quoteFxEvidence: '', costs: Object.fromEntries(Object.entries(data.costs || {}).map(([id,record])=>[id,migrateMoney(record)])), extraCosts: Object.fromEntries(Object.entries(data.extraCosts || {}).map(([id,record])=>[id,migrateMoney(record)])), pricingRules: { ...defaultPricingRules(), ...data.pricingRules }, lineFactorOverrides: data.lineFactorOverrides || {}, linePriceOverrides: {}, extraPriceOverrides: {}, draftPriceCny: null, quoteConfirmedAt: '', legacyDraftPriceRm: data.legacyDraftPriceRm ?? data.draftPriceRm ?? null, crmApproval: data.crmApproval?.status === 'approved' ? { ...data.crmApproval, status: 'revision', note: '计价底币已改为人民币，需重新核对报价' } : data.crmApproval || defaults.crmApproval }
+      }
     }
   } catch { /* storage unavailable */ }
-  return { ...initialCommercialState(), baseline }
+  return defaults
 }
 
 function costKind(name: string, section: string, brand: string) {
@@ -209,7 +224,7 @@ export function boqGroupIssues(state: CommercialState, groupId: string, lines: I
   const missingAmounts = !quote || [quote.phase1, quote.phase2, quote.phase3].some(value => value === null)
   return {
     selected, missingQuantity, overAllocated, missingAmounts,
-    ready: selected.length > 0 && missingQuantity.length === 0 && overAllocated.length === 0 && !!mapping?.note.trim() && !!mapping?.technicalConfirmed && !!mapping?.technicalReview?.trim() && !missingAmounts,
+    ready: selected.length > 0 && missingQuantity.length === 0 && overAllocated.length === 0 && !!mapping?.note.trim() && !!mapping?.technicalConfirmed && !!mapping?.technicalReview?.trim() && !missingAmounts && !!state.quoteConfirmedAt && quoteRateReady(state),
   }
 }
 
@@ -251,7 +266,7 @@ export function mappingIssues(state: CommercialState, lines: InventoryLine[]) {
 export function commercialReadiness(state: CommercialState, lines: InventoryLine[]) {
   const missingCosts = lines.filter(line => {
     const cost = state.costs[line.id]
-    return !cost || cost.status !== 'confirmed' || cost.amount === null || !cost.evidence.trim() || (cost.sourceCurrency && cost.sourceCurrency !== 'RM' && (!cost.fxToRm || cost.fxToRm <= 0 || !cost.fxEvidence?.trim()))
+    return !cost || cost.status !== 'confirmed' || cost.amount === null || !cost.evidence.trim() || (cost.sourceCurrency && cost.sourceCurrency !== 'CNY' && (!cost.fxToCny || cost.fxToCny <= 0 || !cost.fxEvidence?.trim()))
   })
   const issues = mappingIssues(state, lines)
   const missingPrices = boqGroups.filter(group => {
@@ -260,11 +275,11 @@ export function commercialReadiness(state: CommercialState, lines: InventoryLine
   })
   const missingExtras = extraCostDefinitions.filter(item => {
     const extra = state.extraCosts?.[item.id]
-    return !extra || (extra.status !== 'notApplicable' && (extra.status !== 'confirmed' || extra.amount === null || !extra.evidence.trim() || (extra.sourceCurrency && extra.sourceCurrency !== 'RM' && (!extra.fxToRm || extra.fxToRm <= 0 || !extra.fxEvidence?.trim())) || (item.id === 'tax' && !extra.treatment))) || (extra.status === 'notApplicable' && !extra.reason.trim())
+    return !extra || (extra.status !== 'notApplicable' && (extra.status !== 'confirmed' || extra.amount === null || !extra.evidence.trim() || (extra.sourceCurrency && extra.sourceCurrency !== 'CNY' && (!extra.fxToCny || extra.fxToCny <= 0 || !extra.fxEvidence?.trim())) || (item.id === 'tax' && !extra.treatment))) || (extra.status === 'notApplicable' && !extra.reason.trim())
   })
   return {
     missingCosts, missingPrices, missingExtras, ...issues,
-    ready: missingCosts.length === 0 && missingPrices.length === 0 && missingExtras.length === 0 && issues.unmapped.length === 0 && issues.duplicated.length === 0 && issues.unconfirmedGroups.length === 0 && !!state.crmOpportunity.trim() && !!state.pricingBasis.trim() && !!state.businessTerms.trim(),
+    ready: missingCosts.length === 0 && missingPrices.length === 0 && missingExtras.length === 0 && issues.unmapped.length === 0 && issues.duplicated.length === 0 && issues.unconfirmedGroups.length === 0 && !!state.crmOpportunity.trim() && !!state.pricingBasis.trim() && !!state.businessTerms.trim() && !!state.quoteConfirmedAt && state.draftPriceCny !== null && quoteRateReady(state),
   }
 }
 
@@ -272,10 +287,38 @@ export function amount(value: number | null) {
   return value === null ? '待补' : new Intl.NumberFormat('en-MY', { maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(value)
 }
 
-export function convertedAmount(sourceAmount: number | null, currency: CostCurrency, fxToRm: number | null) {
-  if (sourceAmount === null) return null
-  if (currency === 'RM') return sourceAmount
-  return fxToRm && fxToRm > 0 ? Math.round(sourceAmount * fxToRm * 100) / 100 : null
+export function convertedAmount(sourceAmount: number | null, currency: CostCurrency, fxToCny: number | null) {
+  if (sourceAmount === null || !Number.isFinite(sourceAmount) || sourceAmount < 0) return null
+  if (currency === 'CNY') return sourceAmount
+  const converted = sourceAmount * (fxToCny || 0)
+  return fxToCny && Number.isFinite(fxToCny) && fxToCny > 0 && Number.isFinite(converted) ? roundMoney(converted) : null
+}
+
+export function quoteRateReady(state: CommercialState) {
+  return state.quoteCurrency === 'CNY' || (!!state.quoteFxFromCny && Number.isFinite(state.quoteFxFromCny) && state.quoteFxFromCny > 0 && !!state.quoteFxEvidence.trim())
+}
+
+export function toQuoteAmount(cny: number | null, state: CommercialState) {
+  if (cny === null) return null
+  if (state.quoteCurrency === 'CNY') return cny
+  return quoteRateReady(state) ? roundMoney(cny * state.quoteFxFromCny!) : null
+}
+
+export function quotePricingTotal(state: CommercialState, pricing: ReturnType<typeof pricingBreakdown>) {
+  if (!pricing.ready || !quoteRateReady(state)) return null
+  return roundMoney(pricing.rows.reduce((sum,row)=>sum+(toQuoteAmount(row.finalTotal,state)||0),0) + pricing.extras.reduce((sum,row)=>sum+(toQuoteAmount(row.final,state)||0),0))
+}
+
+export function quoteCurrencyPatch(state: CommercialState, currency: CostCurrency, savedAt = new Date().toISOString()): Partial<CommercialState> {
+  const hasDownstreamPrices = Object.values(state.quotes).some(quote=>[quote.phase1,quote.phase2,quote.phase3].some(value=>value!==null)) || Object.keys(state.crmPrices).length > 0
+  return {
+    quoteCurrency: currency, quoteFxFromCny: null, quoteFxEvidence: '',
+    ...(hasDownstreamPrices ? {
+      quotes: {}, crmPrices: {},
+      mappings: Object.fromEntries(Object.entries(state.mappings).map(([id,mapping])=>[id,{...mapping,confirmed:false}])),
+      quoteCurrencyHistory: [...(state.quoteCurrencyHistory || []),{ currency: state.quoteCurrency, fxFromCny: state.quoteFxFromCny, fxEvidence: state.quoteFxEvidence, quotes: state.quotes, crmPrices: state.crmPrices, savedAt }],
+    } : {}),
+  }
 }
 
 export function csvEscape(value: unknown) {
@@ -309,7 +352,7 @@ export function parseCsv(input: string): string[][] {
 export function importCostCsv(input: string, baseline: Baseline, lines: InventoryLine[]) {
   const rows = parseCsv(input)
   const header = rows[0] || []
-  const required = ['配置版本','清单ID','单位成本RM','状态','依据/询价来源']
+  const required = ['配置版本','清单ID','单位成本CNY','状态','依据/询价来源']
   const missing = required.filter(name => !header.includes(name))
   if (missing.length) throw new Error(`缺少列：${missing.join('、')}`)
   const column = (row: string[], name: string) => (row[header.indexOf(name)] || '').trim()
@@ -318,26 +361,26 @@ export function importCostCsv(input: string, baseline: Baseline, lines: Inventor
   const errors: string[] = []
   const seen = new Set<string>()
   for (let i = 1; i < rows.length; i++) {
-    const row = rows[i], id = column(row,'清单ID'), raw = column(row,'单位成本RM'), rawSource = column(row,'原币单位成本')
+    const row = rows[i], id = column(row,'清单ID'), raw = column(row,'单位成本CNY'), rawSource = column(row,'原币单位成本')
     if (!id || (!raw && !rawSource)) continue
     if (seen.has(id)) { errors.push(`第 ${i + 1} 行：清单ID重复 ${id}`); continue }
     seen.add(id)
     if (column(row,'配置版本') !== baseline) { errors.push(`第 ${i + 1} 行：配置版本不一致`); continue }
     if (!validIds.has(id)) { errors.push(`第 ${i + 1} 行：未知清单ID ${id}`); continue }
-    const currency = (column(row,'原币币种') || 'RM') as CostCurrency
+    const currency = (column(row,'原币币种') || 'CNY') as CostCurrency
     if (!['RM','CNY','USD'].includes(currency)) { errors.push(`第 ${i + 1} 行：原币币种无效`); continue }
     const sourceAmount = Number(rawSource || raw)
-    const fxToRm = currency === 'RM' ? 1 : Number(column(row,'1原币折RM'))
+    const fxToCny = currency === 'CNY' ? 1 : Number(column(row,'1原币折CNY'))
     const fxEvidence = column(row,'汇率来源')
-    const amount = convertedAmount(sourceAmount,currency,fxToRm)
+    const amount = convertedAmount(sourceAmount,currency,fxToCny)
     if (!Number.isFinite(sourceAmount) || sourceAmount < 0 || amount === null || !Number.isFinite(amount)) { errors.push(`第 ${i + 1} 行：原币金额或换算率无效`); continue }
-    if (currency !== 'RM' && !fxEvidence) { errors.push(`第 ${i + 1} 行：缺少汇率来源`); continue }
-    if (raw && (!Number.isFinite(Number(raw)) || Math.abs(Number(raw)-amount)>0.01)) { errors.push(`第 ${i + 1} 行：单位成本 RM 与原币换算不一致`); continue }
+    if (currency !== 'CNY' && !fxEvidence) { errors.push(`第 ${i + 1} 行：缺少汇率来源`); continue }
+    if (raw && (!Number.isFinite(Number(raw)) || Math.abs(Number(raw)-amount)>0.01)) { errors.push(`第 ${i + 1} 行：单位成本 CNY 与原币换算不一致`); continue }
     const status = column(row,'状态')
     if (status !== 'estimate' && status !== 'confirmed') { errors.push(`第 ${i + 1} 行：状态需填 estimate 或 confirmed`); continue }
     const evidence = column(row,'依据/询价来源')
     if (!evidence) { errors.push(`第 ${i + 1} 行：缺少成本依据`); continue }
-    records[id] = { amount, sourceAmount, sourceCurrency: currency, fxToRm, fxEvidence, status, evidence, owner: column(row,'建议责任方') || lines.find(x=>x.id===id)!.owner, updatedAt: new Date().toISOString() }
+    records[id] = { amount, sourceAmount, sourceCurrency: currency, fxToCny, fxEvidence, status, evidence, owner: column(row,'建议责任方') || lines.find(x=>x.id===id)!.owner, updatedAt: new Date().toISOString() }
   }
   return { records, errors, count: Object.keys(records).length }
 }

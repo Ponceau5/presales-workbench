@@ -109,7 +109,7 @@ export function ProjectFlow({
           : "待复核";
     }
     if (commercial && commercialReady && id === 'F7')
-      return `成本 ${commercialLines.length - commercialReady.missingCosts.length}/${commercialLines.length} · ${commercial.draftPriceRm !== null && commercial.draftPriceRm !== undefined ? '初稿待复核' : '待报价'}`;
+      return `成本 ${commercialLines.length - commercialReady.missingCosts.length}/${commercialLines.length} · ${commercial.quoteConfirmedAt && commercial.draftPriceCny !== null ? '报价版已确认' : '待报价'}`;
     if (commercial && commercialReady && id === 'F8')
       return `BOQ ${boqGroups.filter(group => commercial.mappings[group.id]?.confirmed && boqGroupIssues(commercial, group.id, commercialLines).ready).length}/${boqGroups.length} 已核对`;
     if (commercialReady && id === 'F9')
