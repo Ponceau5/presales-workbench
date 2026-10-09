@@ -108,9 +108,19 @@ function setCell(xml: string, ref: string, value: string | number) {
   return xml.replace(row, updated)
 }
 
-export function fillCostTemplate(templateBytes: Uint8Array, inputs: Record<string, string | number>) {
+export function fillCostTemplate(templateBytes: Uint8Array, inputs: Record<string, string | number>, options?: { laborRateFromCny?: number }) {
   const entries = readStoredZip(templateBytes)
   const byName = new Map(entries.map(entry => [entry.name, entry]))
+  if (options?.laborRateFromCny !== undefined) {
+    const rate = options.laborRateFromCny
+    if (!Number.isFinite(rate) || rate <= 0) throw new Error('成本模板换算汇率无效')
+    const main = byName.get('xl/worksheets/sheet1.xml')
+    if (!main) throw new Error('成本模板缺少主表')
+    const xml = decoder.decode(main.bytes)
+    const formula = "'1.1 调试工时预估'!F14*35000"
+    if (!xml.includes(formula)) throw new Error('调试人工公式与预期模板不一致，请核对模板版本')
+    main.bytes = encoder.encode(xml.replace(formula, `'1.1 调试工时预估'!F14*${Math.round(35000 * rate * 100) / 100}`))
+  }
   for (const [key, value] of Object.entries(inputs)) {
     if (value === null || value === undefined) continue
     const [sheetIndex, ref] = key.split(':')

@@ -2,10 +2,11 @@ import { useMemo, useState } from 'react'
 import { Download } from 'lucide-react'
 import templateSchema from '@/lib/costTemplateSchema.json'
 import { fillCostTemplate } from '@/lib/costTemplateExport'
+import { costTemplateCurrencyIssues, costTemplateInCurrency } from '@/lib/costTemplateCurrency'
 import { costTemplatePrefill, templateCellForLine } from '@/lib/costTemplatePrefill'
 import { costTemplateChecks } from '@/lib/costTemplateChecks'
 import { templateFieldRoutes } from '@/lib/costTemplateFields'
-import { inventoryFor, type CommercialState } from '@/lib/commercialWorkflow'
+import { inventoryFor, quoteRateReady, type CommercialState, type CostCurrency } from '@/lib/commercialWorkflow'
 import type { Role } from '@/lib/workspace'
 
 type TemplateCell = { ref: string; column: number; value: string | number | null; formula?: boolean; input?: string; financeOnly?: boolean; comment?: string }
@@ -57,6 +58,7 @@ export default function CostTemplateWorkbench({ state, role, projectId, expected
   const checks = useMemo(() => costTemplateChecks(state, expectedQuoteCny, expectedCostCny, auto.cells), [state, expectedQuoteCny, expectedCostCny, auto])
   const issues = checks.filter(check=>!check.ready)
   const values = state.templateEntries || {}
+  const foreignIssues = costTemplateCurrencyIssues(values,state.quoteCurrency)
   const effective = (index: number, cell: TemplateCell) => {
     const key = `${index + 1}:${cell.ref}`
     const managed = auto.cells[key]
@@ -82,24 +84,27 @@ export default function CostTemplateWorkbench({ state, role, projectId, expected
     else delete next[lineId]
     onUpdate({ templateCategoryOverrides: next })
   }
-  async function exportWorkbook() {
+  async function exportWorkbook(currency: CostCurrency) {
     setExporting(true)
     try {
+      if (currency !== 'CNY' && !quoteRateReady(state)) throw new Error('请先填写项目人民币折外币汇率及来源')
       const response = await fetch(`${import.meta.env.BASE_URL}overseas-cost-template.xlsx`)
       if (!response.ok) throw new Error('成本模板文件未加载')
       const base = new Uint8Array(await response.arrayBuffer())
       const manual = Object.fromEntries(Object.entries(values).filter(([key])=>!auto.cells[key]?.total))
       const automatic = Object.fromEntries(Object.entries(auto.cells).filter(([,cell])=>cell.value !== null).map(([key,cell])=>[key,cell.value!]))
       const separateTax = state.extraCosts.tax?.status==='confirmed' && state.extraCosts.tax.treatment==='separate'
-      const filled = fillCostTemplate(base, { '1:A1': `${projectId}项目-评估模板`, ...manual, ...automatic, ...(separateTax ? {'1:F45':0} : {}) })
+      const title = currency === 'CNY' ? `${projectId}项目-评估模板` : `${projectId}项目-评估模板 · ${currency}；1 CNY = ${state.quoteFxFromCny} ${currency}；${state.quoteFxEvidence.trim().slice(0, 60)}`
+      const inputs = costTemplateInCurrency({ '1:A1': title, ...manual, ...automatic, ...(separateTax ? {'1:F45':0} : {}) }, currency, currency === 'CNY' ? null : state.quoteFxFromCny)
+      const filled = fillCostTemplate(base, inputs, currency === 'CNY' ? undefined : { laborRateFromCny: state.quoteFxFromCny! })
       const blob = new Blob([Uint8Array.from(filled)], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = `${projectId}-海外成本估算模板-${state.baseline}${draft?'-待补草稿':''}.xlsx`
+      link.download = `${projectId}-海外成本版-${currency}-${state.baseline}${draft?'-待补草稿':''}.xlsx`
       link.click()
       URL.revokeObjectURL(url)
-      onMessage(`已导出原格式 Excel；自动带入 ${Object.keys(automatic).length} 项。仍有 ${pendingCategories} 个成本分类待补、${auto.unassigned.length} 笔待归类、${issues.length} 项金额或测算条件待核对。${separateTax?'税费按商务条件单列，主表成本 F45 记 0；税费测算页仍保留原公式。':''}公式在 Excel 打开时重算。`)
+      onMessage(`已导出 ${currency} 原格式成本 Excel；自动带入 ${Object.keys(automatic).length} 项。仍有 ${pendingCategories} 个成本分类待补、${auto.unassigned.length} 笔待归类、${issues.length} 项金额或测算条件待核对。${separateTax?'税费按商务条件单列，主表成本 F45 记 0；税费测算页仍保留原公式。':''}公式在 Excel 打开时重算。`)
     } catch (error) { onMessage(error instanceof Error ? error.message : '成本模板导出失败') }
     finally { setExporting(false) }
   }
@@ -128,7 +133,8 @@ export default function CostTemplateWorkbench({ state, role, projectId, expected
   }
 
   return <section className="cw-card cw-template-workbench">
-    <div className="cw-card-head"><div><span className="cw-eyebrow">海外成本估算模板 V6 · 原表填写</span><h3>按模板逐页收集成本，直接输出同版式 Excel</h3></div><button className="cw-button primary" disabled={exporting} onClick={()=>void exportWorkbook()}><Download size={15}/>{exporting?'正在生成…':draft?'导出待补草稿 Excel':'导出原格式 Excel'}</button></div>
+    <div className="cw-card-head"><div><span className="cw-eyebrow">海外成本估算模板 V6 · 原表填写</span><h3>按模板逐页收集成本，导出人民币或项目外币版</h3></div><div className="cw-actions"><button className="cw-button primary" disabled={exporting} onClick={()=>void exportWorkbook('CNY')}><Download size={15}/>{exporting?'正在生成…':'导出成本版 · CNY Excel'}</button>{state.quoteCurrency!=='CNY'&&<button className="cw-button" disabled={exporting||!quoteRateReady(state)||foreignIssues.length>0} onClick={()=>void exportWorkbook(state.quoteCurrency)}><Download size={15}/>导出成本版 · {state.quoteCurrency} Excel</button>}</div></div>
+    <p className="cw-note">{state.quoteCurrency==='CNY'?'如需外币版，请先在上方选择项目输出币种并填写汇率。':foreignIssues.length?foreignIssues[0]:quoteRateReady(state)?`外币版按 1 CNY = ${state.quoteFxFromCny} ${state.quoteCurrency} 换算；人民币版保留内部本位金额。`:'请先在上方填写项目汇率及来源，外币版导出才可用。'}{draft?' 当前有待补或待核项，导出文件会标为草稿。':''}</p>
     <p className="cw-note">保留原表 7 个页签、说明、税率参考和单元格位置。岗位确认的成本会实时汇入对应栏目；有歧义的费用留给销售核对。税费若经财务确认由商务条件单列，导出主表 F45 记 0，税费测算页仍保留原公式。原表示例金额已清空，税率、税务口径和清关判断需由负责岗位复核。</p>
     <div className="cw-template-tools"><strong>自动带入 {Object.values(auto.cells).filter(cell=>cell.value!==null).length} 项</strong><span>待补或核对分类 {pendingCategories} 项 · 待人工归类 {auto.unassigned.length} 笔 · 金额核对 {issues.length} 项 · 模板主表单位 CNY</span>{draft&&<small>当前成本仍在收集或核对，导出文件是草稿，不能直接用于定价确认。</small>}</div>
     {checks.length>0&&<div className="cw-template-checks"><strong>工作台金额 ↔ 模板明细核对</strong><div>{checks.map(check=><p key={check.id} className={check.ready?'ok':'bad'}><b>{check.ready?'已核对':'待处理'} · {check.label}</b><span>{check.detail}</span></p>)}</div></div>}
