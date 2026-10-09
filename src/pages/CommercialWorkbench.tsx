@@ -371,7 +371,7 @@ export default function CommercialWorkbench({ stage, projectId, role }: { stage:
           <RoleTemplateFields route={activeRoute} state={state} role={role} canEdit={role==='销售'||activeRoute===myRoute} onUpdate={update}/>
         </div>}
       </section>
-      <section className="cw-card cw-f7-currency"><div className="cw-card-head"><div><span className="cw-eyebrow">第 4 步 · 项目输出币种</span><h3>成本先按人民币确认，再选择是否导出外币版</h3></div>{mark(quoteRateReady(state)?'换算信息已齐':'待填项目汇率',quoteRateReady(state)?'ok':'bad')}</div>
+      <section className="cw-card cw-f7-currency"><div className="cw-card-head"><div><span className="cw-eyebrow">第 4 步 · 汇总成本版</span><h3>成本先按人民币确认，再选择是否导出外币版</h3></div>{mark(quoteRateReady(state)?'换算信息已齐':'待填项目汇率',quoteRateReady(state)?'ok':'bad')}</div>
         <div className="cw-quote-currency-grid"><label className="cw-field">项目输出币种<select value={state.quoteCurrency} disabled={role!=='销售'} onChange={e=>changeQuoteCurrency(e.target.value as CostCurrency)}><option value="CNY">CNY · 仅人民币</option><option value="RM">RM · 马币</option><option value="USD">USD · 美元</option></select></label>
           {state.quoteCurrency !== 'CNY' && <><label className="cw-field">1 CNY = 多少 {state.quoteCurrency}{numberField(state.quoteFxFromCny,changeQuoteRate,`人民币折${state.quoteCurrency}项目汇率`,role!=='销售')}</label><label className="cw-field">项目汇率来源及日期<input disabled={role!=='销售'} value={state.quoteFxEvidence} onChange={e=>update({quoteFxEvidence:e.target.value})} placeholder="财务确认的项目汇率、日期"/></label></>}</div>
         <p className="cw-note">成本输入和毛利计算始终以人民币为本位。这里选择的币种用于外币成本版和后续对外报价；导出的人民币版始终保留 CNY。{state.quoteCurrencyHistory.length>0?` 已保留 ${state.quoteCurrencyHistory.length} 次旧报价金额备份；更换币种或汇率后须重填下游金额。`:''}</p>
