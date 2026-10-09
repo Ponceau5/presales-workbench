@@ -97,14 +97,20 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
   const inbox = handoffs.filter((item) => item.owner === account && !item.outdated);
   const demoImported = documents.some((item) => item.title === "Rack Central · BMS Technical Specification");
   const selectedSource = documents.find((item) => item.id === selectedDocument);
-  const canExtractPage = Boolean(selectedSource && model?.configured && selectedPage >= 1 &&
+  const canExtractPage = Boolean(selectedSource && selectedPage >= 1 &&
     selectedPage <= selectedSource.page_count &&
-    !visibleRows.some((row) => row.page === selectedPage && row.status !== "candidate"));
+    (model?.configured
+      ? !visibleRows.some((row) => row.page === selectedPage && row.status !== "candidate")
+      : !visibleRows.length));
   async function extractSelectedPage() {
     await act(async () => {
-      await localApi(`/api/documents/${selectedDocument}/extract-live`, json({ pages: [selectedPage] }));
+      if (model?.configured) {
+        await localApi(`/api/documents/${selectedDocument}/extract-live`, json({ pages: [selectedPage] }));
+      } else {
+        await localApi(`/api/documents/${selectedDocument}/extract`, { method: "POST" });
+      }
       setSelectedRequirement("");
-    }, `第 ${selectedPage} 页候选已生成，请进入核对清单`);
+    }, model?.configured ? `第 ${selectedPage} 页候选已生成，请进入核对清单` : "已扫描整份文件并生成关键词候选，请逐条核对");
   }
   function narrowQueue(nextQuery: string, nextStatus: string) {
     setQuery(nextQuery);
@@ -155,7 +161,7 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
   );
 
   return (
-    <section className="local-review">
+    <section className={`local-review${account === "software" && mode === "ask" ? " software-chat-mode" : ""}`}>
       <header className="local-review-header">
         <h3>{account === "software" ? "F5 · 软件技术支持" : "来源与要求"}</h3>
         <span>{documents.length} 份文件 · {requirements.length} 条要求 · {inbox.filter((i) => i.status === "pending").length} 项待答复</span>

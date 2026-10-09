@@ -158,6 +158,27 @@ class WorkflowApiTest(unittest.TestCase):
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0]["quotes"], ["BMS shall provide alarm history retrieval."])
 
+    def test_offline_question_returns_exact_source_without_model_claim(self):
+        source = "BMS shall provide alarm history retrieval.\nVideo replay scope is to be confirmed."
+        uploaded = self.client.post(
+            "/api/projects/OFFLINE-TEST/documents", headers=self.auth("software"),
+            data={"title": "BMS sample", "version": "V1"},
+            files={"file": ("sample.txt", source.encode(), "text/plain")},
+        )
+        document_id = uploaded.json()["id"]
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "MOONSHOT_API_KEY": ""}):
+            response = self.client.post(
+                f"/api/documents/{document_id}/ask", headers=self.auth("software"),
+                json={"page": 1, "question": "告警历史有什么要求？"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        answer = response.json()
+        self.assertEqual(answer["provider"], "local")
+        self.assertEqual(answer["model"], "本地来源检索")
+        self.assertTrue(answer["quotes"])
+        self.assertTrue(all(quote in source for quote in answer["quotes"]))
+        self.assertIn("核对", answer["answer"])
+
     def test_deepseek_extraction_labels_candidates(self):
         source = "BMS shall provide alarm history retrieval for operators."
         uploaded = self.client.post(
