@@ -4,6 +4,8 @@ React + TypeScript + Vite 本地原型。全部项目共用 F1–F13 流程、�
 
 项目流程的路线、岗位和写回/接收门槛集中在 `src/lib/workflowEngine.ts`。F2 可并行交付 F3/F4/F5/F6；F14 贯穿全流程。每份工件单独交接和失效，详细测试版边界见 Obsidian《测试版架构与流程引擎方案》。
 
+不同岗位同事并行修改的文件边界、分支和 PR 检查见 [CONTRIBUTING_ROLES.md](./CONTRIBUTING_ROLES.md)。当前先验证软件 F5 独立界面，其他岗位暂不按环节拆代码。
+
 公开 Git 仓库只管理源码与演示逻辑。本机 `public/project-data/`、`public/shared/` 中的真实项目资料和预览不提交到 GitHub；克隆仓库后相关预览需要从授权的本地资料目录重新准备。Mock 操作、路由和结构化测试不依赖这些大文件。此仓库目前未附开源许可证，公开可读不等于获得复制、修改或再分发授权。
 
 ## 本机协作 API 切片
@@ -21,13 +23,17 @@ python3 -m venv .venv
 
 接口文档为 http://127.0.0.1:8000/docs 。演示账号与前端相同，统一密码 `demo2026`。先启动 API，再从前端登录，F5 默认进入本机资料核对；无 API 时默认进入浏览器 Mock 演示。Rack Central 可点击「导入本机 BMS 原件」读取已放在 `public/project-data/rcjm1/` 的实际 PDF，不会把原件提交进 Git；原件缺失时可手动上传 PDF/UTF-8 文件。随后执行候选提取、核对原文、派发问题；接收岗位在「我的任务」收到待答复事项，进入同一来源要求后提交意见；软件产品在任务页看到待处理答复，复核后完成批准与写回。浏览器仅在当前标签页会话保存本机 API token。数据默认写入被 Git 忽略的 `server/.local/`，可用 `PRESALES_DATA_DIR` 指向其他本地目录。停止服务用终端 Ctrl+C。
 
-### 接入 Kimi API
+### 接入 DeepSeek / Kimi API
+
+软件 F5 以会话为主入口：“提问 → 查看逐字原文引用 → 提取候选 → 人工核对与交接”。默认优先使用服务端配置的 DeepSeek Key；未配置 DeepSeek 而配置了 Kimi Key 时使用 Kimi。真实模型问答和提取只读取所选原文页的前 12,000 字符。无 Key 时仍可提问，但仅用本地检索定位原文，不生成软件应答结论；关键词候选扫描整份文件。问答不会自动修改工件，只有核对清单中的人工批准才能写回。
+
+DeepSeek Key 在 [DeepSeek 开放平台](https://platform.deepseek.com/)创建。将 `.env.example` 复制为仓库根目录的 `.env.local`，填写 `DEEPSEEK_API_KEY`；默认接口为 `https://api.deepseek.com`，模型为 `deepseek-flash`。如需固定供应商，设置 `PRESALES_MODEL_PROVIDER=deepseek` 或 `kimi`；默认 `auto`。修改后重启本机 API，再用设置页“测试服务端连接”。不要把 Key 粘贴到聊天、浏览器连接设置或提交到 GitHub。
 
 向企业的 Kimi 开放平台管理员确认 API 账号及可用额度，再到 [Kimi 开放平台](https://platform.kimi.com/) 的 API Keys 页面创建 API Key。所需的是**开放平台 API Key**，不是网页登录密码或浏览器 Cookie。企业聊天账号与 API 权限可能分开，需管理员确认。
 
-在仓库根目录复制 `.env.example` 为 `.env.local`，只填写 `MOONSHOT_API_KEY`。默认模型为 `kimi-k2.6`，接口为 `https://api.moonshot.cn/v1`；企业分配其他模型或专用地址时修改对应项。`.env.local` 已被 Git 忽略；不要把 Key 发到聊天、写入源码或提交 GitHub。修改后重启本机 API，前端无需填写 Key。可在 http://127.0.0.1:8000/docs 登录后调用 `POST /api/model/test`：它仅发送固定短句 `Reply with ok.`，不发送项目原文。
+如使用 Kimi，在 `.env.local` 填写 `MOONSHOT_API_KEY`。默认模型为 `kimi-k2.6`，接口为 `https://api.moonshot.cn/v1`；企业分配其他模型或专用地址时修改对应项。`.env.local` 已被 Git 忽略。服务端 `POST /api/model/test` 只发送固定短句 `Reply with ok.`，不发送项目原文。
 
-软件账号进入项目 F5，选择原文文件及页码，点击「Kimi 提取选定页」。服务端只发送所选页面的前 12,000 字符，每页最多接收 12 条候选；引用必须逐字匹配原文才会入库。软件产品仍需逐条核对、纠正、交接、批准后才能写回。提取失败保留原有候选；无 Key 时可用关键词提取演示。其他节点、全局对话和全部历史文档尚未接真实模型。
+软件账号进入项目 F5，选择原文文件及页码，在问答区提问；点击回答中的引用可展开并定位原文。配置模型后可点击「提取本页要求」，无 Key 时可点击「生成关键词候选」。模型回答和候选的引用必须逐字匹配原文；每页最多接收 12 条模型候选。软件产品仍需逐条核对、纠正、交接、批准后才能写回。提取失败保留原有候选。其他节点、全局对话和全部历史文档尚未接真实模型。
 
 ```sh
 cd server
@@ -90,7 +96,7 @@ Rack Central 有 1,856 个真实文件索引约 6.24GB；公共资料独立分�
 
 ## 浏览器 Mock / Live 连接测试
 
-浏览器 Mock 无 Key 可演示原有节点业务。设置中的 Live 只测试 OpenAI-compatible chat/completions 连接，业务仍是 Mock；测试只发送 `Reply with ok.`，不发送业务资料。F5「Kimi 提取选定页」是独立的服务端真实模型业务入口，使用 `.env.local` 中的 Key。本次没有真实 Key，尚未进行供应商连通与模型输出实测。
+浏览器 Mock 无 Key 可演示原有节点业务。设置中的 Live 只测试 OpenAI-compatible chat/completions 连接，业务仍是 Mock；测试只发送 `Reply with ok.`，不发送业务资料。F5 问答与提取是独立的服务端真实模型业务入口，使用 `.env.local` 中的 Key。本仓库不包含真实 Key，供应商连通与模型输出需在配置后实测。
 
 浏览器直连 Key 仅适合 prototype；正式版必须使用服务端 runtime。Key 不写入代码、文档、持久存储或审计。
 
