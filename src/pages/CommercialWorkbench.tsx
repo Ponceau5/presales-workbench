@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { CircleAlert, Download, FileSpreadsheet, GitCompareArrows, Search, Bell, Send } from 'lucide-react'
+import CostTemplateWorkbench from '@/components/CostTemplateWorkbench'
 import {
   allocationFor, amount, boqGroupIssues, boqGroups, commercialReadiness, convertedAmount, crmMappingIssues, crmPriceKey, extraCostDefinitions,
   importCostCsv, inventoryFor, pricingBreakdown, quoteCurrencyPatch, quotePricingTotal, quoteRateReady, readCommercialState, routeFor, mappingIssues, sourceFile, suggestedLines, toCsv, toQuoteAmount,
@@ -50,7 +51,7 @@ function routeForRole(role: Role): CostRoute {
   if (role === '销售') return 'sales'
   return 'internal'
 }
-const costSteps = ['技术给配置清单', '销售分类发起成本协作', '各岗位按人民币回填成本与依据', '销售确认并导出成本版', '销售选报价币种、填写分类原则，Agent 生成建议价', '销售逐项调整，核对成本与报价', '销售确认并导出报价版']
+const costSteps = ['技术给配置清单', '销售分类发起成本协作', '各岗位按人民币回填成本与依据', '逐页核对模板并导出成本 Excel', '销售选报价币种、填写分类原则，Agent 生成建议价', '销售逐项调整，核对成本与报价', '销售确认并导出报价版']
 const priceCategoryLabels: Record<PriceCategory, string> = { internal: '自产产品', purchase: '外购设备', software: '软件', project: '施工 / 服务', extras: '补充费用' }
 
 export default function CommercialWorkbench({ stage, projectId, role }: { stage: string; projectId: string; role: Role }) {
@@ -351,10 +352,11 @@ export default function CommercialWorkbench({ stage, projectId, role }: { stage:
           </div>})}</div></div>}
         </div>}
       </section>
-      <section className="cw-card cw-f7-summary"><div className="cw-card-head"><div><span className="cw-eyebrow">第 4 步 · 成本版</span><h3>销售核对并输出成本底稿</h3></div><button className="cw-button" disabled={!allCostsReady} onClick={exportCostBaseline}><FileSpreadsheet size={15}/>导出成本版 CSV</button></div>
+      <section className="cw-card cw-f7-summary"><div className="cw-card-head"><div><span className="cw-eyebrow">第 4 步 · 成本版</span><h3>销售核对并输出成本底稿</h3></div><button className="cw-button" disabled={!allCostsReady} onClick={exportCostBaseline}><FileSpreadsheet size={15}/>导出逐行核对 CSV</button></div>
         <div className="cw-summary-grid"><div><span>配置清单已确认</span><strong>{confirmedCosts.length} / {lines.length}</strong></div><div><span>补充费用已处理</span><strong>{extraCostDefinitions.length-readiness.missingExtras.length} / {extraCostDefinitions.length}</strong></div><div><span>成本合计 CNY</span><strong>{allCostsReady?amount(directCost+extraTotal):'待补齐'}</strong></div></div>
         <p className="cw-note">成本合计仅在所有项目已确认或注明不适用后可用；税费选择“商务条件单列”时不计入毛利成本。</p>
       </section>
+      <CostTemplateWorkbench state={state} role={role} projectId={projectId} onUpdate={update} onMessage={setMessage}/>
       <section className="cw-card cw-f7-currency"><div className="cw-card-head"><div><span className="cw-eyebrow">项目设置 · 对外报价币种</span><h3>先用人民币算价格，再换算成客户要求的币种</h3></div>{mark(quoteRateReady(state)?'报价换算已齐':'待填报价汇率',quoteRateReady(state)?'ok':'bad')}</div>
         <div className="cw-quote-currency-grid"><label className="cw-field">客户要求的报价币种<select value={state.quoteCurrency} disabled={role!=='销售'} onChange={e=>changeQuoteCurrency(e.target.value as CostCurrency)}><option value="CNY">CNY · 人民币</option><option value="RM">RM · 马币</option><option value="USD">USD · 美元</option></select></label>
           {state.quoteCurrency !== 'CNY' && <><label className="cw-field">1 CNY = 多少 {state.quoteCurrency}{numberField(state.quoteFxFromCny,changeQuoteRate,`人民币折${state.quoteCurrency}报价汇率`,role!=='销售')}</label><label className="cw-field">报价汇率来源及日期<input disabled={role!=='销售'} value={state.quoteFxEvidence} onChange={e=>update({quoteFxEvidence:e.target.value})} placeholder="财务确认的项目报价汇率、日期"/></label></>}</div>

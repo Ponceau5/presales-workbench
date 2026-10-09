@@ -43,6 +43,7 @@ export type CommercialState = {
   materialOverrides: Record<string, string>
   requests: Partial<Record<CostRoute, CostRequest>>
   extraCosts: Record<string, ExtraCost>
+  templateEntries: Record<string, string | number>
   pricingBasis: string
   pricingRules: PricingRules
   lineFactorOverrides: Record<string, number | null>
@@ -71,7 +72,7 @@ const source = [
 ]
 export const sourceFile = (baseline: Baseline) => configVersions[source.find(x => x.id === baseline)!.index].file
 export const initialCommercialState = (): CommercialState => ({
-  baseline: '20260906', costs: {}, mappings: {}, quotes: {}, crmPrices: {}, materialOverrides: {}, requests: {}, extraCosts: {}, pricingBasis: '', pricingRules: defaultPricingRules(), lineFactorOverrides: {}, linePriceOverrides: {}, extraPriceOverrides: {}, draftPriceCny: null, quoteConfirmedAt: '', legacyDraftPriceRm: null, quoteCurrency: 'CNY', quoteFxFromCny: null, quoteFxEvidence: '', quoteCurrencyHistory: [], businessTerms: '',
+  baseline: '20260906', costs: {}, mappings: {}, quotes: {}, crmPrices: {}, materialOverrides: {}, requests: {}, extraCosts: {}, templateEntries: {}, pricingBasis: '', pricingRules: defaultPricingRules(), lineFactorOverrides: {}, linePriceOverrides: {}, extraPriceOverrides: {}, draftPriceCny: null, quoteConfirmedAt: '', legacyDraftPriceRm: null, quoteCurrency: 'CNY', quoteFxFromCny: null, quoteFxEvidence: '', quoteCurrencyHistory: [], businessTerms: '',
   crmApproval: { status: 'draft', reference: '', note: '', updatedAt: '' }, crmOpportunity: '', updatedAt: '',
 })
 export function activeCommercialBaseline(projectId: string): Baseline {
@@ -85,7 +86,7 @@ export function readCommercialState(projectId: string, baseline: Baseline = acti
   const defaults = { ...initialCommercialState(), baseline }
   try {
     const raw = localStorage.getItem(`presales-commercial-v3:${projectId}:${baseline}`)
-    if (raw) { const data = JSON.parse(raw) as CommercialState; if (data.baseline === baseline) return { ...defaults, ...data, quoteCurrencyHistory: data.quoteCurrencyHistory || [], pricingRules: { ...defaultPricingRules(), ...data.pricingRules } } }
+    if (raw) { const data = JSON.parse(raw) as CommercialState; if (data.baseline === baseline) return { ...defaults, ...data, templateEntries: data.templateEntries || {}, quoteCurrencyHistory: data.quoteCurrencyHistory || [], pricingRules: { ...defaultPricingRules(), ...data.pricingRules } } }
     const legacyRaw = localStorage.getItem(`presales-commercial-v2:${projectId}:${baseline}`)
     if (legacyRaw) {
       const data = JSON.parse(legacyRaw) as Partial<CommercialState> & { draftPriceRm?: number | null; costs?: Record<string, CostRecord & { fxToRm?: number | null }>; extraCosts?: Record<string, ExtraCost & { fxToRm?: number | null }> }
