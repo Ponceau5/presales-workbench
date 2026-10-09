@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { useWorkbench } from "@/state/workbench";
 import { localApi, localApiReady } from "@/lib/localApi";
+import type { ProjectProgress } from "@/lib/projectProgress";
 import { useSearchParams } from "react-router";
 
-type Document = { id: string; title: string; version: string; filename: string; created_at: string };
+type Document = { id: string; title: string; version: string; filename: string; created_at: string; page_count: number };
 type Requirement = {
   id: string; document_id: string; page: number; quote: string; text: string;
   status: string; revision: number; source_version: string; source_title: string;
   disposition: string | null; customer_answer: string | null;
+  extractor: "mock" | "kimi"; extraction_run_id: string | null;
 };
 type Handoff = {
   id: string; project_id: string; requirement_id: string; owner: string;
@@ -37,8 +39,11 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
   const [handoffs, setHandoffs] = useState<Handoff[]>([]);
   const [facts, setFacts] = useState<Fact[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
+  const [progress, setProgress] = useState<ProjectProgress | null>(null);
+  const [model, setModel] = useState<{ configured: boolean; model: string } | null>(null);
   const [selectedDocument, setSelectedDocument] = useState("");
   const [selectedRequirement, setSelectedRequirement] = useState(requestedRequirement || "");
+  const [selectedPage, setSelectedPage] = useState(1);
   const [source, setSource] = useState("");
   const [title, setTitle] = useState(projectId === "RCJM1" ? "Rack Central · BMS Technical Specification" : "项目来源文件");
   const [version, setVersion] = useState("V1");
@@ -56,18 +61,22 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
-    const [docs, rows, transfers, published, history] = await Promise.all([
+    const [docs, rows, transfers, published, history, nextProgress, modelStatus] = await Promise.all([
       localApi<Document[]>(`/api/projects/${projectId}/documents`),
       localApi<Requirement[]>(`/api/projects/${projectId}/requirements`),
       localApi<Handoff[]>(`/api/projects/${projectId}/handoffs`),
       localApi<Fact[]>(`/api/projects/${projectId}/facts`),
       localApi<Event[]>(`/api/projects/${projectId}/events`),
+      localApi<ProjectProgress>(`/api/projects/${projectId}/progress`),
+      localApi<{ configured: boolean; model: string }>("/api/model/status"),
     ]);
     setDocuments(docs);
     setRequirements(rows);
     setHandoffs(transfers);
     setFacts(published);
     setEvents(history);
+    setProgress(nextProgress);
+    setModel(modelStatus);
     setSelectedDocument((current) => current || rows.find((row) => row.id === requestedRequirement)?.document_id || docs[0]?.id || "");
     setSelectedRequirement((current) => current || rows[0]?.id || "");
   }, [projectId, requestedRequirement]);
@@ -85,6 +94,7 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
   const related = handoffs.filter((item) => item.requirement_id === current?.id && !item.outdated);
   const inbox = handoffs.filter((item) => item.owner === account && !item.outdated);
   const demoImported = documents.some((item) => item.title === "Rack Central · BMS Technical Specification");
+  const selectedSource = documents.find((item) => item.id === selectedDocument);
   function narrowQueue(nextQuery: string, nextStatus: string) {
     setQuery(nextQuery);
     setStatusFilter(nextStatus);
@@ -98,6 +108,7 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
   useEffect(() => {
     if (!current || !connected) return;
     let active = true;
+    queueMicrotask(() => setSelectedPage(current.page));
     void localApi<{ text: string }>(`/api/documents/${current.document_id}/pages/${current.page}`)
       .then((page) => {
         if (!active) return;
@@ -136,10 +147,23 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
     <section className="local-review">
       <header className="local-review-header">
         <h3>来源与要求</h3>
-        <span>{documents.length} 份文件 · {requirements.length} 条候选 · {inbox.filter((i) => i.status === "pending").length} 项待答复</span>
+        <span>{documents.length} 份文件 · {requirements.length} 条要求 · {inbox.filter((i) => i.status === "pending").length} 项待答复</span>
         <button className="btn secondary" onClick={() => void refresh()} disabled={busy}>刷新</button>
       </header>
       {message && <p className="local-review-message" role="status">{message}</p>}
+      {progress && <div className="local-review-progress" aria-label="F5 服务端进度">
+        <strong>{progress.status}</strong>
+        <span>{progress.next_action}</span>
+        <div>
+          <span>来源 {progress.document_count}</span>
+          <span>待核对 {progress.counts.candidate}</span>
+          <span>待答复 {progress.pending_handoffs}</span>
+          <span>待写回 {progress.counts.approved}</span>
+          <span>已写回 {progress.counts.published}</span>
+          {progress.stale_count > 0 && <span>版本失效 {progress.stale_count}</span>}
+        </div>
+        {progress.last_run && <small>最近执行：{progress.last_run.model} · 第 {progress.last_run.pages} 页 · {progress.last_run.status === "completed" ? `原文匹配 ${progress.last_run.candidate_count} 条，跳过 ${progress.last_run.skipped_count} 条` : progress.last_run.error || "处理中"}</small>}
+      </div>}
       {projectId === "RCJM1" && !demoImported && (account === "sales" || account === "software" || account === "pm") && (
         <div className="local-review-demo-import">
           <span>Rack Central · BMS Technical Specification</span>
@@ -189,8 +213,16 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
           <option value="">选择来源文件</option>
           {documents.map((doc) => <option value={doc.id} key={doc.id}>{doc.title} · {doc.version} · {doc.filename}</option>)}
         </select>
-        {selectedDocument && account === "software" && <button className="btn primary" disabled={busy || visibleRows.some((row) => row.status !== "candidate")} onClick={() => void act(() => localApi(`/api/documents/${selectedDocument}/extract${visibleRows.length ? "?force=true" : ""}`, { method: "POST" }), "已生成关键词候选；请逐条对照原文核对")}>{visibleRows.length ? "重新提取未核对候选" : "Mock 提取候选"}</button>}
-        <small>关键词提取仅生成候选，不代表全文覆盖</small>
+        {selectedDocument && account === "software" && <>
+          <label className="local-review-page">页码 <input aria-label="模型提取页码" type="number" min={1} max={selectedSource?.page_count || undefined} value={selectedPage} onChange={(event) => setSelectedPage(Number(event.target.value))} /></label>
+          <button className="btn primary" disabled={busy || !model?.configured || selectedPage < 1 || selectedPage > (selectedSource?.page_count || 0) || visibleRows.some((row) => row.page === selectedPage && row.status !== "candidate")} onClick={() => void act(async () => {
+            const result = await localApi<{ candidate_count: number; skipped_count: number }>(`/api/documents/${selectedDocument}/extract-live`, json({ pages: [selectedPage] }));
+            setSelectedRequirement("");
+            return result;
+          }, `Kimi 已提取第 ${selectedPage} 页候选；请对照原文逐条核对`)}>Kimi 提取选定页</button>
+          <button className="btn secondary" disabled={busy || visibleRows.some((row) => row.status !== "candidate")} onClick={() => void act(() => localApi(`/api/documents/${selectedDocument}/extract${visibleRows.length ? "?force=true" : ""}`, { method: "POST" }), "已生成关键词候选；请逐条对照原文核对")}>关键词提取</button>
+        </>}
+        {selectedDocument && account === "software" && <small>{model?.configured ? `${model.model} · 每次仅处理选定页` : "Kimi 未配置：管理员需在服务端设置 MOONSHOT_API_KEY"}</small>}
       </div>
       <div className="local-review-grid">
         <nav aria-label="来源要求队列" className="local-review-queue">
@@ -202,7 +234,7 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
             </select>
           </div>
           {queueRows.map((row) => <button className={row.id === current?.id ? "selected" : ""} key={row.id} onClick={() => setSelectedRequirement(row.id)}>
-            <span>第 {row.page} 页 · {statusLabel[row.status] || row.status}</span>
+            <span>第 {row.page} 页 · {statusLabel[row.status] || row.status} · {row.extractor === "kimi" ? "Kimi" : "关键词"}</span>
             <strong>{row.quote}</strong>
           </button>)}
           {!visibleRows.length && <p>此版本尚无候选。上传并执行提取后，可在这里逐条核对。</p>}
@@ -216,6 +248,7 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
           <h4>人工处理</h4>
           {current ? <>
             <p>来源：{current.source_title} · {current.source_version} · 修订 {current.revision}</p>
+            <p>提取：{current.extractor === "kimi" ? `Kimi · 运行 ${current.extraction_run_id?.slice(0, 8)}` : "关键词"}；候选必须核对原文后才能进入判断。</p>
             <label>核对后的要求<textarea rows={4} value={requirementText} readOnly={account !== "software"} onChange={(event) => setRequirementText(event.target.value)} /></label>
             {account === "software" && <>
               <label>处理说明<input value={note} onChange={(event) => setNote(event.target.value)} placeholder="说明核对依据或判断" /></label>

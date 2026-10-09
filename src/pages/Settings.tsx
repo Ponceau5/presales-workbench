@@ -1,6 +1,7 @@
 import { reviewKey } from "@/lib/projectReview";
 import { canManageConnection } from "@/lib/accounts";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { localApi, localApiReady } from "@/lib/localApi";
 import {
   Cable,
   ShieldAlert,
@@ -25,6 +26,30 @@ export default function Settings() {
     null,
   );
   const [reset, setReset] = useState(false);
+  const [serverModel, setServerModel] = useState<{ configured: boolean; model: string } | null>(null);
+  const [serverTesting, setServerTesting] = useState(false);
+  const [serverResult, setServerResult] = useState<string | null>(null);
+  const serverReady = localApiReady(state.accountId);
+  useEffect(() => {
+    if (!serverReady) return;
+    let active = true;
+    void localApi<{ configured: boolean; model: string }>("/api/model/status")
+      .then((value) => { if (active) setServerModel(value); })
+      .catch(() => { if (active) setServerModel(null); });
+    return () => { active = false; };
+  }, [serverReady]);
+  async function testServerModel() {
+    setServerTesting(true);
+    setServerResult(null);
+    try {
+      await localApi("/api/model/test", { method: "POST" });
+      setServerResult("Kimi 连接成功");
+    } catch (error) {
+      setServerResult(error instanceof Error ? error.message : "连接失败");
+    } finally {
+      setServerTesting(false);
+    }
+  }
   function update(patch: Partial<LLMSettings>) {
     if (!canManageConnection(state.role)) return;
     const settings = { ...s, ...patch };
@@ -194,17 +219,24 @@ export default function Settings() {
           </Section>
         </div>
         <div>
+          <Section title="服务端 Kimi">
+            <p>{!serverReady ? "本机 API 未连接" : serverModel?.configured ? `${serverModel.model} · 已配置` : "未配置 API Key"}</p>
+            <button className="btn secondary" disabled={!serverModel?.configured || serverTesting} onClick={() => void testServerModel()}>
+              {serverTesting ? "测试中" : "测试服务端连接"}
+            </button>
+            {serverResult && <p role="status">{serverResult}</p>}
+            <p className="muted small">F5 原文提取使用服务端 Key；只在 `.env.local` 配置。</p>
+          </Section>
           <Section title="浏览器 Key 仅适用于原型">
             <div className="security-note">
               <ShieldAlert size={26} />
               <h3>正式版使用服务端 Runtime</h3>
               <p>
-                浏览器直连可暴露 Key，且可能遇到 CORS 限制。正式版将 Key
-                放在服务端，通过 FastAPI + LangGraph / AG-UI 执行项目任务。
+                浏览器直连可暴露 Key，且可能遇到 CORS 限制。F5 已通过本机
+                API 使用服务端 Key；其他业务执行仍待接入。
               </p>
               <p>
-                当前仅测试 ping，不发送任何项目资料。Mock
-                业务闭环不调用外部云服务。
+                上方浏览器连接测试只发送固定短句，不发送项目资料。
               </p>
               <Tag tone="amber">PROTOTYPE ONLY</Tag>
             </div>

@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
@@ -12,9 +13,125 @@ TEMP = tempfile.TemporaryDirectory()
 os.environ["PRESALES_DATA_DIR"] = TEMP.name
 
 from app import app, db  # noqa: E402
+from kimi import KimiError  # noqa: E402
 
 
 class WorkflowApiTest(unittest.TestCase):
+    def test_server_model_connection_uses_no_project_source(self):
+        without_key = self.client.post("/api/model/test", headers=self.auth("software"))
+        self.assertEqual(without_key.status_code, 502)
+        with patch("app.test_connection") as probe:
+            result = self.client.post("/api/model/test", headers=self.auth("software"))
+        self.assertEqual(result.status_code, 200)
+        self.assertTrue(result.json()["connected"])
+        probe.assert_called_once_with()
+
+    def test_kimi_extract_is_source_grounded_and_never_overwrites_review(self):
+        source = "BMS platform shall provide alarm history retrieval for operator review.\n"
+        uploaded = self.client.post(
+            "/api/projects/KIMI-TEST/documents",
+            headers=self.auth("software"),
+            data={"title": "BMS sample", "version": "V1"},
+            files={"file": ("sample.txt", source.encode(), "text/plain")},
+        )
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        document_id = uploaded.json()["id"]
+        endpoint = f"/api/documents/{document_id}/extract-live"
+        self.assertEqual(self.client.post(
+            endpoint, headers=self.auth("dev"), json={"pages": [1]},
+        ).status_code, 403)
+        self.assertEqual(self.client.post(
+            endpoint, headers=self.auth("software"), json={"pages": [1]},
+        ).status_code, 503)
+        quote = source.strip()
+        with patch.dict(os.environ, {"MOONSHOT_API_KEY": "test-placeholder"}), patch(
+            "app.extract_requirements", return_value=[
+                {"quote": quote, "requirement": "支持告警历史检索"},
+                {"quote": "fabricated source", "requirement": "虚构的要求"},
+            ],
+        ):
+            extracted = self.client.post(
+                endpoint, headers=self.auth("software"), json={"pages": [1]},
+            )
+            self.assertEqual(extracted.status_code, 200, extracted.text)
+            self.assertEqual(extracted.json()["candidate_count"], 1)
+            self.assertEqual(extracted.json()["skipped_count"], 1)
+            rows = self.client.get(
+                "/api/projects/KIMI-TEST/requirements", headers=self.auth("software"),
+            ).json()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["extractor"], "kimi")
+            self.assertEqual(rows[0]["quote"], quote)
+            progress = self.client.get(
+                "/api/projects/KIMI-TEST/progress", headers=self.auth("software"),
+            ).json()
+            self.assertEqual(progress["status"], "待核对原文")
+            self.assertEqual(progress["last_run"]["candidate_count"], 1)
+            verified = self.client.post(
+                f"/api/requirements/{rows[0]['id']}/verify",
+                headers=self.auth("software"),
+                json={"expected_revision": 1, "requirement": rows[0]["text"],
+                      "note": "逐字核对来源"},
+            )
+            self.assertEqual(verified.status_code, 200, verified.text)
+            self.assertEqual(self.client.post(
+                endpoint, headers=self.auth("software"), json={"pages": [1]},
+            ).status_code, 409)
+
+    def test_kimi_failure_preserves_existing_candidates(self):
+        source = "BMS platform shall provide alarm history retrieval for operator review.\n"
+        uploaded = self.client.post(
+            "/api/projects/KIMI-FAIL/documents", headers=self.auth("software"),
+            data={"title": "BMS sample", "version": "V1"},
+            files={"file": ("sample.txt", source.encode(), "text/plain")},
+        )
+        document_id = uploaded.json()["id"]
+        self.client.post(f"/api/documents/{document_id}/extract",
+                         headers=self.auth("software"))
+        with patch.dict(os.environ, {"MOONSHOT_API_KEY": "test-placeholder"}), patch(
+            "app.extract_requirements", side_effect=KimiError("模型临时不可用"),
+        ):
+            response = self.client.post(
+                f"/api/documents/{document_id}/extract-live",
+                headers=self.auth("software"), json={"pages": [1]},
+            )
+            self.assertEqual(response.status_code, 502)
+        rows = self.client.get(
+            "/api/projects/KIMI-FAIL/requirements", headers=self.auth("software"),
+        ).json()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["extractor"], "mock")
+        progress = self.client.get(
+            "/api/projects/KIMI-FAIL/progress", headers=self.auth("software"),
+        ).json()
+        self.assertEqual(progress["last_run"]["status"], "failed")
+
+    def test_kimi_empty_result_preserves_existing_candidates(self):
+        uploaded = self.client.post(
+            "/api/projects/KIMI-EMPTY/documents", headers=self.auth("software"),
+            data={"title": "BMS sample", "version": "V1"},
+            files={"file": ("sample.txt", b"alarm server requirement must be reviewed", "text/plain")},
+        )
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        document_id = uploaded.json()["id"]
+        before = self.client.post(
+            f"/api/documents/{document_id}/extract", headers=self.auth("software"),
+        ).json()["requirements"]
+        self.assertTrue(before)
+        with patch.dict(os.environ, {"MOONSHOT_API_KEY": "test-placeholder"}), patch(
+            "app.extract_requirements", return_value=[],
+        ):
+            result = self.client.post(
+                f"/api/documents/{document_id}/extract-live",
+                headers=self.auth("software"), json={"pages": [1]},
+            )
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json()["candidate_count"], 0)
+        after = self.client.get(
+            "/api/projects/KIMI-EMPTY/requirements", headers=self.auth("software"),
+        ).json()
+        self.assertEqual({row["id"] for row in after}, {row["id"] for row in before})
+
     def test_local_demo_source_import_is_explicit_and_idempotent(self):
         source = Path(TEMP.name) / "sample.pdf"
         writer = PdfWriter()

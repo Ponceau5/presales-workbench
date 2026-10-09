@@ -8,13 +8,15 @@ import {
   rackStageIssues,
   rackIssues,
 } from "@/lib/portfolio";
-import { useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Link, useSearchParams } from "react-router";
 import { ArrowRight, Check, Focus } from "lucide-react";
 import { useWorkbench } from "@/state/workbench";
 import { pipelineSteps } from "@/lib/presales";
 import { stagesForProject } from "@/lib/projectStages";
 import { stageFlow } from "@/lib/workflowEngine";
+import { localApi, localApiReady } from "@/lib/localApi";
+import type { ProjectProgress } from "@/lib/projectProgress";
 import { roleWork } from "@/lib/workspace";
 import { Tag } from "@/components/WorkbenchUI";
 const positions: Record<string, [number, number]> = {
@@ -66,6 +68,21 @@ export function ProjectFlow({
   const [selected, setSelected] = useState(initialStage);
   const guide = stageGuide[selected];
   const [focused, setFocused] = useState(false);
+  const [serviceProgress, setServiceProgress] = useState<ProjectProgress | null>(null);
+  const projectId = referenceProjectId || state.currentProjectId;
+  const serviceReady = localApiReady(state.accountId);
+  useEffect(() => {
+    if (!serviceReady) return;
+    let active = true;
+    const refresh = () => {
+      void localApi<ProjectProgress>(`/api/projects/${projectId}/progress`)
+        .then((progress) => { if (active) setServiceProgress(progress); })
+        .catch(() => { if (active) setServiceProgress(null); });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 15000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [projectId, serviceReady]);
   const step = pipelineSteps.find((s) => s.id === selected)!;
   const stages = stagesForProject(referenceProjectId || state.currentProjectId);
   const def = stages.find((d) => d.id === selected);
@@ -81,7 +98,6 @@ export function ProjectFlow({
     ? rackIssues.filter((i) => (rackStageIssues[selected] || []).includes(i.id))
     : [];
   const status = (id: string) => {
-    const projectId = referenceProjectId || state.currentProjectId;
     const incoming = state.deliveries.filter(
       (d) =>
         d.projectId === projectId &&
@@ -92,6 +108,8 @@ export function ProjectFlow({
       return "输入版本失效";
     if (incoming.some((d) => d.status === "pending" && !d.outdated))
       return "有交接待接收";
+    if (id === "F5" && serviceReady && serviceProgress?.project_id === projectId)
+      return serviceProgress.status;
     if (id === "F5") {
       const rows = Object.values(
         readProjectReview(referenceProjectId || state.currentProjectId, state)
@@ -254,11 +272,23 @@ export function ProjectFlow({
           打开工作区
           <ArrowRight size={14} />
         </Link>
-        <NodeAgent
+        {selected === "F5" && serviceReady && serviceProgress ? (
+          <div className="inspector-service-progress">
+            <strong>F5 · 来源核对进度</strong>
+            <div>
+              <span>待核对 <b>{serviceProgress.counts.candidate}</b></span>
+              <span>待答复 <b>{serviceProgress.pending_handoffs}</b></span>
+              <span>待写回 <b>{serviceProgress.counts.approved}</b></span>
+              <span>已写回 <b>{serviceProgress.counts.published}</b></span>
+            </div>
+            <p>{serviceProgress.next_action}</p>
+            {serviceProgress.last_run && <small>最近提取：{serviceProgress.last_run.model} · 第 {serviceProgress.last_run.pages} 页 · {serviceProgress.last_run.status === "completed" ? `${serviceProgress.last_run.candidate_count} 条原文匹配` : serviceProgress.last_run.error || "处理中"}</small>}
+          </div>
+        ) : <NodeAgent
           key={selected}
           stage={selected}
-          projectId={referenceProjectId || state.currentProjectId}
-        />
+          projectId={projectId}
+        />}
         <details className="stage-guide" open>
           <summary>工作步骤</summary>
           <ol>
@@ -309,7 +339,7 @@ export function ProjectFlow({
             </div>
           ))}
         </div>
-        <div className="inspector-section">
+        {!(selected === "F5" && serviceReady && serviceProgress) && <div className="inspector-section">
           <small>当前事项</small>
           <p>
             {referenceProjectId
@@ -328,7 +358,7 @@ export function ProjectFlow({
                     ? "确认依据已记录，继续复核成果。"
                     : def?.question}
           </p>
-        </div>
+        </div>}
         <div className="inspector-section">
           <small>交接要求</small>
           <p>{guide?.review}</p>

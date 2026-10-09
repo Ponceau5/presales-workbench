@@ -1,8 +1,4 @@
-"""Local test API for source-grounded F5 review and cross-role handoffs.
-
-This is a separate mock backend slice. The existing React workspace still uses
-its browser store; no customer-facing publication or external model call occurs.
-"""
+"""Local API for source-grounded F5 review and cross-role handoffs."""
 
 from __future__ import annotations
 
@@ -20,7 +16,24 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
+from kimi import KimiError, extract_requirements, model_name, test_connection
 
+def load_local_env() -> None:
+    """Load only known server settings from the untracked local env file."""
+    path = Path(__file__).resolve().parents[1] / ".env.local"
+    if not path.exists():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        if name in {"MOONSHOT_API_KEY", "MOONSHOT_MODEL", "MOONSHOT_BASE_URL"}:
+            os.environ.setdefault(name, value.strip().strip('"').strip("'"))
+
+
+load_local_env()
 DATA_DIR = Path(os.environ.get("PRESALES_DATA_DIR", Path(__file__).parent / ".local"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "workbench.sqlite3"
@@ -112,6 +125,20 @@ def init_db() -> None:
               action TEXT NOT NULL, target TEXT NOT NULL, detail TEXT NOT NULL,
               created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS agent_runs (
+              id TEXT PRIMARY KEY, project_id TEXT NOT NULL, document_id TEXT NOT NULL,
+              actor TEXT NOT NULL, mode TEXT NOT NULL, model TEXT NOT NULL,
+              pages TEXT NOT NULL, status TEXT NOT NULL, candidate_count INTEGER NOT NULL DEFAULT 0,
+              skipped_count INTEGER NOT NULL DEFAULT 0, error TEXT,
+              started_at TEXT NOT NULL, finished_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS ix_agent_runs_project
+              ON agent_runs(project_id, started_at);
+            CREATE TABLE IF NOT EXISTS candidate_sources (
+              requirement_id TEXT PRIMARY KEY, run_id TEXT NOT NULL,
+              FOREIGN KEY(requirement_id) REFERENCES requirements(id),
+              FOREIGN KEY(run_id) REFERENCES agent_runs(id)
+            );
             """
         )
 
@@ -164,6 +191,21 @@ def login(payload: Login):
     SESSIONS[token] = payload.username
     return {"token": token, "account": payload.username,
             "role": ROLE_BY_ACCOUNT[payload.username]}
+
+
+@app.get("/api/model/status")
+def model_status(account: str = Depends(actor)):
+    return {"configured": bool(os.environ.get("MOONSHOT_API_KEY", "").strip()),
+            "provider": "Kimi", "model": model_name()}
+
+
+@app.post("/api/model/test")
+def model_test(account: str = Depends(actor)):
+    try:
+        test_connection()
+    except KimiError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    return {"connected": True, "provider": "Kimi", "model": model_name()}
 
 
 def pages(path: Path) -> list[str]:
@@ -271,8 +313,9 @@ async def upload_document(
 def list_documents(project_id: str, account: str = Depends(actor)):
     with db() as connection:
         return [dict(row) for row in connection.execute(
-            "SELECT id, title, version, filename, sha256, actor, created_at FROM documents "
-            "WHERE project_id=? ORDER BY created_at DESC", (project_id,),
+            "SELECT d.id, d.title, d.version, d.filename, d.sha256, d.actor, d.created_at, "
+            "(SELECT COUNT(*) FROM document_pages p WHERE p.document_id=d.id) AS page_count "
+            "FROM documents d WHERE d.project_id=? ORDER BY d.created_at DESC", (project_id,),
         )]
 
 
@@ -334,6 +377,10 @@ def extract(document_id: str, force: bool = False, account: str = Depends(actor)
         if existing and force:
             if any(row["status"] != "candidate" for row in existing):
                 raise HTTPException(status_code=409, detail="已有人工处理记录，不能覆盖候选；请上传新版本")
+            connection.execute(
+                "DELETE FROM candidate_sources WHERE requirement_id IN "
+                "(SELECT id FROM requirements WHERE document_id=?)", (document_id,),
+            )
             connection.execute("DELETE FROM requirements WHERE document_id=?", (document_id,))
             log(connection, document["project_id"], account, "mock_reextracted",
                 document_id, f"重新提取未核对候选 {len(existing)} 条")
@@ -367,12 +414,116 @@ def extract(document_id: str, force: bool = False, account: str = Depends(actor)
         return {"mode": "mock", "coverage": "keyword_only", "requirements": found}
 
 
+class LiveExtraction(BaseModel):
+    pages: list[int] = Field(min_length=1, max_length=3)
+
+
+@app.post("/api/documents/{document_id}/extract-live")
+def extract_live(document_id: str, payload: LiveExtraction,
+                 account: str = Depends(actor)):
+    require_account(account, {"software"})
+    if not os.environ.get("MOONSHOT_API_KEY", "").strip():
+        raise HTTPException(status_code=503, detail="请先在服务端配置 MOONSHOT_API_KEY")
+    selected = sorted(set(payload.pages))
+    if len(selected) != len(payload.pages):
+        raise HTTPException(status_code=422, detail="页码不能重复")
+    with db() as connection:
+        document = row_or_404(connection, "documents", document_id)
+        source_pages = stored_pages(connection, document)
+        if any(page < 1 or page > len(source_pages) for page in selected):
+            raise HTTPException(status_code=422, detail="页码超出文件范围")
+        placeholders = ",".join("?" for _ in selected)
+        prior = connection.execute(
+            f"SELECT status FROM requirements WHERE document_id=? AND page IN ({placeholders})",
+            (document_id, *selected),
+        ).fetchall()
+        if any(row["status"] != "candidate" for row in prior):
+            raise HTTPException(status_code=409, detail="所选页已有人工处理记录；请上传新版本")
+        run_id = str(uuid4())
+        connection.execute(
+            "INSERT INTO agent_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (run_id, document["project_id"], document_id, account, "live",
+             model_name(), ",".join(str(page) for page in selected), "running",
+             0, 0, None, now(), None),
+        )
+    candidates = []
+    skipped = 0
+    try:
+        for page in selected:
+            original = source_pages[page - 1]
+            excerpt = original[:12000]
+            for item in extract_requirements(excerpt, page):
+                quote, requirement = item.get("quote"), item.get("requirement")
+                if (not isinstance(quote, str) or not isinstance(requirement, str)
+                        or len(quote.strip()) < 8 or len(quote) > 1000
+                        or len(requirement.strip()) < 3 or quote not in excerpt):
+                    skipped += 1
+                    continue
+                if any(row["page"] == page and row["quote"] == quote for row in candidates):
+                    continue
+                candidates.append({"id": str(uuid4()), "project_id": document["project_id"],
+                                   "document_id": document_id, "page": page,
+                                   "quote": quote, "text": requirement.strip()[:1000],
+                                   "status": "candidate", "revision": 1,
+                                   "disposition": None, "customer_answer": None,
+                                   "reviewer": None, "note": None, "updated_at": now()})
+        with db() as connection:
+            latest = connection.execute(
+                f"SELECT status FROM requirements WHERE document_id=? AND page IN ({placeholders})",
+                (document_id, *selected),
+            ).fetchall()
+            if any(row["status"] != "candidate" for row in latest):
+                raise HTTPException(status_code=409, detail="人工处理已开始；本次候选未覆盖现有记录")
+            if candidates:
+                connection.execute(
+                    "DELETE FROM candidate_sources WHERE requirement_id IN "
+                    f"(SELECT id FROM requirements WHERE document_id=? AND page IN ({placeholders}))",
+                    (document_id, *selected),
+                )
+                connection.execute(
+                    f"DELETE FROM requirements WHERE document_id=? AND page IN ({placeholders})",
+                    (document_id, *selected),
+                )
+                for item in candidates:
+                    connection.execute(
+                        "INSERT INTO requirements VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        tuple(item.values()),
+                    )
+                    connection.execute(
+                        "INSERT INTO candidate_sources VALUES (?,?)", (item["id"], run_id),
+                    )
+            connection.execute(
+                "UPDATE agent_runs SET status='completed', candidate_count=?, "
+                "skipped_count=?, finished_at=? WHERE id=?",
+                (len(candidates), skipped, now(), run_id),
+            )
+            log(connection, document["project_id"], account, "kimi_extracted", run_id,
+                f"来源 {document_id}；页 {selected}；原文匹配候选 {len(candidates)} 条；跳过 {skipped} 条")
+    except Exception as error:
+        detail = error.args[0] if isinstance(error, KimiError) else "提取未完成，原有要求未改变"
+        with db() as connection:
+            connection.execute(
+                "UPDATE agent_runs SET status='failed', error=?, finished_at=? WHERE id=?",
+                (detail, now(), run_id),
+            )
+        if isinstance(error, HTTPException):
+            raise
+        raise HTTPException(status_code=502, detail=detail) from error
+    return {"run_id": run_id, "mode": "live", "model": model_name(),
+            "coverage": "selected_pages_only", "pages": selected,
+            "candidate_count": len(candidates), "skipped_count": skipped,
+            "requirements": candidates}
+
+
 @app.get("/api/projects/{project_id}/requirements")
 def list_requirements(project_id: str, account: str = Depends(actor)):
     with db() as connection:
         return [dict(row) for row in connection.execute(
-            "SELECT r.*, d.version AS source_version, d.title AS source_title "
+            "SELECT r.*, d.version AS source_version, d.title AS source_title, "
+            "CASE WHEN cs.run_id IS NULL THEN 'mock' ELSE 'kimi' END AS extractor, "
+            "cs.run_id AS extraction_run_id "
             "FROM requirements r JOIN documents d ON d.id=r.document_id "
+            "LEFT JOIN candidate_sources cs ON cs.requirement_id=r.id "
             "WHERE r.project_id=? ORDER BY d.created_at DESC, r.page", (project_id,),
         )]
 
@@ -563,6 +714,67 @@ def facts(project_id: str, account: str = Depends(actor)):
             "WHERE r.project_id=? AND f.active=1 ORDER BY f.published_at DESC",
             (project_id,),
         )]
+
+
+@app.get("/api/projects/{project_id}/progress")
+def project_progress(project_id: str, account: str = Depends(actor)):
+    """Authoritative progress for the service-backed F5 review slice."""
+    with db() as connection:
+        documents = connection.execute(
+            "SELECT id, title, version, created_at FROM documents WHERE project_id=? "
+            "ORDER BY created_at DESC, rowid DESC", (project_id,),
+        ).fetchall()
+        latest_by_title = {}
+        for document in documents:
+            latest_by_title.setdefault(document["title"], document)
+        latest_ids = [row["id"] for row in latest_by_title.values()]
+        counts = {status: 0 for status in
+                  ("candidate", "verified", "rejected", "approved", "published", "stale")}
+        pending_handoffs = 0
+        if latest_ids:
+            placeholders = ",".join("?" for _ in latest_ids)
+            for row in connection.execute(
+                f"SELECT status, COUNT(*) AS count FROM requirements "
+                f"WHERE document_id IN ({placeholders}) GROUP BY status", latest_ids,
+            ):
+                counts[row["status"]] = row["count"]
+            pending_handoffs = connection.execute(
+                "SELECT COUNT(*) FROM handoffs h JOIN requirements r ON r.id=h.requirement_id "
+                f"WHERE r.document_id IN ({placeholders}) AND h.status='pending' "
+                "AND h.outdated=0", latest_ids,
+            ).fetchone()[0]
+        stale = connection.execute(
+            "SELECT COUNT(*) FROM requirements WHERE project_id=? AND status='stale'",
+            (project_id,),
+        ).fetchone()[0]
+        run = connection.execute(
+            "SELECT id, model, pages, status, candidate_count, skipped_count, "
+            "error, started_at, finished_at FROM agent_runs WHERE project_id=? "
+            "ORDER BY started_at DESC, rowid DESC LIMIT 1", (project_id,),
+        ).fetchone()
+    if not documents:
+        label, next_action = "待来源文件", "上传有版本的规格书或软件需求文件"
+    elif run and run["status"] == "running":
+        label, next_action = "Agent 提取中", "等待选定页提取结束"
+    elif counts["candidate"]:
+        label, next_action = "待核对原文", f"软件产品核对 {counts['candidate']} 条候选与原文"
+    elif pending_handoffs:
+        label, next_action = "待岗位答复", f"接收岗位处理 {pending_handoffs} 个问题"
+    elif counts["verified"] or counts["rejected"]:
+        label, next_action = "待专业判断", "软件产品复核答复、澄清和客户应答"
+    elif counts["approved"]:
+        label, next_action = "待写回", f"软件产品写回 {counts['approved']} 条已批准应答"
+    elif counts["published"]:
+        label, next_action = "已写回", "按新版本变化复核受影响要求"
+    else:
+        label, next_action = "待提取", "选择来源文件及页码，执行 Kimi 或关键词提取"
+    return {"project_id": project_id, "stage": "F5", "status": label,
+            "next_action": next_action, "document_count": len(documents),
+            "latest_sources": [{"title": row["title"], "version": row["version"]}
+                               for row in latest_by_title.values()],
+            "counts": counts, "pending_handoffs": pending_handoffs,
+            "stale_count": stale, "last_run": dict(run) if run else None,
+            "scope": "F5 service-backed source review"}
 
 
 @app.get("/api/tasks")

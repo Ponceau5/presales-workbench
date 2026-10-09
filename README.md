@@ -8,7 +8,7 @@ React + TypeScript + Vite 本地原型。全部项目共用 F1–F13 流程、�
 
 ## 本机协作 API 切片
 
-`server/app.py` 提供 FastAPI 测试服务：上传 PDF/UTF-8 文件、按页查看原文、Mock 关键词提取候选要求、软件产品核对、销售/研发/解决方案交接答复、应答批准与写回，以及新版本对旧要求的局部失效。它使用 SQLite 保存本机演示数据，单文件上限 100 MB。F5 页面「本机资料核对」已接入这组接口；原有浏览器 Mock 工件与这组 SQLite 记录目前是两套独立演示数据，不能互相视为已写回。这仍不是正式认证或完整文档解析。
+`server/app.py` 提供 FastAPI 测试服务：上传 PDF/UTF-8 文件、按页查看原文、关键词或 Kimi 提取候选要求、软件产品核对、销售/研发/解决方案交接答复、应答批准与写回，以及新版本对旧要求的局部失效。它使用 SQLite 保存本机演示数据，单文件上限 100 MB。F5 页面已接入这组接口，项目流程图的 F5 进度也读取服务端；其他环节及原有浏览器 Mock 工件仍使用浏览器演示数据，不能互相视为已写回。这仍不是正式认证或完整文档解析。
 
 先按下方「运行」步骤克隆仓库，再在第二个终端启动本机 API：
 
@@ -21,12 +21,20 @@ python3 -m venv .venv
 
 接口文档为 http://127.0.0.1:8000/docs 。演示账号与前端相同，统一密码 `demo2026`。先启动 API，再从前端登录，F5 默认进入本机资料核对；无 API 时默认进入浏览器 Mock 演示。Rack Central 可点击「导入本机 BMS 原件」读取已放在 `public/project-data/rcjm1/` 的实际 PDF，不会把原件提交进 Git；原件缺失时可手动上传 PDF/UTF-8 文件。随后执行候选提取、核对原文、派发问题；接收岗位在「我的任务」收到待答复事项，进入同一来源要求后提交意见；软件产品在任务页看到待处理答复，复核后完成批准与写回。浏览器仅在当前标签页会话保存本机 API token。数据默认写入被 Git 忽略的 `server/.local/`，可用 `PRESALES_DATA_DIR` 指向其他本地目录。停止服务用终端 Ctrl+C。
 
+### 接入 Kimi API
+
+向企业的 Kimi 开放平台管理员确认 API 账号及可用额度，再到 [Kimi 开放平台](https://platform.kimi.com/) 的 API Keys 页面创建 API Key。所需的是**开放平台 API Key**，不是网页登录密码或浏览器 Cookie。企业聊天账号与 API 权限可能分开，需管理员确认。
+
+在仓库根目录复制 `.env.example` 为 `.env.local`，只填写 `MOONSHOT_API_KEY`。默认模型为 `kimi-k2.6`，接口为 `https://api.moonshot.cn/v1`；企业分配其他模型或专用地址时修改对应项。`.env.local` 已被 Git 忽略；不要把 Key 发到聊天、写入源码或提交 GitHub。修改后重启本机 API，前端无需填写 Key。可在 http://127.0.0.1:8000/docs 登录后调用 `POST /api/model/test`：它仅发送固定短句 `Reply with ok.`，不发送项目原文。
+
+软件账号进入项目 F5，选择原文文件及页码，点击「Kimi 提取选定页」。服务端只发送所选页面的前 12,000 字符，每页最多接收 12 条候选；引用必须逐字匹配原文才会入库。软件产品仍需逐条核对、纠正、交接、批准后才能写回。提取失败保留原有候选；无 Key 时可用关键词提取演示。其他节点、全局对话和全部历史文档尚未接真实模型。
+
 ```sh
 cd server
 PYTHONDONTWRITEBYTECODE=1 ../.venv/bin/python -m unittest -v test_app.py
 ```
 
-Mock 提取扫描所有可解析页面，按页限量生成技术关键词候选（最多 200 条），并标明 `coverage=keyword_only`；不保证全文覆盖或语义正确。导入时缓存页文本，候选可按页定位原文、搜索与按状态筛选。未核对候选可重新提取；已有人工处理记录时必须上传新版本，不能覆盖复核结果。原文核对与客户应答批准是两次不同的动作。正式版需以项目成员身份、数据库事务、对象存储、后台解析及 LangGraph/AG-UI 替换本机演示实现。
+Mock 提取扫描所有可解析页面，按页限量生成技术关键词候选（最多 200 条），并标明 `coverage=keyword_only`；不保证全文覆盖或语义正确。导入时缓存页文本，候选可按页定位原文、搜索与按状态筛选。未核对候选可重新提取；已有人工处理记录时必须上传新版本，不能覆盖复核结果。原文核对与客户应答批准是两次不同的动作。正式版需以项目成员身份、数据库事务、对象存储、后台解析及可选的 LangGraph/AG-UI 扩展本机实现。
 
 ## 运行
 
@@ -80,9 +88,9 @@ npm run test
 
 Rack Central 有 1,856 个真实文件索引约 6.24GB；公共资料独立分类。目录、搜索、筛选、50 行分页支持浏览，规格书定位 PDF 页，点表与配置表在对应节点“资料”页查看。没有复制全部文件或实现 CAD 自动解析。
 
-## Mock / Live
+## 浏览器 Mock / Live 连接测试
 
-Mock 无 Key 可完整演示，本地规则输出候选与核对项，未实现真实 LLM 业务执行。Live 仅测试 OpenAI-compatible chat/completions 连接，业务仍是 Mock。设置 provider、model、baseURL、Key，测试只发送 `Reply with ok.`，不发送业务资料；有超时和错误处理。本次没有真实 Key，未验证真实供应商连接。
+浏览器 Mock 无 Key 可演示原有节点业务。设置中的 Live 只测试 OpenAI-compatible chat/completions 连接，业务仍是 Mock；测试只发送 `Reply with ok.`，不发送业务资料。F5「Kimi 提取选定页」是独立的服务端真实模型业务入口，使用 `.env.local` 中的 Key。本次没有真实 Key，尚未进行供应商连通与模型输出实测。
 
 浏览器直连 Key 仅适合 prototype；正式版必须使用服务端 runtime。Key 不写入代码、文档、持久存储或审计。
 

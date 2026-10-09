@@ -1077,5 +1077,19 @@
 .local-review-history-grid article { padding: 8px 0; border-top: 1px solid var(--line); font-size: 12px; }
 .local-review-history-grid article p { margin: 5px 0; }
 .local-review-history-grid article small { color: var(--text-secondary); }
+.local-review-progress { display:grid;grid-template-columns:auto 1fr;gap:6px 14px;align-items:center;padding:11px 14px;border-bottom:1px solid var(--line);font-size:12px; }
+.local-review-progress > strong { font-size:14px;color:var(--text); }
+.local-review-progress > span,.local-review-progress > small { color:var(--text-secondary); }
+.local-review-progress > div { grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px 16px;font-variant-numeric:tabular-nums; }
+.local-review-progress > small { grid-column:1/-1; }
+.local-review-page { display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:12px; }
+.local-review-page input { width:58px;height:32px;padding:4px 7px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--text); }
+.inspector-service-progress { border-top:1px solid var(--line);padding:13px 0;font-size:12px; }
+.inspector-service-progress > strong { font-size:13px; }
+.inspector-service-progress > div { display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:11px 0; }
+.inspector-service-progress > div span { color:var(--text-secondary); }
+.inspector-service-progress b { color:var(--text);font-weight:600;margin-left:5px;font-variant-numeric:tabular-nums; }
+.inspector-service-progress p { margin:8px 0;color:var(--text); }
+.inspector-service-progress small { color:var(--text-secondary); }
 @media (max-width: 1150px) { .local-review-grid { grid-template-columns: minmax(160px, 28%) 1fr; } .local-review-actions { grid-column: 1 / -1; border-top: 1px solid var(--line); max-height: none; } }
 @media (max-width: 700px) { .local-review-grid, .local-review-history-grid { display: block; } .local-review-grid > * { border-right: 0; border-bottom: 1px solid var(--line); } .local-review-queue { max-height: 180px; } .local-review-inbox > div { flex-wrap: wrap; } .local-review-history-grid > section + section { border-left: 0; border-top: 1px solid var(--line); } }
