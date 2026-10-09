@@ -380,6 +380,37 @@ class SourceQuestion(BaseModel):
     question: str = Field(min_length=2, max_length=500)
 
 
+def local_source_answer(source: str, page: int, question: str) -> dict:
+    """Find exact source passages for an unconfigured, offline demonstration."""
+    groups = {
+        "告警": ("alarm", "event", "告警"),
+        "视频": ("video", "cctv", "视频"),
+        "历史": ("history", "historical", "record", "历史"),
+        "接口": ("interface", "protocol", "opc", "bacnet", "modbus", "接口"),
+        "服务器": ("server", "storage", "服务器"),
+        "冗余": ("redund", "backup", "冗余"),
+        "软件": ("software", "platform", "system", "bms", "dcom", "软件"),
+        "研发": ("interface", "protocol", "server", "integration", "development"),
+        "澄清": ("alarm", "video", "interface", "integration", "shall"),
+        "要求": ("shall", "must", "require", "specification"),
+    }
+    terms = [term for key, words in groups.items() if key in question for term in words]
+    terms += re.findall(r"[A-Za-z][A-Za-z0-9-]{2,}", question.lower())
+    passages = [part.strip() for part in source.splitlines() if len(part.strip()) >= 15]
+    ranked = sorted(enumerate(passages), key=lambda item: (
+        -sum(term in item[1].lower() for term in terms), item[0]))
+    matches = [passage for _, passage in ranked if any(term in passage.lower() for term in terms)]
+    quotes = (matches or [passage for _, passage in ranked])[:2]
+    quotes = [quote[:300] for quote in quotes]
+    if not quotes:
+        quotes = [source.strip()[:300]]
+    found = bool(matches)
+    answer = (f"第 {page} 页定位到 {len(quotes)} 处相关原文。请展开引用核对上下文，再决定是否纳入应答或发起澄清。"
+              if found else f"第 {page} 页未定位到与提问直接匹配的表述。下面是本页原文片段，不能据此认定已满足要求。")
+    return {"answer": answer, "quotes": quotes,
+            "follow_up": "核对原文与候选要求；不明确的范围交给责任人确认"}
+
+
 @app.get("/api/documents/{document_id}/questions")
 def list_source_questions(document_id: str, page: int, account: str = Depends(actor)):
     with db() as connection:
@@ -397,8 +428,6 @@ def ask_source(document_id: str, payload: SourceQuestion,
                account: str = Depends(actor)):
     require_account(account, {"software"})
     config = model_config()
-    if not config.configured:
-        raise HTTPException(status_code=503, detail="请先在服务端配置模型 API Key")
     with db() as connection:
         document = row_or_404(connection, "documents", document_id)
         source_pages = stored_pages(connection, document)
@@ -411,17 +440,22 @@ def ask_source(document_id: str, payload: SourceQuestion,
             "ORDER BY created_at DESC, rowid DESC LIMIT 3",
             (document_id, payload.page),
         ).fetchall()
-    try:
-        result = answer_about_source(source_pages[payload.page - 1], payload.page,
-                                     payload.question.strip(),
-                                     [(row["question"], row["answer"]) for row in reversed(previous)])
-    except ModelError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
+    if config.configured:
+        try:
+            result = answer_about_source(source_pages[payload.page - 1], payload.page,
+                                         payload.question.strip(),
+                                         [(row["question"], row["answer"]) for row in reversed(previous)])
+        except ModelError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+    else:
+        result = local_source_answer(source_pages[payload.page - 1], payload.page,
+                                     payload.question.strip())
     record = {"id": str(uuid4()), "project_id": document["project_id"],
               "document_id": document_id, "page": payload.page, "actor": account,
               "question": payload.question.strip(), "answer": result["answer"],
               "quotes": result["quotes"], "follow_up": result["follow_up"],
-              "provider": config.provider, "model": config.model, "created_at": now()}
+              "provider": config.provider if config.configured else "local",
+              "model": config.model if config.configured else "本地来源检索", "created_at": now()}
     with db() as connection:
         connection.execute(
             "INSERT INTO agent_questions VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -431,7 +465,7 @@ def ask_source(document_id: str, payload: SourceQuestion,
              record["provider"], record["model"], record["created_at"]),
         )
         log(connection, document["project_id"], account, "source_question", record["id"],
-            f"来源 {document_id}；第 {payload.page} 页；模型 {config.model}；引用 {len(record['quotes'])} 条")
+            f"来源 {document_id}；第 {payload.page} 页；方式 {record['model']}；引用 {len(record['quotes'])} 条")
     return record
 
 

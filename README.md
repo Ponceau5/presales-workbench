@@ -25,7 +25,7 @@ python3 -m venv .venv
 
 ### 接入 DeepSeek / Kimi API
 
-软件 F5 已有“询问 Agent → 查看逐字原文引用 → 提取候选 → 人工核对与交接”的入口。默认优先使用服务端配置的 DeepSeek Key；未配置 DeepSeek 而配置了 Kimi Key 时使用 Kimi。问答和提取只读取所选原文页的前 12,000 字符，回答不会自动修改工件；只有核对清单中的人工批准才能写回。
+软件 F5 以会话为主入口：“提问 → 查看逐字原文引用 → 提取候选 → 人工核对与交接”。默认优先使用服务端配置的 DeepSeek Key；未配置 DeepSeek 而配置了 Kimi Key 时使用 Kimi。真实模型问答和提取只读取所选原文页的前 12,000 字符。无 Key 时仍可提问，但仅用本地检索定位原文，不生成软件应答结论；关键词候选扫描整份文件。问答不会自动修改工件，只有核对清单中的人工批准才能写回。
 
 DeepSeek Key 在 [DeepSeek 开放平台](https://platform.deepseek.com/)创建。将 `.env.example` 复制为仓库根目录的 `.env.local`，填写 `DEEPSEEK_API_KEY`；默认接口为 `https://api.deepseek.com`，模型为 `deepseek-flash`。如需固定供应商，设置 `PRESALES_MODEL_PROVIDER=deepseek` 或 `kimi`；默认 `auto`。修改后重启本机 API，再用设置页“测试服务端连接”。不要把 Key 粘贴到聊天、浏览器连接设置或提交到 GitHub。
 
@@ -33,7 +33,7 @@ DeepSeek Key 在 [DeepSeek 开放平台](https://platform.deepseek.com/)创建�
 
 如使用 Kimi，在 `.env.local` 填写 `MOONSHOT_API_KEY`。默认模型为 `kimi-k2.6`，接口为 `https://api.moonshot.cn/v1`；企业分配其他模型或专用地址时修改对应项。`.env.local` 已被 Git 忽略。服务端 `POST /api/model/test` 只发送固定短句 `Reply with ok.`，不发送项目原文。
 
-软件账号进入项目 F5，选择原文文件及页码，在问答区提问或点击「提取本页要求」。模型回答和候选的引用必须逐字匹配原文；每页最多接收 12 条候选。软件产品仍需逐条核对、纠正、交接、批准后才能写回。提取失败保留原有候选；无 Key 时可用关键词提取演示。其他节点、全局对话和全部历史文档尚未接真实模型。
+软件账号进入项目 F5，选择原文文件及页码，在问答区提问；点击回答中的引用可展开并定位原文。配置模型后可点击「提取本页要求」，无 Key 时可点击「生成关键词候选」。模型回答和候选的引用必须逐字匹配原文；每页最多接收 12 条模型候选。软件产品仍需逐条核对、纠正、交接、批准后才能写回。提取失败保留原有候选。其他节点、全局对话和全部历史文档尚未接真实模型。
 
 ```sh
 cd server
