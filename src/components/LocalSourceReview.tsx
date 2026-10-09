@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useWorkbench } from "@/state/workbench";
 import { localApi, localApiReady } from "@/lib/localApi";
 import type { ProjectProgress } from "@/lib/projectProgress";
+import { SoftwareAgentPanel } from "@/features/software/SoftwareAgentPanel";
 import { useSearchParams } from "react-router";
 
 type Document = { id: string; title: string; version: string; filename: string; created_at: string; page_count: number };
@@ -9,7 +10,7 @@ type Requirement = {
   id: string; document_id: string; page: number; quote: string; text: string;
   status: string; revision: number; source_version: string; source_title: string;
   disposition: string | null; customer_answer: string | null;
-  extractor: "mock" | "kimi"; extraction_run_id: string | null;
+  extractor: "mock" | "kimi" | "deepseek"; extraction_run_id: string | null;
 };
 type Handoff = {
   id: string; project_id: string; requirement_id: string; owner: string;
@@ -40,7 +41,8 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
   const [facts, setFacts] = useState<Fact[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   const [progress, setProgress] = useState<ProjectProgress | null>(null);
-  const [model, setModel] = useState<{ configured: boolean; model: string } | null>(null);
+  const [model, setModel] = useState<{ configured: boolean; provider: string; model: string } | null>(null);
+  const [mode, setMode] = useState<"ask" | "review">(account === "software" ? "ask" : "review");
   const [selectedDocument, setSelectedDocument] = useState("");
   const [selectedRequirement, setSelectedRequirement] = useState(requestedRequirement || "");
   const [selectedPage, setSelectedPage] = useState(1);
@@ -68,7 +70,7 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
       localApi<Fact[]>(`/api/projects/${projectId}/facts`),
       localApi<Event[]>(`/api/projects/${projectId}/events`),
       localApi<ProjectProgress>(`/api/projects/${projectId}/progress`),
-      localApi<{ configured: boolean; model: string }>("/api/model/status"),
+      localApi<{ configured: boolean; provider: string; model: string }>("/api/model/status"),
     ]);
     setDocuments(docs);
     setRequirements(rows);
@@ -95,6 +97,15 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
   const inbox = handoffs.filter((item) => item.owner === account && !item.outdated);
   const demoImported = documents.some((item) => item.title === "Rack Central · BMS Technical Specification");
   const selectedSource = documents.find((item) => item.id === selectedDocument);
+  const canExtractPage = Boolean(selectedSource && model?.configured && selectedPage >= 1 &&
+    selectedPage <= selectedSource.page_count &&
+    !visibleRows.some((row) => row.page === selectedPage && row.status !== "candidate"));
+  async function extractSelectedPage() {
+    await act(async () => {
+      await localApi(`/api/documents/${selectedDocument}/extract-live`, json({ pages: [selectedPage] }));
+      setSelectedRequirement("");
+    }, `第 ${selectedPage} 页候选已生成，请进入核对清单`);
+  }
   function narrowQueue(nextQuery: string, nextStatus: string) {
     setQuery(nextQuery);
     setStatusFilter(nextStatus);
@@ -146,7 +157,7 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
   return (
     <section className="local-review">
       <header className="local-review-header">
-        <h3>来源与要求</h3>
+        <h3>{account === "software" ? "F5 · 软件技术支持" : "来源与要求"}</h3>
         <span>{documents.length} 份文件 · {requirements.length} 条要求 · {inbox.filter((i) => i.status === "pending").length} 项待答复</span>
         <button className="btn secondary" onClick={() => void refresh()} disabled={busy}>刷新</button>
       </header>
@@ -164,6 +175,10 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
         </div>
         {progress.last_run && <small>最近执行：{progress.last_run.model} · 第 {progress.last_run.pages} 页 · {progress.last_run.status === "completed" ? `原文匹配 ${progress.last_run.candidate_count} 条，跳过 ${progress.last_run.skipped_count} 条` : progress.last_run.error || "处理中"}</small>}
       </div>}
+      {account === "software" && <nav className="software-workspace-tabs" aria-label="软件工作方式">
+        <button type="button" className={mode === "ask" ? "active" : ""} onClick={() => setMode("ask")}>询问 Agent</button>
+        <button type="button" className={mode === "review" ? "active" : ""} onClick={() => setMode("review")}>核对与交接 <span>{visibleRows.length}</span></button>
+      </nav>}
       {projectId === "RCJM1" && !demoImported && (account === "sales" || account === "software" || account === "pm") && (
         <div className="local-review-demo-import">
           <span>Rack Central · BMS Technical Specification</span>
@@ -175,7 +190,9 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
         </div>
       )}
       {(account === "sales" || account === "software" || account === "pm") && (
-        <form className="local-review-upload" onSubmit={(event) => {
+        <details className="local-review-upload-details" open={!documents.length}>
+          <summary>添加来源文件</summary>
+          <form className="local-review-upload" onSubmit={(event) => {
           event.preventDefault();
           if (!file) return;
           const form = new FormData();
@@ -191,7 +208,8 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
           <input aria-label="文件版本" value={version} onChange={(event) => setVersion(event.target.value)} required />
           <input aria-label="选择原始文件" type="file" accept=".pdf,.txt,.md" onChange={(event) => setFile(event.target.files?.[0] || null)} required />
           <button className="btn secondary" type="submit" disabled={busy || !file}>上传</button>
-        </form>
+          </form>
+        </details>
       )}
       {inbox.length > 0 && account !== "software" && (
         <section className="local-review-inbox">
@@ -215,16 +233,27 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
         </select>
         {selectedDocument && account === "software" && <>
           <label className="local-review-page">页码 <input aria-label="模型提取页码" type="number" min={1} max={selectedSource?.page_count || undefined} value={selectedPage} onChange={(event) => setSelectedPage(Number(event.target.value))} /></label>
-          <button className="btn primary" disabled={busy || !model?.configured || selectedPage < 1 || selectedPage > (selectedSource?.page_count || 0) || visibleRows.some((row) => row.page === selectedPage && row.status !== "candidate")} onClick={() => void act(async () => {
-            const result = await localApi<{ candidate_count: number; skipped_count: number }>(`/api/documents/${selectedDocument}/extract-live`, json({ pages: [selectedPage] }));
-            setSelectedRequirement("");
-            return result;
-          }, `Kimi 已提取第 ${selectedPage} 页候选；请对照原文逐条核对`)}>Kimi 提取选定页</button>
-          <button className="btn secondary" disabled={busy || visibleRows.some((row) => row.status !== "candidate")} onClick={() => void act(() => localApi(`/api/documents/${selectedDocument}/extract${visibleRows.length ? "?force=true" : ""}`, { method: "POST" }), "已生成关键词候选；请逐条对照原文核对")}>关键词提取</button>
+          {mode === "review" && <button className="btn secondary" disabled={busy || visibleRows.some((row) => row.status !== "candidate")} onClick={() => void act(() => localApi(`/api/documents/${selectedDocument}/extract${visibleRows.length ? "?force=true" : ""}`, { method: "POST" }), "已生成关键词候选；请逐条对照原文核对")}>关键词提取</button>}
         </>}
-        {selectedDocument && account === "software" && <small>{model?.configured ? `${model.model} · 每次仅处理选定页` : "Kimi 未配置：管理员需在服务端设置 MOONSHOT_API_KEY"}</small>}
       </div>
-      <div className="local-review-grid">
+      {mode === "ask" && selectedSource && <SoftwareAgentPanel
+        documentId={selectedSource.id}
+        documentTitle={selectedSource.title}
+        version={selectedSource.version}
+        page={selectedPage}
+        pageCount={selectedSource.page_count}
+        model={model}
+        candidateCount={visibleRows.length}
+        canExtract={canExtractPage}
+        extracting={busy}
+        onExtract={extractSelectedPage}
+        onReview={() => {
+          setSelectedRequirement(visibleRows.find((row) => row.page === selectedPage)?.id || "");
+          setMode("review");
+        }}
+      />}
+      {mode === "ask" && !selectedSource && <div className="software-agent-empty">先选择或上传一份来源文件，再按页提问。</div>}
+      {mode === "review" && <div className="local-review-grid">
         <nav aria-label="来源要求队列" className="local-review-queue">
           <div className="local-review-queue-tools">
             <input aria-label="搜索候选要求" placeholder="搜索原文 / 页码" value={query} onChange={(event) => narrowQueue(event.target.value, statusFilter)} />
@@ -234,7 +263,7 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
             </select>
           </div>
           {queueRows.map((row) => <button className={row.id === current?.id ? "selected" : ""} key={row.id} onClick={() => setSelectedRequirement(row.id)}>
-            <span>第 {row.page} 页 · {statusLabel[row.status] || row.status} · {row.extractor === "kimi" ? "Kimi" : "关键词"}</span>
+            <span>第 {row.page} 页 · {statusLabel[row.status] || row.status} · {row.extractor === "mock" ? "关键词" : row.extractor === "deepseek" ? "DeepSeek" : "Kimi"}</span>
             <strong>{row.quote}</strong>
           </button>)}
           {!visibleRows.length && <p>此版本尚无候选。上传并执行提取后，可在这里逐条核对。</p>}
@@ -248,7 +277,7 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
           <h4>人工处理</h4>
           {current ? <>
             <p>来源：{current.source_title} · {current.source_version} · 修订 {current.revision}</p>
-            <p>提取：{current.extractor === "kimi" ? `Kimi · 运行 ${current.extraction_run_id?.slice(0, 8)}` : "关键词"}；候选必须核对原文后才能进入判断。</p>
+            <p>提取：{current.extractor === "mock" ? "关键词" : `${current.extractor === "deepseek" ? "DeepSeek" : "Kimi"} · 运行 ${current.extraction_run_id?.slice(0, 8)}`}；候选必须核对原文后才能进入判断。</p>
             <label>核对后的要求<textarea rows={4} value={requirementText} readOnly={account !== "software"} onChange={(event) => setRequirementText(event.target.value)} /></label>
             {account === "software" && <>
               <label>处理说明<input value={note} onChange={(event) => setNote(event.target.value)} placeholder="说明核对依据或判断" /></label>
@@ -271,7 +300,7 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
             {related.length > 0 && <div className="local-review-replies"><h5>关联岗位答复</h5>{related.map((item) => <p key={item.id}><strong>{recipients.find(([id]) => id === item.owner)?.[1]} · {item.status}</strong><br />{item.question}<br />{item.answer || "等待答复"}</p>)}</div>}
           </> : <p>选择候选后核对；客户应答需软件产品批准。</p>}
         </section>
-      </div>
+      </div>}
       <details className="local-review-history">
         <summary>已写回事实 {facts.length} · 操作记录 {events.length}</summary>
         <div className="local-review-history-grid">

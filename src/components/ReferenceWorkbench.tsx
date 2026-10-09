@@ -306,15 +306,7 @@ export function ReferenceWorkbench({
       return `${i.category} · ${i.title} · R${value.revision} · ${value.written && value.status === "approved" ? "已确认" : "待确认"} · ${i.owner}\n${value.text}\n实现方式：${value.implementation || "未选定"}；成本依据：${value.costBasis || "未登记"}\n确认：${value.resolution || "未登记"}；依据：${value.evidence || "未登记"}`;
     })
     .join("\n\n");
-  if (localReview) return (
-    <section className="reference-workbench">
-      <header className="reference-workbench-heading">
-        <h2>F5 · 本机资料核对</h2>
-        <button className="btn secondary" onClick={() => setLocalReview(false)}>浏览器 Mock 演示</button>
-      </header>
-      <LocalSourceReview projectId={projectId} />
-    </section>
-  );
+  if (localReview) return <LocalSourceReview projectId={projectId} />;
   return (
     <section className="reference-workbench">
       <header className="reference-workbench-heading">
