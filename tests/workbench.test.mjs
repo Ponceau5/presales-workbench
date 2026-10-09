@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import ts from "typescript";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 // Transpile only the domain modules, with the project's existing TypeScript dependency.
 function moduleUrl(file, imports = {}) {
@@ -444,7 +444,9 @@ test("真实项目：角色、依据、人审与修改失效", () => {
   assert.equal(s.audit.length, 5);
   assert.equal(s.audit[0].before, patch.text);
 });
-test("原始点表：四分表合计与单元格计算一致，未解释符号保留", () => {
+test("本机原始点表：四分表合计与单元格计算一致，未解释符号保留", {
+  skip: !existsSync("public/project-data/rcjm1/points.json") && "原始点表不在公开仓库中",
+}, () => {
   const data = JSON.parse(
     readFileSync("public/project-data/rcjm1/points.json", "utf8"),
   );
