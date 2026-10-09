@@ -2,8 +2,8 @@ import { useMemo, useState } from 'react'
 import { CircleAlert, Download, FileSpreadsheet, GitCompareArrows, Search, Bell, Send } from 'lucide-react'
 import {
   allocationFor, amount, boqGroupIssues, boqGroups, commercialReadiness, convertedAmount, crmMappingIssues, crmPriceKey, extraCostDefinitions,
-  importCostCsv, inventoryFor, readCommercialState, routeFor, mappingIssues, sourceFile, suggestedLines, toCsv,
-  type Baseline, type CommercialState, type CostCurrency, type CostRecord, type CostRoute, type ExtraCost, type InventoryLine,
+  importCostCsv, inventoryFor, pricingBreakdown, readCommercialState, routeFor, mappingIssues, sourceFile, suggestedLines, toCsv,
+  type Baseline, type CommercialState, type CostCurrency, type CostRecord, type CostRoute, type ExtraCost, type InventoryLine, type PriceCategory,
 } from '@/lib/commercialWorkflow'
 import type { Role } from '@/lib/workspace'
 import './commercial-workbench.css'
@@ -50,7 +50,8 @@ function routeForRole(role: Role): CostRoute {
   if (role === '销售') return 'sales'
   return 'internal'
 }
-const costSteps = ['技术给配置清单', '销售按成本类型拆分并发起协作', '各岗位回填成本与依据', '销售核对并汇总成本底表', '销售按成本、客情、竞争制定价格与毛利', '形成报价初稿']
+const costSteps = ['技术给配置清单', '销售分类发起成本协作', '各岗位回填成本与依据', '销售确认并导出成本版', '销售填写各类报价原则，Agent 生成建议价', '销售逐项调整，核对成本与报价', '销售确认并导出报价版']
+const priceCategoryLabels: Record<PriceCategory, string> = { internal: '自产产品', purchase: '外购设备', software: '软件', project: '施工 / 服务', extras: '补充费用' }
 
 export default function CommercialWorkbench({ stage, projectId, role }: { stage: string; projectId: string; role: Role }) {
   const [state, setState] = useState<CommercialState>(() => readCommercialState(projectId))
@@ -80,6 +81,7 @@ export default function CommercialWorkbench({ stage, projectId, role }: { stage:
   const hasBoqAmount = boqGroups.some(item => { const quote=state.quotes[item.id]; return quote && [quote.phase1,quote.phase2,quote.phase3].some(value=>value!==null) })
   const directCost = lines.reduce((sum,line) => sum + (state.costs[line.id]?.status === 'confirmed' ? (state.costs[line.id]?.amount || 0) * line.quantity : 0), 0)
   const extraTotal = extraCostDefinitions.reduce((sum,item) => sum + (state.extraCosts?.[item.id]?.status === 'confirmed' && state.extraCosts[item.id].treatment !== 'separate' ? state.extraCosts[item.id].amount || 0 : 0), 0)
+  const pricing = pricingBreakdown(state, lines)
   const crmIssues = crmMappingIssues(state, lines)
   const allCostsReady = readiness.missingCosts.length === 0 && readiness.missingExtras.length === 0
   const myRoute = routeForRole(role)
@@ -93,7 +95,10 @@ export default function CommercialWorkbench({ stage, projectId, role }: { stage:
 
   function update(patch: Partial<CommercialState>) {
     const next = { ...state, ...patch, updatedAt: new Date().toISOString() }
-    if (patch.costs || patch.extraCosts) next.draftPriceRm = null
+    if (patch.costs || patch.extraCosts || patch.pricingRules || patch.lineFactorOverrides || patch.linePriceOverrides || patch.extraPriceOverrides || patch.pricingBasis) {
+      next.draftPriceRm = null
+      next.quoteConfirmedAt = ''
+    }
     if ((patch.costs || patch.extraCosts || patch.mappings || patch.quotes || patch.crmPrices || patch.materialOverrides || patch.businessTerms || patch.pricingBasis || patch.crmOpportunity) && state.crmApproval.status === 'approved') {
       next.crmApproval = { ...state.crmApproval, status: 'revision', note: '报价输入已变更，需在 CRM 重新评审', updatedAt: new Date().toISOString() }
     }
@@ -209,9 +214,12 @@ export default function CommercialWorkbench({ stage, projectId, role }: { stage:
     ])
   }
   function exportDraftQuote() {
-    download(`${projectId}-F7-销售报价初稿-${state.baseline}.csv`,[
-      ['项目','配置版本','币种','确认成本','单列税费','销售报价初稿','毛利率','定价依据','状态'],
-      [projectId,state.baseline,'RM',directCost+extraTotal,state.extraCosts.tax?.status==='confirmed'&&state.extraCosts.tax.treatment==='separate'?state.extraCosts.tax.amount:0,state.draftPriceRm,draftMargin===null?'':`${draftMargin.toFixed(2)}%`,state.pricingBasis,'销售初稿·待后续流程确认'],
+    download(`${projectId}-F7-销售确认报价版-${state.baseline}.csv`,[
+      ['项目','配置版本','清单ID','成本类型','名称','物料号','数量','单位成本RM','计入毛利的成本合计RM','报价系数','Agent建议单价RM','Agent建议合价RM','销售确认单价RM','销售确认合价RM','行毛利率','是否人工调整','报价状态','定价依据'],
+      ...pricing.rows.map(row => [projectId,state.baseline,row.id,priceCategoryLabels[row.category],row.name,state.materialOverrides?.[row.id]||row.material,row.quantity,row.unitCost,row.costTotal,row.factor,row.suggestedUnit,row.suggestedTotal,row.finalUnit,row.finalTotal,row.finalTotal && row.costTotal !== null ? `${((row.finalTotal-row.costTotal)/row.finalTotal*100).toFixed(2)}%` : '',row.edited?'是':'否','销售已确认，待后续 BOQ / CRM',state.pricingBasis]),
+      ...pricing.extras.map(row => [projectId,state.baseline,row.id,'补充费用',row.name,'',1,row.cost,row.cost,row.factor,row.suggested,row.suggested,row.final,row.final,row.final && row.cost !== null ? `${((row.final-row.cost)/row.final*100).toFixed(2)}%` : '',row.edited?'是':'否','销售已确认，待后续 BOQ / CRM',state.pricingBasis]),
+      [projectId,state.baseline,'合计','','','','','',pricing.costTotal,'','',pricing.suggestedTotal,'',state.draftPriceRm,draftMargin===null?'':`${draftMargin.toFixed(2)}%`,'','销售已确认，待后续 BOQ / CRM',state.pricingBasis],
+      ...(state.extraCosts.tax?.status==='confirmed'&&state.extraCosts.tax.treatment==='separate' ? [[projectId,state.baseline,'tax','商务条件单列','相关税费','',1,state.extraCosts.tax.amount,'','','','','','','','','不计入以上成本和报价合计，须在后续商务条件中单列',state.extraCosts.tax.evidence]] : []),
     ])
   }
   async function handleCostImport(file?: File) {
@@ -243,8 +251,8 @@ export default function CommercialWorkbench({ stage, projectId, role }: { stage:
     <header className="cw-hero">
       <div>
         <span className="cw-eyebrow">COMMERCIAL WORKFLOW · RACKS CENTRAL</span>
-        <h2>{stage === 'F7' ? '成本协作与报价初稿' : stage === 'F8' ? '客户 BOQ 对照与拆分' : '报价准备与 CRM 交接'}</h2>
-        <p>{stage === 'F7' ? '技术给清单，销售发起，各岗位回填，销售汇总并形成报价初稿。' : stage === 'F8' ? '从客户分项开始，找内部物料，写拆分规则，分配数量与价格，再核对差异。' : '商务报价工作区'}</p>
+        <h2>{stage === 'F7' ? '成本版与销售报价版' : stage === 'F8' ? '客户 BOQ 对照与拆分' : '报价准备与 CRM 交接'}</h2>
+        <p>{stage === 'F7' ? '多岗位回填成本，销售设定分类报价原则，Agent 生成建议价，销售调整并确认报价。' : stage === 'F8' ? '从客户分项开始，找内部物料，写拆分规则，分配数量与价格，再核对差异。' : '商务报价工作区'}</p>
       </div>
       <div className="cw-source">
         <span>当前配置版本</span>
@@ -261,8 +269,8 @@ export default function CommercialWorkbench({ stage, projectId, role }: { stage:
       </div>
     </header>
 
-    {stage === 'F7' && <section className="cw-flow" aria-label="F7 成本到报价初稿流程">
-      <div className="cw-flow-title"><div><span className="cw-eyebrow">F7 · 当前确认范围</span><h3>从配置清单到销售报价初稿</h3></div><span>当前岗位：{role}</span></div>
+    {stage === 'F7' && <section className="cw-flow" aria-label="F7 成本版到报价版流程">
+      <div className="cw-flow-title"><div><span className="cw-eyebrow">F7 · 当前确认范围</span><h3>从配置清单到成本版、报价版</h3></div><span>当前岗位：{role}</span></div>
       <ol className="cw-f7-steps">{costSteps.map((step,index)=><li key={step}><b>{index+1}</b><span>{step}</span></li>)}</ol>
     </section>}
     {message && <div className="cw-message" role="status"><CircleAlert size={16} />{message}<button onClick={() => setMessage('')}>关闭</button></div>}
@@ -271,7 +279,7 @@ export default function CommercialWorkbench({ stage, projectId, role }: { stage:
       <div><span>配置行</span><strong>{lines.length}</strong><small>BMS + DCOM · {state.baseline}</small></div>
       <div><span>成本已确认</span><strong>{confirmedCosts.length}<em> / {lines.length}</em></strong><small>有金额和来源才计入</small></div>
       <div><span>补充费用待确认</span><strong>{readiness.missingExtras.length}</strong><small>含不适用判断</small></div>
-      <div><span>报价初稿</span><strong>{state.draftPriceRm !== null && allCostsReady && state.pricingBasis.trim() ? '可复核' : '待补'}</strong><small>由销售确定价格与毛利</small></div>
+      <div><span>报价版</span><strong>{state.quoteConfirmedAt && allCostsReady ? '销售已确认' : '待销售确认'}</strong><small>先生成建议价，再人工调整</small></div>
     </div>}
 
     {stage === 'F7' && <div className="cw-f7-layout">
@@ -317,13 +325,28 @@ export default function CommercialWorkbench({ stage, projectId, role }: { stage:
           </div>})}</div></div>}
         </div>}
       </section>
-      <section className="cw-card cw-f7-summary"><div className="cw-card-head"><div><span className="cw-eyebrow">销售汇总 · F7 最后两步</span><h3>成本底表 → 价格与毛利 → 报价初稿</h3></div><button className="cw-button" onClick={exportCostBaseline}><FileSpreadsheet size={15}/>导出成本底表</button></div>
+      <section className="cw-card cw-f7-summary"><div className="cw-card-head"><div><span className="cw-eyebrow">第 4 步 · 成本版</span><h3>销售核对并输出成本底稿</h3></div><button className="cw-button" disabled={!allCostsReady} onClick={exportCostBaseline}><FileSpreadsheet size={15}/>导出成本版 CSV</button></div>
         <div className="cw-summary-grid"><div><span>配置清单已确认</span><strong>{confirmedCosts.length} / {lines.length}</strong></div><div><span>补充费用已处理</span><strong>{extraCostDefinitions.length-readiness.missingExtras.length} / {extraCostDefinitions.length}</strong></div><div><span>成本合计 RM</span><strong>{allCostsReady?amount(directCost+extraTotal):'待补齐'}</strong></div></div>
         <p className="cw-note">成本合计仅在所有项目已确认或注明不适用后可用；税费选择“商务条件单列”时不计入毛利成本。</p>
-        <div className="cw-strategy-grid"><label className="cw-field">销售报价初稿 · RM{numberField(state.draftPriceRm,value=>update({draftPriceRm:value}), '销售报价初稿 RM',role!=='销售')}</label><label className="cw-field">毛利率<input readOnly value={draftMargin===null?'成本与价格待齐':`${draftMargin.toFixed(1)}%`}/></label></div>
-        <label className="cw-field">定价依据：客情、竞争与毛利判断<textarea disabled={role!=='销售'} value={state.pricingBasis} onChange={e=>update({pricingBasis:e.target.value})} placeholder="由销售说明客情、竞争、目标毛利及价格策略"/></label>
-        <button className="cw-button primary" disabled={role!=='销售'||!allCostsReady||state.draftPriceRm===null||state.draftPriceRm<=0||!state.pricingBasis.trim()} onClick={exportDraftQuote}><Download size={15}/>形成并导出报价初稿</button>
       </section>
+      <section className="cw-card cw-f7-pricing"><div className="cw-card-head"><div><span className="cw-eyebrow">第 5 步 · 销售填写报价原则</span><h3>按类别设置系数，Agent 计算建议价</h3></div>{mark(allCostsReady?'成本版已齐':'等待成本版',allCostsReady?'ok':'bad')}</div>
+        <p className="cw-note">3.3 倍与 1.3 倍来自销售举例，均为可改的演示起点；外购也可改为 1.5 倍。软件、施工 / 服务由销售填写本项目系数。补充费用默认按成本计入报价，可调整。系数不是公司批准的定价政策。</p>
+        <div className="cw-pricing-rules">{(Object.keys(priceCategoryLabels) as PriceCategory[]).map(category=><label className="cw-field" key={category}>{priceCategoryLabels[category]} · 成本 × 系数
+          <input type="number" min="0.01" step="0.1" value={state.pricingRules[category]??''} disabled={role!=='销售'} placeholder="待销售填写" onChange={e=>update({pricingRules:{...state.pricingRules,[category]:e.target.value===''?null:Math.max(0,Number(e.target.value))}})}/>
+        </label>)}</div>
+        <label className="cw-field">销售报价原则与判断：客情、竞争、目标毛利<textarea disabled={role!=='销售'} value={state.pricingBasis} onChange={e=>update({pricingBasis:e.target.value})} placeholder="例如：自产按 3.3 倍；外购按 1.3 倍，竞争激烈的指定物料另行调整。写明客户情况及调整理由。"/></label>
+        <p className="cw-agent-note">Agent 只按已确认成本和系数计算建议价；缺成本或系数的行不生成建议价。逐项调整和最终报价由销售负责。</p>
+      </section>
+      <section className="cw-card cw-f7-pricing"><div className="cw-card-head"><div><span className="cw-eyebrow">第 6 步 · 成本与报价对比</span><h3>销售逐项调整，实时查看毛利</h3></div><span className="cw-note">已人工调整 {pricing.editedCount} 项</span></div>
+        <div className="cw-pricing-totals"><div><span>成本版</span><strong>RM {allCostsReady?amount(pricing.costTotal):'待补齐'}</strong></div><div><span>Agent 建议价</span><strong>RM {allCostsReady&&pricing.suggestedTotal!==null?amount(pricing.suggestedTotal):'待补齐'}</strong></div><div><span>销售调整后</span><strong>RM {allCostsReady&&pricing.ready?amount(pricing.finalTotal):'待补齐'}</strong></div><div><span>调整后毛利率</span><strong>{allCostsReady&&pricing.finalTotal && pricing.finalTotal>0?`${((pricing.finalTotal-pricing.costTotal)/pricing.finalTotal*100).toFixed(1)}%`:'待计算'}</strong></div></div>
+        {state.legacyDraftPriceRm !== null && <p className="cw-agent-note">旧版手填总价 RM {amount(state.legacyDraftPriceRm)} 已留作参考；请按当前成本和逐项报价重新确认，新报价版不会直接沿用旧总价。</p>}
+        <div className="cw-pricing-scroll"><div className="cw-pricing-head"><span>成本类型 / 物料</span><span>数量</span><span>单位成本 RM</span><span>本行系数</span><span>建议单价 RM</span><span>销售单价 RM</span><span>成本 / 报价合计 RM</span><span>行毛利</span></div>
+          {pricing.rows.map(row=><div className="cw-pricing-row" key={row.id}><span><strong>{row.name}</strong><small>{priceCategoryLabels[row.category]} · {row.id}{row.edited?' · 人工已调':''}</small></span><span>{row.quantity}</span><span>{amount(row.unitCost)}</span><label><input aria-label={`${row.name}本行报价系数`} type="number" min="0.01" step="0.1" disabled={role!=='销售'} value={row.factor??''} placeholder="待填写" onChange={e=>update({lineFactorOverrides:{...state.lineFactorOverrides,[row.id]:e.target.value===''?null:Math.max(0,Number(e.target.value))}})}/>{row.factorEdited&&<button type="button" disabled={role!=='销售'} onClick={()=>{const next={...state.lineFactorOverrides};delete next[row.id];update({lineFactorOverrides:next})}}>用分类系数</button>}</label><span>{amount(row.suggestedUnit)}</span><label><input aria-label={`${row.name}销售单价 RM`} type="number" min="0" step="0.01" disabled={role!=='销售'||row.suggestedUnit===null||!allCostsReady} placeholder="待建议价" value={row.finalUnit??''} onChange={e=>update({linePriceOverrides:{...state.linePriceOverrides,[row.id]:e.target.value===''?null:Math.max(0,Number(e.target.value))}})}/>{row.priceEdited&&<button type="button" disabled={role!=='销售'} onClick={()=>{const next={...state.linePriceOverrides};delete next[row.id];update({linePriceOverrides:next})}}>恢复建议价</button>}</label><span>{amount(row.costTotal)} / {amount(row.finalTotal)}</span><span className={row.finalTotal!==null&&row.costTotal!==null&&row.finalTotal<row.costTotal?'cw-pricing-loss':''}>{row.finalTotal && row.costTotal!==null?`${((row.finalTotal-row.costTotal)/row.finalTotal*100).toFixed(1)}%`: '待算'}</span></div>)}
+          {pricing.extras.map(row=><div className="cw-pricing-row" key={row.id}><span><strong>{row.name}</strong><small>补充费用{row.edited?' · 人工已调':''}</small></span><span>1 项</span><span>{amount(row.cost)}</span><span>{row.factor ?? '待填'}</span><span>{amount(row.suggested)}</span><label><input aria-label={`${row.name}销售金额 RM`} type="number" min="0" step="0.01" disabled={role!=='销售'||row.suggested===null||!allCostsReady} value={row.final??''} onChange={e=>update({extraPriceOverrides:{...state.extraPriceOverrides,[row.id]:e.target.value===''?null:Math.max(0,Number(e.target.value))}})}/>{row.edited&&<button type="button" disabled={role!=='销售'} onClick={()=>{const next={...state.extraPriceOverrides};delete next[row.id];update({extraPriceOverrides:next})}}>恢复建议价</button>}</label><span>{amount(row.cost)} / {amount(row.final)}</span><span className={row.final!==null&&row.cost!==null&&row.final<row.cost?'cw-pricing-loss':''}>{row.final && row.cost!==null?`${((row.final-row.cost)/row.final*100).toFixed(1)}%`:'待算'}</span></div>)}
+        </div>
+        <p className="cw-note">表中单价可直接改，合价和毛利随之更新；单列税费不计入本表。红色毛利表示报价低于该行成本，请销售核对。</p>
+      </section>
+      <section className="cw-card cw-f7-finish"><div><span className="cw-eyebrow">第 7 步 · 报价版</span><h3>确认销售调整后的报价稿</h3><p className="cw-note">{!allCostsReady?'请先补齐成本版。':!pricing.ready?'请填写缺少的报价系数。':!state.pricingBasis.trim()?'请填写销售报价原则与判断。':state.quoteConfirmedAt?'当前报价版已确认；任何成本或定价修改都需要重新确认。':'建议价已生成，请销售逐项核对后确认。'}</p></div><div className="cw-finish-actions"><button className="cw-button primary" disabled={role!=='销售'||!allCostsReady||!pricing.ready||!pricing.finalTotal||pricing.finalTotal<=0||!state.pricingBasis.trim()} onClick={()=>{update({draftPriceRm:pricing.finalTotal,quoteConfirmedAt:new Date().toISOString()});setMessage('销售报价版已确认。可分别导出成本版和报价版；F8 可使用此报价总额作 BOQ 对照。')}}>确认报价版 · RM {allCostsReady&&pricing.ready?amount(pricing.finalTotal):'待补齐'}</button><button className="cw-button" disabled={!state.quoteConfirmedAt||state.draftPriceRm===null||!allCostsReady} onClick={exportDraftQuote}><Download size={15}/>导出报价版 CSV</button></div></section>
       <section className="cw-card cw-compare"><div><GitCompareArrows size={18}/><h3>版本提醒</h3></div><p>7 月与 9 月配置分别保存。技术清单变更后，成本、换算依据和销售报价须按对应版本复核。</p></section>
     </div>}
 
@@ -338,7 +361,7 @@ export default function CommercialWorkbench({ stage, projectId, role }: { stage:
           <section className="cw-card"><span className="cw-eyebrow">第 1 步 · 看客户要什么</span><div className="cw-f8-detail-head"><div><h3>{group.name}</h3><p>{group.label}</p></div>{mark(map.confirmed&&boqIssues.ready?'已核对':'待核对',map.confirmed&&boqIssues.ready?'ok':'warn')}</div><p className="cw-my-work">客户表位置：{sourceAnchor(group.sheet,group.rows)}。三行分别对应一期、二期、三期；请对照客户原表核实名称、单位与数量。</p></section>
           <section className="cw-card"><span className="cw-eyebrow">第 2 步 · 找内部物料</span><h3>哪些配置行属于这个客户分项？</h3><p className="cw-note">下方是按名称初筛的建议，勾选后才进入本分项。找不到时搜索物料名或料号。柜体和柜内设备可分别勾选，由销售与技术确认对应关系。</p><div className="cw-f8-search"><label><Search size={15}/><input aria-label="搜索内部物料" value={boqSearch} onChange={e=>setBoqSearch(e.target.value)} placeholder="搜索内部物料、料号或清单 ID"/></label><button className="cw-button" disabled={!canEditBoq||newSuggestions.length===0} onClick={()=>setBoqMapping({lineIds:[...new Set([...map.lineIds,...newSuggestions])]})}>加入 {newSuggestions.length} 条初筛建议</button></div><div className="cw-f8-candidates">{boqCandidates.map(line=><label key={line.id} className={map.lineIds.includes(line.id)?'checked':''}><input type="checkbox" disabled={!canEditBoq} checked={map.lineIds.includes(line.id)} onChange={()=>toggleBoqLine(line.id)}/><span><strong>{line.name}</strong><small>{line.id} · {line.material||'料号待核'} · 内部数量 {line.quantity} {line.unit}</small></span>{suggested.includes(line.id)&&<em>初筛建议</em>}</label>)}{boqCandidates.length===0&&<p className="cw-empty">没有建议项；试着搜索内部物料名称或料号。</p>}</div><p className="cw-note">已选 {map.lineIds.length} 条。初筛建议未经工程核对，不会自动确认。</p></section>
           <section className="cw-card"><span className="cw-eyebrow">第 3 步 · 定规则、分数量</span><h3>销售先说清本项目怎么拆</h3><label className="cw-field">本分项拆分规则<textarea disabled={!canEditBoq} value={map.note} onChange={e=>setBoqMapping({note:e.target.value})} placeholder="例如：按客户一期/二期的区域和设备清单分配；柜体与柜内模块分别对应客户行。请写本项目实际依据。"/></label><p className="cw-note">下表填内部清单数量在客户三期中的去向。已在其他客户分项分配的数量也会计入超量检查。</p>{boqIssues.selected.length===0?<p className="cw-empty">先在第 2 步勾选内部物料，才会出现数量表。</p>:<div className="cw-f8-allocation"><div className="cw-f8-allocation-head"><span>内部物料</span><span>一期数量</span><span>二期数量</span><span>三期数量</span><span>检查</span></div>{boqIssues.selected.map(line=>{const qty=allocationFor(state,group.id,line.id);const totalAcross=boqGroups.reduce((sum,item)=>state.mappings[item.id]?.lineIds.includes(line.id)?sum+allocationFor(state,item.id,line.id).reduce((a,b)=>a+b,0):sum,0);const over=totalAcross>line.quantity+0.000001;const cost=state.costs[line.id];return <div className="cw-f8-allocation-row" key={line.id}><span><strong>{line.name}</strong><small>{line.id} · 可用 {line.quantity} {line.unit} · 已分配 {totalAcross}</small></span>{qty.map((value,index)=><label key={index}>{numberField(value,next=>setBoqAllocation(line.id,index,next),`${line.name} ${['一期','二期','三期'][index]}数量`,!canEditBoq)}</label>)}<span>{mark(over?'超出内部数量':qty.reduce((a,b)=>a+b,0)>0?'已分配':'待分配',over?'bad':qty.reduce((a,b)=>a+b,0)>0?'ok':'warn')}<small>可核成本 RM {cost?.status==='confirmed'&&cost.amount!==null?amount(cost.amount*qty.reduce((a,b)=>a+b,0)):'待成本确认'}</small></span></div>})}</div>}<label className="cw-field">客户数量差异或增减项如何处理<textarea disabled={!canEditBoq} value={map.quantityNote||''} onChange={e=>setBoqMapping({quantityNote:e.target.value})} placeholder="如客户表数量与内部数量不同，在这里记录差异、处理方式和待技术确认的问题"/></label><label className="cw-field">与技术核对的结论或待确认点<textarea disabled={!canEditBoq} value={map.technicalReview||''} onChange={e=>setBoqMapping({technicalReview:e.target.value,technicalConfirmed:false})} placeholder="记录核对人、结论与依据；尚未确认时写清需要技术答复的问题"/></label><label className="cw-f8-tech-check"><input type="checkbox" disabled={!canEditBoq||!map.technicalReview?.trim()} checked={!!map.technicalConfirmed} onChange={e=>setBoqMapping({technicalConfirmed:e.target.checked})}/> 已与技术核对上述对应关系和数量处理</label></section>
-          <section className="cw-card"><span className="cw-eyebrow">第 4 步 · 对金额、查差异</span><h3>把客户三期金额填回原分项</h3><p className="cw-note">一期、二期、三期对应客户表的三行；不适用的一期请明确填 0。金额由销售按 F7 报价初稿和本项目拆分规则决定。</p><div className="cw-f8-price-grid">{(['phase1','phase2','phase3'] as const).map((phase,index)=><label className="cw-field" key={phase}>{['一期','二期','三期'][index]}客户金额 · RM{numberField(state.quotes[group.id]?.[phase]??null,value=>setBoqQuote(phase,value),`${group.name} ${['一期','二期','三期'][index]}客户金额 RM`,!canEditBoq)}<small>客户表第 {group.rows[index]} 行</small></label>)}</div><div className="cw-f8-checks"><span>{mark(boqIssues.selected.length?'已选内部物料':'未选内部物料',boqIssues.selected.length?'ok':'bad')}</span><span>{mark(!boqIssues.selected.length?'待选物料':boqIssues.missingQuantity.length?`${boqIssues.missingQuantity.length} 条未分数量`:'数量已分配',!boqIssues.selected.length||boqIssues.missingQuantity.length?'bad':'ok')}</span><span>{mark(boqIssues.overAllocated.length?`${boqIssues.overAllocated.length} 条超量`:'无超量',boqIssues.overAllocated.length?'bad':'ok')}</span><span>{mark(map.note.trim()?'拆分规则已写':'缺拆分规则',map.note.trim()?'ok':'bad')}</span><span>{mark(map.technicalConfirmed?'技术已核对':'待技术核对',map.technicalConfirmed?'ok':'bad')}</span><span>{mark(boqIssues.missingAmounts?'客户金额未齐':'客户金额已填',boqIssues.missingAmounts?'bad':'ok')}</span></div><div className="cw-f8-bottom"><p className="cw-note">当前 14 项已录金额合计 RM {hasBoqAmount?amount(quoteTotal):'待填'}；F7 销售报价初稿 RM {amount(state.draftPriceRm)}。这里只是客户表的选取分项，金额合计仅供核对，不自动改动销售报价。</p><button className="cw-button primary" disabled={!canEditBoq||!boqIssues.ready} onClick={confirmBoqGroup}>确认本分项对照结果</button></div></section>
+          <section className="cw-card"><span className="cw-eyebrow">第 4 步 · 对金额、查差异</span><h3>把客户三期金额填回原分项</h3><p className="cw-note">一期、二期、三期对应客户表的三行；不适用的一期请明确填 0。金额由销售按 F7 已确认报价版和本项目拆分规则决定。</p><div className="cw-f8-price-grid">{(['phase1','phase2','phase3'] as const).map((phase,index)=><label className="cw-field" key={phase}>{['一期','二期','三期'][index]}客户金额 · RM{numberField(state.quotes[group.id]?.[phase]??null,value=>setBoqQuote(phase,value),`${group.name} ${['一期','二期','三期'][index]}客户金额 RM`,!canEditBoq)}<small>客户表第 {group.rows[index]} 行</small></label>)}</div><div className="cw-f8-checks"><span>{mark(boqIssues.selected.length?'已选内部物料':'未选内部物料',boqIssues.selected.length?'ok':'bad')}</span><span>{mark(!boqIssues.selected.length?'待选物料':boqIssues.missingQuantity.length?`${boqIssues.missingQuantity.length} 条未分数量`:'数量已分配',!boqIssues.selected.length||boqIssues.missingQuantity.length?'bad':'ok')}</span><span>{mark(boqIssues.overAllocated.length?`${boqIssues.overAllocated.length} 条超量`:'无超量',boqIssues.overAllocated.length?'bad':'ok')}</span><span>{mark(map.note.trim()?'拆分规则已写':'缺拆分规则',map.note.trim()?'ok':'bad')}</span><span>{mark(map.technicalConfirmed?'技术已核对':'待技术核对',map.technicalConfirmed?'ok':'bad')}</span><span>{mark(boqIssues.missingAmounts?'客户金额未齐':'客户金额已填',boqIssues.missingAmounts?'bad':'ok')}</span></div><div className="cw-f8-bottom"><p className="cw-note">当前 14 项已录金额合计 RM {hasBoqAmount?amount(quoteTotal):'待填'}；F7 已确认报价版 RM {amount(state.draftPriceRm)}。这里只是客户表的选取分项，金额合计仅供核对，不自动改动销售报价。</p><button className="cw-button primary" disabled={!canEditBoq||!boqIssues.ready} onClick={confirmBoqGroup}>确认本分项对照结果</button></div></section>
         </main>
       </div>
       <section className="cw-card cw-f8-export"><div><span className="cw-eyebrow">输出 · 供销售继续核对</span><h3>导出 BOQ 对照草稿</h3><p className="cw-note">保留客户行位置、对应内部物料、三期数量与金额、拆分依据和未完成状态。当前还需要真实销售案例核实拆分顺序及完整客户 BOQ 范围。</p></div><button className="cw-button" onClick={exportBoqReview}><Download size={15}/>导出对照草稿 CSV</button></section>

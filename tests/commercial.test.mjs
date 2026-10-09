@@ -9,7 +9,48 @@ function moduleUrl(file, imports = {}) {
   return `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`
 }
 const configUrl = moduleUrl('src/lib/configVersions.ts')
-const { inventoryFor, initialCommercialState, commercialReadiness, convertedAmount, importCostCsv, toCsv, parseCsv, mappingIssues, crmMappingIssues, boqGroupIssues, boqGroups } = await import(moduleUrl('src/lib/commercialWorkflow.ts', {'./configVersions':configUrl}))
+const { inventoryFor, initialCommercialState, readCommercialState, commercialReadiness, convertedAmount, importCostCsv, toCsv, parseCsv, mappingIssues, crmMappingIssues, boqGroupIssues, boqGroups, pricingBreakdown } = await import(moduleUrl('src/lib/commercialWorkflow.ts', {'./configVersions':configUrl}))
+
+test('旧版手填总报价保留供参考，不误当作逐项确认后的报价版', () => {
+  const previousStorage = Object.getOwnPropertyDescriptor(globalThis,'localStorage')
+  Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem: key => key === 'presales-commercial-v2:RCJM1:20260906' ? JSON.stringify({...initialCommercialState(),draftPriceRm:12345,quoteConfirmedAt:undefined}) : null}})
+  try {
+    const state = readCommercialState('RCJM1','20260906')
+    assert.equal(state.draftPriceRm,null)
+    assert.equal(state.legacyDraftPriceRm,12345)
+  } finally { if (previousStorage) Object.defineProperty(globalThis,'localStorage',previousStorage); else delete globalThis.localStorage }
+})
+
+test('分类系数生成建议价，销售逐项改价后重算总价与毛利基数', () => {
+  const inventory = inventoryFor('20260906')
+  const internal = {...inventory.find(x=>x.kind==='自有产品'),quantity:2}
+  const purchase = {...inventory.find(x=>x.kind==='外购设备'),quantity:3}
+  const state = initialCommercialState()
+  state.costs[internal.id] = {amount:100,status:'confirmed',evidence:'CRM 成本版本',owner:'产品',updatedAt:''}
+  state.costs[purchase.id] = {amount:200,status:'confirmed',evidence:'供应商报价',owner:'供应链',updatedAt:''}
+  state.extraCosts.packaging = {amount:50,status:'confirmed',evidence:'包装询价',reason:''}
+  state.extraCosts.tax = {amount:30,status:'confirmed',evidence:'财务测算',reason:'',treatment:'separate'}
+  const suggested = pricingBreakdown(state,[internal,purchase])
+  assert.equal(suggested.ready,true)
+  assert.equal(suggested.costTotal,850)
+  assert.equal(suggested.suggestedTotal,1490)
+  assert.equal(suggested.extras.length,1)
+  state.lineFactorOverrides[purchase.id] = 1.5
+  state.linePriceOverrides[internal.id] = 350
+  state.extraPriceOverrides.packaging = 60
+  const edited = pricingBreakdown(state,[internal,purchase])
+  assert.equal(edited.suggestedTotal,1610)
+  assert.equal(edited.finalTotal,1660)
+  assert.equal(edited.editedCount,3)
+  assert.equal(edited.rows.find(row=>row.id===purchase.id).factorEdited,true)
+  state.linePriceOverrides[internal.id] = null
+  const whileEditing = pricingBreakdown(state,[internal,purchase])
+  assert.equal(whileEditing.suggestedTotal,1610)
+  assert.equal(whileEditing.finalTotal,null)
+  delete state.lineFactorOverrides[purchase.id]
+  state.pricingRules.purchase = null
+  assert.equal(pricingBreakdown(state,[internal,purchase]).ready,false)
+})
 
 test('真实配置解析保留 93 行且清单 ID 唯一，两个版本互不混用', () => {
   const latest = inventoryFor('20260906')

@@ -8,6 +8,9 @@ export type PhaseQuantities = [number, number, number]
 export type MappingRecord = { lineIds: string[]; confirmed: boolean; note: string; technicalConfirmed?: boolean; technicalReview?: string; quantityNote?: string; allocations?: Record<string, PhaseQuantities> }
 export type QuoteRecord = { phase1: number | null; phase2: number | null; phase3: number | null; note: string }
 export type CostRoute = 'sales' | 'internal' | 'purchase' | 'software' | 'project' | 'customs' | 'finance'
+export type PriceCategory = 'internal' | 'purchase' | 'software' | 'project' | 'extras'
+export type PricingRules = Record<PriceCategory, number | null>
+export const defaultPricingRules = (): PricingRules => ({ internal: 3.3, purchase: 1.3, software: null, project: null, extras: 1 })
 export type CostRequest = { route: CostRoute; sentAt: string; remindedAt: string; reminderCount: number; channel: string; note: string }
 export type ExtraCost = { amount: number | null; evidence: string; status: 'pending' | 'estimate' | 'confirmed' | 'notApplicable'; reason: string; treatment?: 'cost' | 'separate'; sourceAmount?: number | null; sourceCurrency?: CostCurrency; fxToRm?: number | null; fxEvidence?: string }
 export const extraCostDefinitions = [
@@ -41,7 +44,13 @@ export type CommercialState = {
   requests: Partial<Record<CostRoute, CostRequest>>
   extraCosts: Record<string, ExtraCost>
   pricingBasis: string
+  pricingRules: PricingRules
+  lineFactorOverrides: Record<string, number | null>
+  linePriceOverrides: Record<string, number | null>
+  extraPriceOverrides: Record<string, number | null>
   draftPriceRm: number | null
+  quoteConfirmedAt: string
+  legacyDraftPriceRm: number | null
   businessTerms: string
   crmApproval: { status: 'draft' | 'submitted' | 'revision' | 'approved'; reference: string; note: string; updatedAt: string }
   crmOpportunity: string
@@ -58,7 +67,7 @@ const source = [
 ]
 export const sourceFile = (baseline: Baseline) => configVersions[source.find(x => x.id === baseline)!.index].file
 export const initialCommercialState = (): CommercialState => ({
-  baseline: '20260906', costs: {}, mappings: {}, quotes: {}, crmPrices: {}, materialOverrides: {}, requests: {}, extraCosts: {}, pricingBasis: '', draftPriceRm: null, businessTerms: '',
+  baseline: '20260906', costs: {}, mappings: {}, quotes: {}, crmPrices: {}, materialOverrides: {}, requests: {}, extraCosts: {}, pricingBasis: '', pricingRules: defaultPricingRules(), lineFactorOverrides: {}, linePriceOverrides: {}, extraPriceOverrides: {}, draftPriceRm: null, quoteConfirmedAt: '', legacyDraftPriceRm: null, businessTerms: '',
   crmApproval: { status: 'draft', reference: '', note: '', updatedAt: '' }, crmOpportunity: '', updatedAt: '',
 })
 export function activeCommercialBaseline(projectId: string): Baseline {
@@ -73,7 +82,7 @@ export function readCommercialState(projectId: string, baseline: Baseline = acti
     const raw = localStorage.getItem(`presales-commercial-v2:${projectId}:${baseline}`)
     if (raw) {
       const data = JSON.parse(raw) as CommercialState
-      if (data.baseline === baseline) return { ...initialCommercialState(), ...data }
+      if (data.baseline === baseline) return { ...initialCommercialState(), ...data, draftPriceRm: data.quoteConfirmedAt ? data.draftPriceRm : null, legacyDraftPriceRm: data.legacyDraftPriceRm ?? (!data.quoteConfirmedAt ? data.draftPriceRm : null), pricingRules: { ...defaultPricingRules(), ...data.pricingRules }, lineFactorOverrides: data.lineFactorOverrides || {}, linePriceOverrides: data.linePriceOverrides || {}, extraPriceOverrides: data.extraPriceOverrides || {} }
     }
   } catch { /* storage unavailable */ }
   return { ...initialCommercialState(), baseline }
@@ -146,6 +155,40 @@ export function routeFor(line: InventoryLine): CostRoute {
   if (line.kind === '软件') return 'software'
   if (line.kind === '实施服务' || line.kind === '施工材料') return 'project'
   return 'purchase'
+}
+
+export function priceCategoryFor(line: InventoryLine): Exclude<PriceCategory, 'extras'> {
+  const route = routeFor(line)
+  return route === 'internal' || route === 'software' || route === 'project' ? route : 'purchase'
+}
+
+export const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100
+
+export function pricingBreakdown(state: CommercialState, lines: InventoryLine[]) {
+  const rows = lines.map(line => {
+    const cost = state.costs[line.id]
+    const category = priceCategoryFor(line)
+    const unitCost = cost?.status === 'confirmed' && cost.amount !== null ? cost.amount : null
+    const factorOverride = state.lineFactorOverrides?.[line.id]
+    const factor = factorOverride !== undefined ? factorOverride : state.pricingRules?.[category]
+    const suggestedUnit = unitCost !== null && factor !== null && factor !== undefined && Number.isFinite(factor) && factor > 0 ? roundMoney(unitCost * factor) : null
+    const override = state.linePriceOverrides?.[line.id]
+    const finalUnit = suggestedUnit === null ? null : override !== undefined ? override : suggestedUnit
+    return { id: line.id, name: line.name, material: line.material, category, quantity: line.quantity, unitCost, factor, factorEdited: factorOverride !== undefined, priceEdited: override !== undefined, suggestedUnit, finalUnit, costTotal: unitCost === null ? null : roundMoney(unitCost * line.quantity), suggestedTotal: suggestedUnit === null ? null : roundMoney(suggestedUnit * line.quantity), finalTotal: finalUnit === null ? null : roundMoney(finalUnit * line.quantity), edited: factorOverride !== undefined || override !== undefined }
+  })
+  const extras = extraCostDefinitions.filter(item => state.extraCosts?.[item.id]?.status === 'confirmed' && state.extraCosts[item.id].treatment !== 'separate').map(item => {
+    const cost = state.extraCosts[item.id].amount
+    const factor = state.pricingRules?.extras
+    const suggested = cost !== null && factor !== null && factor !== undefined && Number.isFinite(factor) && factor > 0 ? roundMoney(cost * factor) : null
+    const override = state.extraPriceOverrides?.[item.id]
+    return { id: item.id, name: item.name, cost, factor, suggested, final: suggested === null ? null : override !== undefined ? override : suggested, edited: override !== undefined }
+  })
+  const suggestedReady = rows.every(row => row.suggestedTotal !== null) && extras.every(row => row.suggested !== null)
+  const ready = rows.every(row => row.finalTotal !== null) && extras.every(row => row.final !== null)
+  const costTotal = roundMoney(rows.reduce((sum, row) => sum + (row.costTotal || 0), 0) + extras.reduce((sum, row) => sum + (row.cost || 0), 0))
+  const suggestedTotal = suggestedReady ? roundMoney(rows.reduce((sum, row) => sum + (row.suggestedTotal || 0), 0) + extras.reduce((sum, row) => sum + (row.suggested || 0), 0)) : null
+  const finalTotal = ready ? roundMoney(rows.reduce((sum, row) => sum + (row.finalTotal || 0), 0) + extras.reduce((sum, row) => sum + (row.final || 0), 0)) : null
+  return { rows, extras, ready, costTotal, suggestedTotal, finalTotal, editedCount: rows.filter(row => row.edited).length + extras.filter(row => row.edited).length }
 }
 
 export function allocatedQuantity(mapping: MappingRecord | undefined, lineId: string) {
