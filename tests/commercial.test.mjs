@@ -199,6 +199,18 @@ test('批量回填保留原币、换算率与来源，拒绝不一致的 CNY 金
   assert.equal(result.records[lines[0].id].fxEvidence,'财务汇率 2026-09-20')
 })
 
+test('批量回填保留物料号、供应商和报价版本', () => {
+  const line = inventoryFor('20260906')[0]
+  const csv = toCsv([
+    ['配置版本','清单ID','单位成本CNY','状态','依据/询价来源','物料号','供应商名称','价格/报价版本'],
+    ['20260906',line.id,123,'confirmed','供应商正式报价','CRM-001','供应商 A','报价单 Q-1，2026-10-09'],
+  ])
+  const record = importCostCsv(csv,'20260906',[line]).records[line.id]
+  assert.equal(record.materialNumber,'CRM-001')
+  assert.equal(record.supplierName,'供应商 A')
+  assert.equal(record.priceReference,'报价单 Q-1，2026-10-09')
+})
+
 test('BOQ 分项核对需要物料、拆分规则、数量、技术记录和客户金额，并检查跨分项超量', () => {
   const lines = inventoryFor('20260906')
   const line = lines.find(x=>x.id==='BMS-1')

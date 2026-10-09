@@ -12,10 +12,10 @@ export type TemplateAutoCell = {
 
 type Contribution = { name: string; amount: number | null; ready: boolean; notApplicable?: boolean; kind: 'line' | 'extra' }
 
-const extraCells: Record<string, string> = {
-  panelAssembly: '1:F18', factoryAcceptance: '1:F37', packaging: '1:F43', capital: '1:F47', fxReserve: '1:F48',
-  travel: '1:F29', accommodation: '1:F30', design: '1:F33', visa: '1:F35', localization: '1:F42',
-  clearance: '1:F38', freight: '1:F39', insurance: '1:F49',
+const extraCells: Record<string, string[]> = {
+  panelAssembly: ['1:F18'], factoryAcceptance: ['1:F37'], packaging: ['1:F43'], capital: ['1:F47'], fxReserve: ['1:F48'],
+  travel: ['1:F29'], accommodation: ['1:F30'], design: ['1:F33'], visa: ['1:F35'], localization: ['1:F42'], otherOperating: ['1:F44'],
+  clearance: ['1:F38','7:C9'], freight: ['1:F39','7:C8'], duty: ['7:C10'], insurance: ['1:F49'],
 }
 
 // Only map a configured item when its destination in the source template is unambiguous.
@@ -49,28 +49,33 @@ function validMoney(amount: number | null, evidence: string, sourceCurrency?: st
 export function costTemplatePrefill(state: CommercialState) {
   const grouped = new Map<string, Contribution[]>()
   const unassigned: string[] = []
+  const unassignedLines: { id: string; name: string; amount: number }[] = []
   const add = (key: string, item: Contribution) => grouped.set(key, [...(grouped.get(key) || []), item])
+
+  if (state.quoteConfirmedAt && state.draftPriceCny !== null) {
+    add('1:B7', { name: '销售已确认的人民币报价', amount: state.draftPriceCny, ready: true, kind: 'extra' })
+  }
 
   for (const line of inventoryFor(state.baseline)) {
     const record = state.costs[line.id]
     const ready = !!record && record.status === 'confirmed' && validMoney(record.amount, record.evidence, record.sourceCurrency, record.fxToCny, record.fxEvidence)
-    const key = templateCellForLine(line)
+    const key = state.templateCategoryOverrides?.[line.id] || templateCellForLine(line)
     if (!key) {
-      if (ready) unassigned.push(`${line.name}：已确认成本，需销售按工时明细或项目实际拆入模板`)
+      if (ready) {
+        unassigned.push(`${line.name}：已确认成本，需销售按项目实际拆入模板；先核对是否与补充费用重复`)
+        unassignedLines.push({ id: line.id, name: line.name, amount: record!.amount! * line.quantity })
+      }
       continue
     }
     add(key, { name: `${line.name}（${line.owner}）`, amount: ready ? record!.amount! * line.quantity : null, ready, kind: 'line' })
   }
   for (const definition of extraCostDefinitions) {
     const record = state.extraCosts[definition.id]
-    const key = extraCells[definition.id]
+    const keys = extraCells[definition.id]
     const notApplicable = record?.status === 'notApplicable' && !!record.reason.trim()
     const ready = !!record && record.status === 'confirmed' && validMoney(record.amount, record.evidence, record.sourceCurrency, record.fxToCny, record.fxEvidence)
-    if (!key) {
-      if (ready) unassigned.push(`${definition.name}：已确认，需在模板中按明细或税费公式核对`)
-      continue
-    }
-    add(key, { name: `${definition.name}（${definition.owner}）`, amount: ready ? record!.amount : null, ready, notApplicable, kind: 'extra' })
+    if (!keys) continue
+    for (const key of keys) add(key, { name: `${definition.name}（${definition.owner}）`, amount: ready ? record!.amount : null, ready, notApplicable, kind: 'extra' })
   }
 
   const cells: Record<string, TemplateAutoCell> = {}
@@ -87,5 +92,5 @@ export function costTemplatePrefill(state: CommercialState) {
       notApplicable: items.every(item => item.notApplicable),
     }
   }
-  return { cells, unassigned }
+  return { cells, unassigned, unassignedLines }
 }

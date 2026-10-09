@@ -1,6 +1,9 @@
 import { useMemo, useState } from 'react'
 import { CircleAlert, Download, FileSpreadsheet, GitCompareArrows, Search, Bell, Send } from 'lucide-react'
 import CostTemplateWorkbench from '@/components/CostTemplateWorkbench'
+import RoleTemplateFields from '@/components/RoleTemplateFields'
+import { costTemplateChecks } from '@/lib/costTemplateChecks'
+import { costTemplatePrefill } from '@/lib/costTemplatePrefill'
 import {
   allocationFor, amount, boqGroupIssues, boqGroups, commercialReadiness, convertedAmount, crmMappingIssues, crmPriceKey, extraCostDefinitions,
   importCostCsv, inventoryFor, pricingBreakdown, quoteCurrencyPatch, quotePricingTotal, quoteRateReady, readCommercialState, routeFor, mappingIssues, sourceFile, suggestedLines, toCsv, toQuoteAmount,
@@ -51,7 +54,7 @@ function routeForRole(role: Role): CostRoute {
   if (role === '销售') return 'sales'
   return 'internal'
 }
-const costSteps = ['技术给配置清单', '销售分类发起成本协作', '各岗位按人民币回填成本与依据', '成本自动带入模板，销售补空项后导出 Excel', '销售选报价币种、填写分类原则，Agent 生成建议价', '销售逐项调整，核对成本与报价', '销售确认并导出报价版']
+const costSteps = ['技术给配置清单', '销售分类发起成本协作', '各岗位填写金额、依据和模板明细', '模板自动汇总，销售核差并导出 Excel', '销售选报价币种、填写分类原则，Agent 生成建议价', '销售逐项调整，核对成本与报价', '销售确认并导出报价版']
 const priceCategoryLabels: Record<PriceCategory, string> = { internal: '自产产品', purchase: '外购设备', software: '软件', project: '施工 / 服务', extras: '补充费用' }
 
 export default function CommercialWorkbench({ stage, projectId, role }: { stage: string; projectId: string; role: Role }) {
@@ -82,10 +85,13 @@ export default function CommercialWorkbench({ stage, projectId, role }: { stage:
   const hasBoqAmount = boqGroups.some(item => { const quote=state.quotes[item.id]; return quote && [quote.phase1,quote.phase2,quote.phase3].some(value=>value!==null) })
   const directCost = lines.reduce((sum,line) => sum + (state.costs[line.id]?.status === 'confirmed' ? (state.costs[line.id]?.amount || 0) * line.quantity : 0), 0)
   const extraTotal = extraCostDefinitions.reduce((sum,item) => sum + (state.extraCosts?.[item.id]?.status === 'confirmed' && state.extraCosts[item.id].treatment !== 'separate' ? state.extraCosts[item.id].amount || 0 : 0), 0)
+  const allCostsReady = readiness.missingCosts.length === 0 && readiness.missingExtras.length === 0
   const pricing = pricingBreakdown(state, lines)
+  const templateAuto = costTemplatePrefill(state)
+  const templateIssues = costTemplateChecks(state, pricing.finalTotal, allCostsReady ? pricing.costTotal : null, templateAuto.cells).filter(check=>!check.ready)
+  const templateBlockCount = templateIssues.length + templateAuto.unassigned.length + Object.values(templateAuto.cells).filter(cell=>cell.conflict).length
   const liveQuoteTotal = quotePricingTotal(state, pricing)
   const crmIssues = crmMappingIssues(state, lines)
-  const allCostsReady = readiness.missingCosts.length === 0 && readiness.missingExtras.length === 0
   const myRoute = routeForRole(role)
   const pendingForRoute = (route: CostRoute) => readiness.missingExtras.filter(item=>item.route===route).length + readiness.missingCosts.filter(line=>routeFor(line)===route).length
   const myPending = pendingForRoute(myRoute)
@@ -98,12 +104,16 @@ export default function CommercialWorkbench({ stage, projectId, role }: { stage:
 
   function update(patch: Partial<CommercialState>) {
     const next = { ...state, ...patch, updatedAt: new Date().toISOString() }
-    if (patch.costs || patch.extraCosts || patch.pricingRules || patch.lineFactorOverrides || patch.linePriceOverrides || patch.extraPriceOverrides || patch.pricingBasis !== undefined || patch.quoteCurrency || patch.quoteFxFromCny !== undefined || patch.quoteFxEvidence !== undefined) {
+    if (patch.extraCosts?.tax || patch.templateEntries && Object.keys(patch.templateEntries).some(key => (key.startsWith('4:') || key.startsWith('5:')) && patch.templateEntries?.[key] !== state.templateEntries?.[key])) {
+      next.templateTaxResultCny = null
+      next.templateTaxReviewEvidence = ''
+    }
+    if (patch.costs || patch.extraCosts || patch.templateEntries || patch.templateCategoryOverrides || patch.templateTaxResultCny !== undefined || patch.templateTaxReviewEvidence !== undefined || patch.pricingRules || patch.lineFactorOverrides || patch.linePriceOverrides || patch.extraPriceOverrides || patch.pricingBasis !== undefined || patch.quoteCurrency || patch.quoteFxFromCny !== undefined || patch.quoteFxEvidence !== undefined) {
       next.draftPriceCny = null
       next.quoteConfirmedAt = ''
     }
     if (patch.quoteFxFromCny !== undefined || patch.quoteFxEvidence !== undefined) next.mappings = Object.fromEntries(Object.entries(state.mappings).map(([id,mapping])=>[id,{...mapping,confirmed:false}]))
-    if ((patch.costs || patch.extraCosts || patch.mappings || patch.quotes || patch.crmPrices || patch.materialOverrides || patch.businessTerms || patch.pricingBasis !== undefined || patch.crmOpportunity || patch.quoteCurrency || patch.quoteFxFromCny !== undefined || patch.quoteFxEvidence !== undefined) && state.crmApproval.status === 'approved') {
+    if ((patch.costs || patch.extraCosts || patch.templateEntries || patch.templateCategoryOverrides || patch.templateTaxResultCny !== undefined || patch.templateTaxReviewEvidence !== undefined || patch.mappings || patch.quotes || patch.crmPrices || patch.materialOverrides || patch.businessTerms || patch.pricingBasis !== undefined || patch.crmOpportunity || patch.quoteCurrency || patch.quoteFxFromCny !== undefined || patch.quoteFxEvidence !== undefined) && state.crmApproval.status === 'approved') {
       next.crmApproval = { ...state.crmApproval, status: 'revision', note: '报价输入已变更，需在 CRM 重新评审', updatedAt: new Date().toISOString() }
     }
     setState(next)
@@ -217,14 +227,14 @@ export default function CommercialWorkbench({ stage, projectId, role }: { stage:
   }
   function exportCostRequests() {
     download(`${projectId}-F7-待补成本-${state.baseline}.csv`, [
-      ['配置版本', '清单ID', '系统', '序号', '名称', '规格', '物料号', '数量', '单位', '成本类型', '建议责任方', '单位成本CNY', '状态', '依据/询价来源', '原币单位成本', '原币币种', '1原币折CNY', '汇率来源'],
-      ...lines.map(line => { const cost=state.costs[line.id]; return [state.baseline, line.id, line.sheet, line.sn, line.name, line.spec, line.material, line.quantity, line.unit, line.kind, line.owner, cost?.amount ?? '', cost?.status || 'pending', cost?.evidence || '', cost?.sourceAmount??cost?.amount??'', cost?.sourceCurrency||'CNY', cost?.fxToCny??(cost?.sourceCurrency && cost.sourceCurrency!=='CNY'?'':1), cost?.fxEvidence||''] }),
+      ['配置版本', '清单ID', '系统', '序号', '名称', '规格', '物料号', '数量', '单位', '成本类型', '建议责任方', '单位成本CNY', '状态', '依据/询价来源', '原币单位成本', '原币币种', '1原币折CNY', '汇率来源', '供应商名称', '价格/报价版本'],
+      ...lines.map(line => { const cost=state.costs[line.id]; return [state.baseline, line.id, line.sheet, line.sn, line.name, line.spec, cost?.materialNumber||line.material, line.quantity, line.unit, line.kind, line.owner, cost?.amount ?? '', cost?.status || 'pending', cost?.evidence || '', cost?.sourceAmount??cost?.amount??'', cost?.sourceCurrency||'CNY', cost?.fxToCny??(cost?.sourceCurrency && cost.sourceCurrency!=='CNY'?'':1), cost?.fxEvidence||'', cost?.supplierName||'', cost?.priceReference||''] }),
     ])
   }
   function exportCostBaseline() {
     download(`${projectId}-F7-成本底表-${state.baseline}.csv`,[
       ['岗位分类','清单ID','项目','物料号','数量','单位','原币金额','原币币种','1原币折CNY','汇率来源','单位成本CNY','成本合价CNY','状态','责任方','来源/依据'],
-      ...lines.map(line=>{const cost=state.costs[line.id];return [routeMeta[routeFor(line)].title,line.id,line.name,state.materialOverrides?.[line.id]||line.material,line.quantity,line.unit,cost?.sourceAmount??cost?.amount??'',cost?.sourceCurrency||'CNY',cost?.fxToCny??(cost?.sourceCurrency && cost.sourceCurrency!=='CNY'?'':1),cost?.fxEvidence||'',cost?.amount??'',cost?.amount===null||cost?.amount===undefined?'':cost.amount*line.quantity,cost?.status||'pending',cost?.owner||line.owner,cost?.evidence||'']}),
+      ...lines.map(line=>{const cost=state.costs[line.id];return [routeMeta[routeFor(line)].title,line.id,line.name,cost?.materialNumber||state.materialOverrides?.[line.id]||line.material,line.quantity,line.unit,cost?.sourceAmount??cost?.amount??'',cost?.sourceCurrency||'CNY',cost?.fxToCny??(cost?.sourceCurrency && cost.sourceCurrency!=='CNY'?'':1),cost?.fxEvidence||'',cost?.amount??'',cost?.amount===null||cost?.amount===undefined?'':cost.amount*line.quantity,cost?.status||'pending',cost?.owner||line.owner,[cost?.supplierName,cost?.priceReference,cost?.evidence].filter(Boolean).join('；')]}),
       ...extraCostDefinitions.map(item=>{const extra=state.extraCosts?.[item.id];const value=extra?.status==='notApplicable'?'':extra?.amount??'';return [routeMeta[item.route].title,item.id,item.name,'',1,'项',extra?.sourceAmount??value,extra?.sourceCurrency||'CNY',extra?.fxToCny??(extra?.sourceCurrency && extra.sourceCurrency!=='CNY'?'':1),extra?.fxEvidence||'',value,value,extra?.status||'pending',item.owner,`${extra?.evidence||extra?.reason||''}${item.id==='tax'?`；口径：${extra?.treatment||'待确认'}`:''}`]}),
       ['成本汇总','','','','','','','','','','',allCostsReady?directCost+extraTotal:'待全部成本确认','','销售','税费单列项不计入本汇总'],
     ])
@@ -232,7 +242,7 @@ export default function CommercialWorkbench({ stage, projectId, role }: { stage:
   function exportDraftQuote() {
     download(`${projectId}-F7-销售确认报价版-${state.baseline}.csv`,[
       ['项目','配置版本','清单ID','成本类型','名称','物料号','数量','单位成本CNY','计入毛利的成本合计CNY','报价系数','Agent建议单价CNY','Agent建议合价CNY','销售确认单价CNY','销售确认合价CNY',`销售确认单价${state.quoteCurrency}`,`销售确认合价${state.quoteCurrency}`,'1CNY折报价币种','报价汇率来源','行毛利率','是否人工调整','报价状态','定价依据'],
-      ...pricing.rows.map(row => [projectId,state.baseline,row.id,priceCategoryLabels[row.category],row.name,state.materialOverrides?.[row.id]||row.material,row.quantity,row.unitCost,row.costTotal,row.factor,row.suggestedUnit,row.suggestedTotal,row.finalUnit,row.finalTotal,toQuoteAmount(row.finalUnit,state),toQuoteAmount(row.finalTotal,state),state.quoteCurrency==='CNY'?1:state.quoteFxFromCny,state.quoteCurrency==='CNY'?'人民币本位':state.quoteFxEvidence,row.finalTotal && row.costTotal !== null ? `${((row.finalTotal-row.costTotal)/row.finalTotal*100).toFixed(2)}%` : '',row.edited?'是':'否','销售已确认，待后续 BOQ / CRM',state.pricingBasis]),
+      ...pricing.rows.map(row => [projectId,state.baseline,row.id,priceCategoryLabels[row.category],row.name,state.costs[row.id]?.materialNumber||state.materialOverrides?.[row.id]||row.material,row.quantity,row.unitCost,row.costTotal,row.factor,row.suggestedUnit,row.suggestedTotal,row.finalUnit,row.finalTotal,toQuoteAmount(row.finalUnit,state),toQuoteAmount(row.finalTotal,state),state.quoteCurrency==='CNY'?1:state.quoteFxFromCny,state.quoteCurrency==='CNY'?'人民币本位':state.quoteFxEvidence,row.finalTotal && row.costTotal !== null ? `${((row.finalTotal-row.costTotal)/row.finalTotal*100).toFixed(2)}%` : '',row.edited?'是':'否','销售已确认，待后续 BOQ / CRM',state.pricingBasis]),
       ...pricing.extras.map(row => [projectId,state.baseline,row.id,'补充费用',row.name,'',1,row.cost,row.cost,row.factor,row.suggested,row.suggested,row.final,row.final,toQuoteAmount(row.final,state),toQuoteAmount(row.final,state),state.quoteCurrency==='CNY'?1:state.quoteFxFromCny,state.quoteCurrency==='CNY'?'人民币本位':state.quoteFxEvidence,row.final && row.cost !== null ? `${((row.final-row.cost)/row.final*100).toFixed(2)}%` : '',row.edited?'是':'否','销售已确认，待后续 BOQ / CRM',state.pricingBasis]),
       [projectId,state.baseline,'合计','','','','','',pricing.costTotal,'','',pricing.suggestedTotal,'',state.draftPriceCny,'',quoteTotalDraft,state.quoteCurrency==='CNY'?1:state.quoteFxFromCny,state.quoteCurrency==='CNY'?'人民币本位':state.quoteFxEvidence,draftMargin===null?'':`${draftMargin.toFixed(2)}%`,'','销售已确认，待后续 BOQ / CRM',state.pricingBasis],
       ...(state.extraCosts.tax?.status==='confirmed'&&state.extraCosts.tax.treatment==='separate' ? [[projectId,state.baseline,'tax','商务条件单列','相关税费','',1,state.extraCosts.tax.amount,'','','','','','','','','','','','','不计入以上成本和报价合计，须在后续商务条件中单列',state.extraCosts.tax.evidence]] : []),
@@ -330,7 +340,10 @@ export default function CommercialWorkbench({ stage, projectId, role }: { stage:
             <div className="cw-card-head"><div><h4>技术配置清单</h4><p className="cw-note">来源：{sourceFile(state.baseline)}。自动分类待岗位核对，项目相关费用如已在清单中请避免重复填报。</p></div><div className="cw-actions"><button className="cw-button" onClick={exportCostRequests}><Download size={14}/>询价 CSV</button><label className="cw-button cw-file">批量回填 CSV<input type="file" accept=".csv,text/csv" onChange={e=>{void handleCostImport(e.target.files?.[0]);e.target.value=''}}/></label></div></div>
             <div className="cw-toolbar"><label><Search size={15}/><input aria-label="搜索当前岗位物料" placeholder="搜索当前岗位物料" value={query} onChange={e=>setQuery(e.target.value)}/></label><select aria-label="成本状态筛选" value={filter} onChange={e=>setFilter(e.target.value)}><option>全部</option><option>待补</option><option>已确认</option></select></div>
             <div className="cw-grid"><div><div className="cw-list-head"><span>物料 / 服务</span><span>数量</span><span>负责方</span><span>状态</span></div><div className="cw-scroll-list">{routeLines.map(line=><button key={line.id} className={activeLine?.id===line.id?'cw-line selected':'cw-line'} onClick={()=>setSelected(line.id)}><span><strong>{line.name}</strong><small>{line.sheet} #{line.sn} · {line.material||'料号待核'}</small></span><span>{line.quantity} {line.unit}</span><span>{line.owner}</span><span>{state.costs[line.id]?.status==='confirmed'?mark('已确认','ok'):state.costs[line.id]?.status==='estimate'?mark('暂估'):mark('待补','bad')}</span></button>)}</div>{routeLines.length===0&&<p className="cw-empty">当前筛选下没有清单行。</p>}</div>
-              {activeLine && activeCost && <aside className="cw-line-editor"><span className="cw-eyebrow">{activeLine.sheet} #{activeLine.sn}</span><h4>{activeLine.name}</h4><p className="cw-spec">{activeLine.spec}</p><div className="cw-facts"><span>数量 <b>{activeLine.quantity} {activeLine.unit}</b></span><span>料号 <b>{activeLine.material||'待核对'}</b></span></div>
+              {activeLine && activeCost && <aside className="cw-line-editor"><span className="cw-eyebrow">{activeLine.sheet} #{activeLine.sn}</span><h4>{activeLine.name}</h4><p className="cw-spec">{activeLine.spec}</p><div className="cw-facts"><span>数量 <b>{activeLine.quantity} {activeLine.unit}</b></span><span>料号 <b>{activeCost.materialNumber||activeLine.material||'待核对'}</b></span></div>
+                <label className="cw-field">确认后的内部物料号<input value={activeCost.materialNumber??activeLine.material} onChange={e=>setCost(activeLine,{materialNumber:e.target.value,status:activeCost.status==='confirmed'?'pending':activeCost.status})} placeholder="CRM 物料号；外购物料填内部映射号"/></label>
+                {activeRoute==='purchase' && <label className="cw-field">供应商名称<input value={activeCost.supplierName||''} onChange={e=>setCost(activeLine,{supplierName:e.target.value,status:activeCost.status==='confirmed'?'pending':activeCost.status})} placeholder="供应商 / 采购联系人"/></label>}
+                <label className="cw-field">{activeRoute==='purchase'?'供应商报价编号、日期与有效期':activeRoute==='project'?'项目成本测算版本与日期':'CRM 价格版本与查询日期'}<input value={activeCost.priceReference||''} onChange={e=>setCost(activeLine,{priceReference:e.target.value,status:activeCost.status==='confirmed'?'pending':activeCost.status})} placeholder={activeRoute==='purchase'?'报价单编号、日期、有效期':activeRoute==='project'?'预算版本、日期及工作范围':'价格版本、查询日期及适用条件'}/></label>
                 <label className="cw-field">单位成本金额（默认人民币）{numberField(activeCost.sourceAmount??activeCost.amount,value=>setCostMoney(activeLine,{sourceAmount:value}),`${activeLine.name}单位成本金额`)}</label>
                 {activeCost.legacyAmountRm !== undefined && activeCost.sourceCurrency !== 'CNY' && <p className="cw-agent-note">旧版这行折合 RM {amount(activeCost.legacyAmountRm)}。原币金额已保留；请填写新的折人民币汇率并重新确认。</p>}
                 <label className="cw-field">这笔成本的币种<select value={activeCost.sourceCurrency||'CNY'} onChange={e=>setCostMoney(activeLine,{sourceCurrency:e.target.value as CostCurrency})}><option value="CNY">CNY · 人民币（默认）</option><option value="RM">RM · 马币</option><option value="USD">USD · 美元</option></select></label>
@@ -350,13 +363,14 @@ export default function CommercialWorkbench({ stage, projectId, role }: { stage:
             <label className="cw-field">状态<select value={extra.status} onChange={e=>setExtra(item.id,{status:e.target.value as ExtraCost['status']})}><option value="pending">待补</option><option value="estimate">暂估</option><option value="confirmed">已确认</option><option value="notApplicable">不适用 / 已包含</option></select></label>
             {extra.status==='notApplicable'&&<label className="cw-field">不适用 / 已包含依据<input value={extra.reason} onChange={e=>setExtra(item.id,{reason:e.target.value})} placeholder="如：已包含在 BMS-xx 清单行"/></label>}
           </div>})}</div></div>}
+          <RoleTemplateFields route={activeRoute} state={state} role={role} canEdit={role==='销售'||activeRoute===myRoute} onUpdate={update}/>
         </div>}
       </section>
       <section className="cw-card cw-f7-summary"><div className="cw-card-head"><div><span className="cw-eyebrow">第 4 步 · 成本版</span><h3>销售核对并输出成本底稿</h3></div><button className="cw-button" disabled={!allCostsReady} onClick={exportCostBaseline}><FileSpreadsheet size={15}/>导出逐行核对 CSV</button></div>
         <div className="cw-summary-grid"><div><span>配置清单已确认</span><strong>{confirmedCosts.length} / {lines.length}</strong></div><div><span>补充费用已处理</span><strong>{extraCostDefinitions.length-readiness.missingExtras.length} / {extraCostDefinitions.length}</strong></div><div><span>成本合计 CNY</span><strong>{allCostsReady?amount(directCost+extraTotal):'待补齐'}</strong></div></div>
-        <p className="cw-note">成本合计仅在所有项目已确认或注明不适用后可用；税费选择“商务条件单列”时不计入毛利成本。</p>
+        <p className="cw-note">成本合计仅在所有项目已确认或注明不适用后可用；税费选择“商务条件单列”时不计入毛利成本。{templateBlockCount>0?` 模板还有 ${templateBlockCount} 项金额、归类或重复来源待处理，确认报价前需核对。`:''}</p>
       </section>
-      <CostTemplateWorkbench state={state} role={role} projectId={projectId} onUpdate={update} onMessage={setMessage}/>
+      <CostTemplateWorkbench state={state} role={role} projectId={projectId} expectedQuoteCny={pricing.finalTotal} expectedCostCny={allCostsReady?pricing.costTotal:null} onUpdate={update} onMessage={setMessage}/>
       <section className="cw-card cw-f7-currency"><div className="cw-card-head"><div><span className="cw-eyebrow">项目设置 · 对外报价币种</span><h3>先用人民币算价格，再换算成客户要求的币种</h3></div>{mark(quoteRateReady(state)?'报价换算已齐':'待填报价汇率',quoteRateReady(state)?'ok':'bad')}</div>
         <div className="cw-quote-currency-grid"><label className="cw-field">客户要求的报价币种<select value={state.quoteCurrency} disabled={role!=='销售'} onChange={e=>changeQuoteCurrency(e.target.value as CostCurrency)}><option value="CNY">CNY · 人民币</option><option value="RM">RM · 马币</option><option value="USD">USD · 美元</option></select></label>
           {state.quoteCurrency !== 'CNY' && <><label className="cw-field">1 CNY = 多少 {state.quoteCurrency}{numberField(state.quoteFxFromCny,changeQuoteRate,`人民币折${state.quoteCurrency}报价汇率`,role!=='销售')}</label><label className="cw-field">报价汇率来源及日期<input disabled={role!=='销售'} value={state.quoteFxEvidence} onChange={e=>update({quoteFxEvidence:e.target.value})} placeholder="财务确认的项目报价汇率、日期"/></label></>}</div>
@@ -381,7 +395,7 @@ export default function CommercialWorkbench({ stage, projectId, role }: { stage:
         </div>
         <p className="cw-note">表中单价可直接改，合价和毛利随之更新；单列税费不计入本表。红色毛利表示报价低于该行成本，请销售核对。</p>
       </section>
-      <section className="cw-card cw-f7-finish"><div><span className="cw-eyebrow">第 7 步 · 报价版</span><h3>确认销售调整后的报价稿</h3><p className="cw-note">{!allCostsReady?'请先补齐成本版。':!pricing.ready?'请填写缺少的报价系数。':!quoteRateReady(state)?'请填写项目报价汇率与来源。':!state.pricingBasis.trim()?'请填写销售报价原则与判断。':state.quoteConfirmedAt?'当前报价版已确认；任何成本或定价修改都需要重新确认。':'建议价已生成，请销售逐项核对后确认。'}</p></div><div className="cw-finish-actions"><button className="cw-button primary" disabled={role!=='销售'||!allCostsReady||!pricing.ready||!pricing.finalTotal||pricing.finalTotal<=0||!quoteRateReady(state)||!state.pricingBasis.trim()} onClick={()=>{update({draftPriceCny:pricing.finalTotal,quoteConfirmedAt:new Date().toISOString()});setMessage('销售报价版已确认。成本版按人民币导出；报价版同时列出人民币底价和项目报价币种。')}}>确认报价版 · {state.quoteCurrency} {allCostsReady&&pricing.ready?amount(liveQuoteTotal):'待补齐'}</button><button className="cw-button" disabled={!state.quoteConfirmedAt||state.draftPriceCny===null||!allCostsReady||!quoteRateReady(state)} onClick={exportDraftQuote}><Download size={15}/>导出报价版 CSV</button></div></section>
+      <section className="cw-card cw-f7-finish"><div><span className="cw-eyebrow">第 7 步 · 报价版</span><h3>确认销售调整后的报价稿</h3><p className="cw-note">{!allCostsReady?'请先补齐成本版。':!pricing.ready?'请填写缺少的报价系数。':templateBlockCount?`请先处理模板明细的 ${templateBlockCount} 项金额、归类或重复来源问题。`:!quoteRateReady(state)?'请填写项目报价汇率与来源。':!state.pricingBasis.trim()?'请填写销售报价原则与判断。':state.quoteConfirmedAt?'当前报价版已确认；任何成本或定价修改都需要重新确认。':'建议价已生成，请销售逐项核对后确认。'}</p></div><div className="cw-finish-actions"><button className="cw-button primary" disabled={role!=='销售'||!allCostsReady||!pricing.ready||templateBlockCount>0||!pricing.finalTotal||pricing.finalTotal<=0||!quoteRateReady(state)||!state.pricingBasis.trim()} onClick={()=>{update({draftPriceCny:pricing.finalTotal,quoteConfirmedAt:new Date().toISOString()});setMessage('销售报价版已确认。成本版按人民币导出；报价版同时列出人民币底价和项目报价币种。')}}>确认报价版 · {state.quoteCurrency} {allCostsReady&&pricing.ready?amount(liveQuoteTotal):'待补齐'}</button><button className="cw-button" disabled={!state.quoteConfirmedAt||state.draftPriceCny===null||!allCostsReady||templateBlockCount>0||!quoteRateReady(state)} onClick={exportDraftQuote}><Download size={15}/>导出报价版 CSV</button></div></section>
       <section className="cw-card cw-compare"><div><GitCompareArrows size={18}/><h3>版本提醒</h3></div><p>7 月与 9 月配置分别保存。技术清单变更后，成本、换算依据和销售报价须按对应版本复核。</p></section>
     </div>}
 

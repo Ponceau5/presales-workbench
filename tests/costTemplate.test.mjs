@@ -36,3 +36,13 @@ test('清空财务参数可以覆盖模板旧值，文本按普通单元格写�
   assert.match(sheet5,/<x:c r="A4"[^>]*\/>/)
   assert.match(sheet1,/<x:c r="B3"[^>]*t="inlineStr"><x:is><x:t[^>]*>=2\+2<\/x:t><\/x:is><\/x:c>/)
 })
+
+test('税费商务条件单列时可在导出主表记零，税费测算页公式仍保留', () => {
+  const original = new Uint8Array(readFileSync('public/overseas-cost-template.xlsx'))
+  const result = fillCostTemplate(original, {'1:F45':0})
+  const after = readStoredZip(result)
+  const main = new TextDecoder().decode(after.find(entry=>entry.name==='xl/worksheets/sheet1.xml').bytes)
+  const tax = new TextDecoder().decode(after.find(entry=>entry.name==='xl/worksheets/sheet4.xml').bytes)
+  assert.match(main,/<x:c r="F45"[^>]*><x:v>0<\/x:v><\/x:c>/)
+  assert.match(tax,/<x:c r="B31"[^>]*><x:f/)
+})

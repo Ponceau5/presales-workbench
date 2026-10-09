@@ -2,14 +2,21 @@ import { useMemo, useState } from 'react'
 import { Download } from 'lucide-react'
 import templateSchema from '@/lib/costTemplateSchema.json'
 import { fillCostTemplate } from '@/lib/costTemplateExport'
-import { costTemplatePrefill } from '@/lib/costTemplatePrefill'
-import type { CommercialState } from '@/lib/commercialWorkflow'
+import { costTemplatePrefill, templateCellForLine } from '@/lib/costTemplatePrefill'
+import { costTemplateChecks } from '@/lib/costTemplateChecks'
+import { templateFieldRoutes } from '@/lib/costTemplateFields'
+import { inventoryFor, type CommercialState } from '@/lib/commercialWorkflow'
 import type { Role } from '@/lib/workspace'
 
 type TemplateCell = { ref: string; column: number; value: string | number | null; formula?: boolean; input?: string; financeOnly?: boolean; comment?: string }
 type TemplateSheet = { name: string; title: string; owner: string; guide: string; columns: number; rows: { number: number; cells: TemplateCell[] }[] }
 const sheets = templateSchema.sheets as TemplateSheet[]
 const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+const categoryChoices = [
+  ['F14','自产 PMC 成本'],['F16','施工材料'],['F17','施工服务'],['F20','服务器'],['F21','交换机与网关'],
+  ['F22','控制柜（含 PLC）'],['F23','流量计'],['F24','ICT'],['F25','安防系统'],['F26','其他外购设备'],
+  ['F27','软件成本'],['F33','设计费用'],['F44','其他费用'],
+] as const
 const choices: Record<string, string[]> = {
   country: ['泰国','马来西亚','印度尼西亚','韩国','日本'],
   entity: ['中国公司','新加坡公司'],
@@ -31,10 +38,12 @@ function cellLabel(sheet: TemplateSheet, row: { number: number; cells: TemplateC
   return `${sheet.title} ${left || header || ''} ${cell.ref}`
 }
 
-export default function CostTemplateWorkbench({ state, role, projectId, onUpdate, onMessage }: {
+export default function CostTemplateWorkbench({ state, role, projectId, expectedQuoteCny, expectedCostCny, onUpdate, onMessage }: {
   state: CommercialState
   role: Role
   projectId: string
+  expectedQuoteCny: number | null
+  expectedCostCny: number | null
   onUpdate: (patch: Partial<CommercialState>) => void
   onMessage: (message: string) => void
 }) {
@@ -43,6 +52,10 @@ export default function CostTemplateWorkbench({ state, role, projectId, onUpdate
   const [showAllMissing, setShowAllMissing] = useState(false)
   const sheet = sheets[active]
   const auto = useMemo(() => costTemplatePrefill(state), [state])
+  const inventory = useMemo(() => inventoryFor(state.baseline), [state.baseline])
+  const confirmedLines = inventory.filter(line=>state.costs[line.id]?.status==='confirmed'&&state.costs[line.id]?.amount!==null)
+  const checks = useMemo(() => costTemplateChecks(state, expectedQuoteCny, expectedCostCny, auto.cells), [state, expectedQuoteCny, expectedCostCny, auto])
+  const issues = checks.filter(check=>!check.ready)
   const values = state.templateEntries || {}
   const effective = (index: number, cell: TemplateCell) => {
     const key = `${index + 1}:${cell.ref}`
@@ -57,11 +70,17 @@ export default function CostTemplateWorkbench({ state, role, projectId, onUpdate
   }).length
   const missing = active === 4 ? [] : sheet.rows.flatMap(row=>row.cells.filter(cell=>cell.input && effective(active, cell) === '' && !auto.cells[`${active + 1}:${cell.ref}`]?.notApplicable).map(cell=>({row,cell})))
   const pendingCategories = Object.values(auto.cells).filter(cell=>cell.pending.length || cell.conflict).length
-  const draft = pendingCategories > 0 || auto.unassigned.length > 0
+  const draft = pendingCategories > 0 || auto.unassigned.length > 0 || issues.length > 0
 
   function setCell(ref: string, value: string | number) {
     if (typeof value === 'number' && (!Number.isFinite(value) || value < 0)) { onMessage('请填写有效的非负金额或比例。'); return }
     onUpdate({ templateEntries: { ...values, [`${active + 1}:${ref}`]: value } })
+  }
+  function setCategory(lineId: string, ref: string) {
+    const next = { ...(state.templateCategoryOverrides || {}) }
+    if (ref) next[lineId] = `1:${ref}`
+    else delete next[lineId]
+    onUpdate({ templateCategoryOverrides: next })
   }
   async function exportWorkbook() {
     setExporting(true)
@@ -71,7 +90,8 @@ export default function CostTemplateWorkbench({ state, role, projectId, onUpdate
       const base = new Uint8Array(await response.arrayBuffer())
       const manual = Object.fromEntries(Object.entries(values).filter(([key])=>!auto.cells[key]?.total))
       const automatic = Object.fromEntries(Object.entries(auto.cells).filter(([,cell])=>cell.value !== null).map(([key,cell])=>[key,cell.value!]))
-      const filled = fillCostTemplate(base, { '1:A1': `${projectId}项目-评估模板`, ...manual, ...automatic })
+      const separateTax = state.extraCosts.tax?.status==='confirmed' && state.extraCosts.tax.treatment==='separate'
+      const filled = fillCostTemplate(base, { '1:A1': `${projectId}项目-评估模板`, ...manual, ...automatic, ...(separateTax ? {'1:F45':0} : {}) })
       const blob = new Blob([Uint8Array.from(filled)], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
@@ -79,7 +99,7 @@ export default function CostTemplateWorkbench({ state, role, projectId, onUpdate
       link.download = `${projectId}-海外成本估算模板-${state.baseline}${draft?'-待补草稿':''}.xlsx`
       link.click()
       URL.revokeObjectURL(url)
-      onMessage(`已导出原格式 Excel；自动带入 ${Object.keys(automatic).length} 项。当前仍有 ${pendingCategories} 个成本分类待补或核对、${auto.unassigned.length} 笔已确认成本待人工归类。空白项请继续补充，公式在 Excel 打开时重算。`)
+      onMessage(`已导出原格式 Excel；自动带入 ${Object.keys(automatic).length} 项。仍有 ${pendingCategories} 个成本分类待补、${auto.unassigned.length} 笔待归类、${issues.length} 项金额或测算条件待核对。${separateTax?'税费按商务条件单列，主表成本 F45 记 0；税费测算页仍保留原公式。':''}公式在 Excel 打开时重算。`)
     } catch (error) { onMessage(error instanceof Error ? error.message : '成本模板导出失败') }
     finally { setExporting(false) }
   }
@@ -88,7 +108,8 @@ export default function CostTemplateWorkbench({ state, role, projectId, onUpdate
     const key = `${active + 1}:${cell.ref}`
     const raw = effective(active,cell)
     const managed = auto.cells[key]
-    const disabled = !!cell.financeOnly && role !== '财务 / 风控'
+    const roleRoute = role === '软件产品' ? 'software' : role === 'PM / PO' ? 'project' : role === '货运关务' ? 'customs' : role === '财务 / 风控' ? 'finance' : role === '商务支持' ? 'purchase' : 'internal'
+    const disabled = !!cell.financeOnly && role !== '财务 / 风控' || role !== '销售' && !templateFieldRoutes(active,cell.ref).includes(roleRoute)
     const label = cellLabel(sheet,row,cell)
     if (managed?.total) return <div className="cw-template-auto"><strong>{raw === '' ? managed.notApplicable ? '不适用' : '待岗位回填' : `CNY ${Number(raw).toLocaleString('zh-CN')}`}</strong><small>{managed.conflict ? '清单与补充费用重复，销售核对后处理' : managed.pending.length ? `已带入 ${managed.confirmed}/${managed.total} 笔；待确认 ${managed.pending.length} 笔` : '已随岗位确认自动更新'}</small></div>
     if (cell.input === 'country') return <input aria-label={label} disabled={disabled} list="cw-template-country" value={String(raw)} onChange={e=>setCell(cell.ref,e.target.value)} placeholder="选择或输入国家"/>
@@ -108,9 +129,10 @@ export default function CostTemplateWorkbench({ state, role, projectId, onUpdate
 
   return <section className="cw-card cw-template-workbench">
     <div className="cw-card-head"><div><span className="cw-eyebrow">海外成本估算模板 V6 · 原表填写</span><h3>按模板逐页收集成本，直接输出同版式 Excel</h3></div><button className="cw-button primary" disabled={exporting} onClick={()=>void exportWorkbook()}><Download size={15}/>{exporting?'正在生成…':draft?'导出待补草稿 Excel':'导出原格式 Excel'}</button></div>
-    <p className="cw-note">保留原表 7 个页签、说明、税率参考、单元格位置和公式。岗位确认的成本会实时汇入对应栏目；有歧义的费用留给销售核对。原表示例金额已清空，税率、税务口径和清关判断需由负责岗位复核。</p>
-    <div className="cw-template-tools"><strong>自动带入 {Object.values(auto.cells).filter(cell=>cell.value!==null).length} 项</strong><span>待补或核对分类 {pendingCategories} 项 · 待人工归类 {auto.unassigned.length} 笔 · 模板主表单位 CNY</span>{draft&&<small>当前成本仍在收集，导出文件是草稿，不能直接用于定价确认。</small>}</div>
-    {(pendingCategories > 0 || auto.unassigned.length > 0) && <div className="cw-template-attention"><strong>销售下一步</strong><p>返回上方岗位卡片，催齐未确认成本；收到后模板会自动更新。工时、税费和无法唯一对应的费用，请销售与岗位确认后填入相应明细页。</p>{pendingCategories>0&&<details><summary>{pendingCategories} 个成本分类仍待补或核对</summary><ul>{Object.entries(auto.cells).filter(([,cell])=>cell.pending.length||cell.conflict).map(([key,cell])=><li key={key}>主表 {key.split(':')[1]}：{cell.conflict?'清单与补充费用重复，需核对':`待确认 ${cell.pending.join('、')}`}</li>)}</ul></details>}{auto.unassigned.length > 0 && <details><summary>{auto.unassigned.length} 笔已确认成本需人工归类</summary><ul>{auto.unassigned.map((item,index)=><li key={index}>{item}</li>)}</ul></details>}</div>}
+    <p className="cw-note">保留原表 7 个页签、说明、税率参考和单元格位置。岗位确认的成本会实时汇入对应栏目；有歧义的费用留给销售核对。税费若经财务确认由商务条件单列，导出主表 F45 记 0，税费测算页仍保留原公式。原表示例金额已清空，税率、税务口径和清关判断需由负责岗位复核。</p>
+    <div className="cw-template-tools"><strong>自动带入 {Object.values(auto.cells).filter(cell=>cell.value!==null).length} 项</strong><span>待补或核对分类 {pendingCategories} 项 · 待人工归类 {auto.unassigned.length} 笔 · 金额核对 {issues.length} 项 · 模板主表单位 CNY</span>{draft&&<small>当前成本仍在收集或核对，导出文件是草稿，不能直接用于定价确认。</small>}</div>
+    {checks.length>0&&<div className="cw-template-checks"><strong>工作台金额 ↔ 模板明细核对</strong><div>{checks.map(check=><p key={check.id} className={check.ready?'ok':'bad'}><b>{check.ready?'已核对':'待处理'} · {check.label}</b><span>{check.detail}</span></p>)}</div></div>}
+    {(pendingCategories > 0 || auto.unassigned.length > 0 || confirmedLines.length > 0) && <div className="cw-template-attention"><strong>销售下一步</strong><p>返回上方岗位卡片，催齐未确认成本；收到后模板会自动更新。物料类别按名称初分，销售需核对，尤其是“其他设备”，并检查是否与补充费用重复。</p>{pendingCategories>0&&<details><summary>{pendingCategories} 个成本分类仍待补或核对</summary><ul>{Object.entries(auto.cells).filter(([,cell])=>cell.pending.length||cell.conflict).map(([key,cell])=><li key={key}>主表 {key.split(':')[1]}：{cell.conflict?'清单与补充费用重复，需核对':`待确认 ${cell.pending.join('、')}`}</li>)}</ul></details>}{auto.unassignedLines.length > 0 && <details open><summary>{auto.unassignedLines.length} 笔已确认物料需销售归类</summary><div className="cw-template-category-list">{auto.unassignedLines.map(line=><label key={line.id}><span>{line.name} · CNY {line.amount.toLocaleString('zh-CN')}</span><select aria-label={`${line.name}模板分类`} disabled={role!=='销售'} value="" onChange={event=>setCategory(line.id,event.target.value)}><option value="">选择模板栏目</option>{categoryChoices.map(([ref,name])=><option value={ref} key={ref}>{ref} · {name}</option>)}</select></label>)}</div></details>}{confirmedLines.length>0&&<details><summary>复核 {confirmedLines.length} 条已确认物料的模板分类</summary><div className="cw-template-category-list">{confirmedLines.map(line=>{const assigned=state.templateCategoryOverrides?.[line.id]?.split(':')[1];const inferred=templateCellForLine(line)?.split(':')[1];return <label key={line.id}><span>{line.name} · {assigned?'人工指定':inferred?'名称初分':'待归类'}</span><select aria-label={`${line.name}复核模板分类`} disabled={role!=='销售'} value={assigned||'__default__'} onChange={event=>setCategory(line.id,event.target.value==='__default__'?'':event.target.value)}><option value="__default__">{inferred?`按初分 ${inferred}`:'未归类'}</option>{categoryChoices.map(([ref,name])=><option value={ref} key={ref}>{ref} · {name}</option>)}</select></label>})}</div></details>}</div>}
     <div className="cw-template-tabs" role="tablist" aria-label="海外成本模板页签">{sheets.map((item,index)=>{
       const fields = item.rows.flatMap(row=>row.cells.filter(cell=>cell.input))
       const done = fields.filter(cell=>{const value=index===4?values[`5:${cell.ref}`]??'':effective(index,cell);return value!==null&&value!==undefined&&value!==''}).length
@@ -124,7 +146,7 @@ export default function CostTemplateWorkbench({ state, role, projectId, onUpdate
       return <tr key={row.number}><th>{row.number}</th>{Array.from({length:sheet.columns},(_,index)=>{
         const cell = cells.get(index+1)
         if (!cell) return <td key={index}/>
-        return <td key={index} id={`cw-template-${active}-${cell.ref}`} className={cell.input?effective(active,cell)===''?'cw-template-editable cw-template-empty':'cw-template-editable':cell.formula?'cw-template-formula':'cw-template-static'} title={cell.formula?'原表自动计算':undefined}>{cell.input ? renderInput(row,cell) : cell.formula ? <span>{active===0&&cell.ref==='F7'?'CNY（内部本位）':'自动计算'}</span> : typeof cell.value === 'string' && cell.value.length>180 ? <details><summary>{cell.value.slice(0,72)}…</summary><div>{cell.value}</div></details> : <span>{cell.value ?? ''}</span>}{cell.comment && <details className="cw-template-comment"><summary>原表批注</summary><div>{cell.comment}</div></details>}</td>
+        return <td key={index} id={`cw-template-${active}-${cell.ref}`} className={cell.input?effective(active,cell)===''?'cw-template-editable cw-template-empty':'cw-template-editable':cell.formula?'cw-template-formula':'cw-template-static'} title={cell.formula?'原表自动计算':undefined}>{cell.input ? renderInput(row,cell) : cell.formula ? <span>{active===0&&cell.ref==='F7'?'CNY（内部本位）':active===0&&cell.ref==='F45'&&state.extraCosts.tax?.status==='confirmed'&&state.extraCosts.tax.treatment==='separate'?'商务条件单列 · 成本记 0':'自动计算'}</span> : typeof cell.value === 'string' && cell.value.length>180 ? <details><summary>{cell.value.slice(0,72)}…</summary><div>{cell.value}</div></details> : <span>{cell.value ?? ''}</span>}{cell.comment && <details className="cw-template-comment"><summary>原表批注</summary><div>{cell.comment}</div></details>}</td>
       })}</tr>
     })}</tbody></table></div>
     <p className="cw-note">页签中的原文包括业务提醒和历史税率参考，不替代本项目的财务、关务或商务确认。导出文件可继续在 Excel 中核对和打印，无需重新排版。</p>

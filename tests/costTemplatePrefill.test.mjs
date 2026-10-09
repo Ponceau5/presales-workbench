@@ -56,3 +56,25 @@ test('自动带入值直接写到导出的原格式成本表', () => {
   const sheet = new TextDecoder().decode(readStoredZip(result).find(entry=>entry.name==='xl/worksheets/sheet1.xml').bytes)
   assert.match(sheet, /<x:c r="F43"[^>]*><x:v>35<\/x:v><\/x:c>/)
 })
+
+test('关务三笔已确认费用同步到清关测算页，销售已确认报价同步到主表', () => {
+  const state = initialCommercialState()
+  for (const [id,amount] of [['freight',100],['clearance',50],['duty',20]]) state.extraCosts[id] = {amount,status:'confirmed',evidence:'货代报价',reason:''}
+  state.draftPriceCny = 1000
+  state.quoteConfirmedAt = '2026-10-09'
+  const cells = costTemplatePrefill(state).cells
+  assert.equal(cells['7:C8'].value,100)
+  assert.equal(cells['7:C9'].value,50)
+  assert.equal(cells['7:C10'].value,20)
+  assert.equal(cells['1:B7'].value,1000)
+})
+
+test('销售重新归类后已确认成本移动到指定模板栏目', () => {
+  const state = initialCommercialState()
+  const line = inventoryFor(state.baseline).find(item=>item.kind==='外购设备' && /服务器/.test(item.name))
+  state.costs[line.id] = confirmed(100)
+  state.templateCategoryOverrides[line.id] = '1:F26'
+  const cells = costTemplatePrefill(state).cells
+  assert.equal(cells['1:F26'].value,100*line.quantity)
+  assert.equal(cells['1:F20']?.value ?? null,null)
+})

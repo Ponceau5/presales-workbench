@@ -3,7 +3,7 @@ import { configVersions } from './configVersions'
 export type Baseline = '20260720' | '20260906'
 export type CostStatus = 'pending' | 'estimate' | 'confirmed'
 export type CostCurrency = 'RM' | 'CNY' | 'USD'
-export type CostRecord = { amount: number | null; status: CostStatus; evidence: string; owner: string; updatedAt: string; sourceAmount?: number | null; sourceCurrency?: CostCurrency; fxToCny?: number | null; fxEvidence?: string; legacyAmountRm?: number | null }
+export type CostRecord = { amount: number | null; status: CostStatus; evidence: string; owner: string; updatedAt: string; sourceAmount?: number | null; sourceCurrency?: CostCurrency; fxToCny?: number | null; fxEvidence?: string; legacyAmountRm?: number | null; materialNumber?: string; supplierName?: string; priceReference?: string }
 export type PhaseQuantities = [number, number, number]
 export type MappingRecord = { lineIds: string[]; confirmed: boolean; note: string; technicalConfirmed?: boolean; technicalReview?: string; quantityNote?: string; allocations?: Record<string, PhaseQuantities> }
 export type QuoteRecord = { phase1: number | null; phase2: number | null; phase3: number | null; note: string }
@@ -27,6 +27,7 @@ export const extraCostDefinitions = [
   { id: 'afterSales', name: '售后 / 维保', owner: '售后团队', route: 'project', template: '主表 34 行 / 工时表' },
   { id: 'visa', name: '签证费用', owner: '交付 / 行政', route: 'project', template: '主表 35 行' },
   { id: 'siteManagement', name: '现场管理、劳保及仓储', owner: '项目经理', route: 'project', template: '主表 36、40–41 行' },
+  { id: 'otherOperating', name: '其他运营费用', owner: '项目经理 / 销售', route: 'project', template: '主表 44 行' },
   { id: 'localization', name: '资料翻译与本地化', owner: '项目经理', route: 'project', template: '主表 42 行' },
   { id: 'freight', name: '物流 / 运费', owner: '货运关务', route: 'customs' },
   { id: 'clearance', name: '报关 / 清关费用', owner: '货运关务', route: 'customs', template: '主表 38 行 / 清关表' },
@@ -44,6 +45,9 @@ export type CommercialState = {
   requests: Partial<Record<CostRoute, CostRequest>>
   extraCosts: Record<string, ExtraCost>
   templateEntries: Record<string, string | number>
+  templateCategoryOverrides: Record<string, string>
+  templateTaxResultCny: number | null
+  templateTaxReviewEvidence: string
   pricingBasis: string
   pricingRules: PricingRules
   lineFactorOverrides: Record<string, number | null>
@@ -72,7 +76,7 @@ const source = [
 ]
 export const sourceFile = (baseline: Baseline) => configVersions[source.find(x => x.id === baseline)!.index].file
 export const initialCommercialState = (): CommercialState => ({
-  baseline: '20260906', costs: {}, mappings: {}, quotes: {}, crmPrices: {}, materialOverrides: {}, requests: {}, extraCosts: {}, templateEntries: {}, pricingBasis: '', pricingRules: defaultPricingRules(), lineFactorOverrides: {}, linePriceOverrides: {}, extraPriceOverrides: {}, draftPriceCny: null, quoteConfirmedAt: '', legacyDraftPriceRm: null, quoteCurrency: 'CNY', quoteFxFromCny: null, quoteFxEvidence: '', quoteCurrencyHistory: [], businessTerms: '',
+  baseline: '20260906', costs: {}, mappings: {}, quotes: {}, crmPrices: {}, materialOverrides: {}, requests: {}, extraCosts: {}, templateEntries: {}, templateCategoryOverrides: {}, templateTaxResultCny: null, templateTaxReviewEvidence: '', pricingBasis: '', pricingRules: defaultPricingRules(), lineFactorOverrides: {}, linePriceOverrides: {}, extraPriceOverrides: {}, draftPriceCny: null, quoteConfirmedAt: '', legacyDraftPriceRm: null, quoteCurrency: 'CNY', quoteFxFromCny: null, quoteFxEvidence: '', quoteCurrencyHistory: [], businessTerms: '',
   crmApproval: { status: 'draft', reference: '', note: '', updatedAt: '' }, crmOpportunity: '', updatedAt: '',
 })
 export function activeCommercialBaseline(projectId: string): Baseline {
@@ -86,7 +90,7 @@ export function readCommercialState(projectId: string, baseline: Baseline = acti
   const defaults = { ...initialCommercialState(), baseline }
   try {
     const raw = localStorage.getItem(`presales-commercial-v3:${projectId}:${baseline}`)
-    if (raw) { const data = JSON.parse(raw) as CommercialState; if (data.baseline === baseline) return { ...defaults, ...data, templateEntries: data.templateEntries || {}, quoteCurrencyHistory: data.quoteCurrencyHistory || [], pricingRules: { ...defaultPricingRules(), ...data.pricingRules } } }
+    if (raw) { const data = JSON.parse(raw) as CommercialState; if (data.baseline === baseline) return { ...defaults, ...data, templateEntries: data.templateEntries || {}, templateCategoryOverrides: data.templateCategoryOverrides || {}, quoteCurrencyHistory: data.quoteCurrencyHistory || [], pricingRules: { ...defaultPricingRules(), ...data.pricingRules } } }
     const legacyRaw = localStorage.getItem(`presales-commercial-v2:${projectId}:${baseline}`)
     if (legacyRaw) {
       const data = JSON.parse(legacyRaw) as Partial<CommercialState> & { draftPriceRm?: number | null; costs?: Record<string, CostRecord & { fxToRm?: number | null }>; extraCosts?: Record<string, ExtraCost & { fxToRm?: number | null }> }
@@ -381,7 +385,7 @@ export function importCostCsv(input: string, baseline: Baseline, lines: Inventor
     if (status !== 'estimate' && status !== 'confirmed') { errors.push(`第 ${i + 1} 行：状态需填 estimate 或 confirmed`); continue }
     const evidence = column(row,'依据/询价来源')
     if (!evidence) { errors.push(`第 ${i + 1} 行：缺少成本依据`); continue }
-    records[id] = { amount, sourceAmount, sourceCurrency: currency, fxToCny, fxEvidence, status, evidence, owner: column(row,'建议责任方') || lines.find(x=>x.id===id)!.owner, updatedAt: new Date().toISOString() }
+    records[id] = { amount, sourceAmount, sourceCurrency: currency, fxToCny, fxEvidence, status, evidence, owner: column(row,'建议责任方') || lines.find(x=>x.id===id)!.owner, updatedAt: new Date().toISOString(), materialNumber: column(row,'物料号'), supplierName: column(row,'供应商名称'), priceReference: column(row,'价格/报价版本') }
   }
   return { records, errors, count: Object.keys(records).length }
 }
