@@ -51,7 +51,7 @@ function routeForRole(role: Role): CostRoute {
   if (role === '销售') return 'sales'
   return 'internal'
 }
-const costSteps = ['技术给配置清单', '销售分类发起成本协作', '各岗位按人民币回填成本与依据', '逐页核对模板并导出成本 Excel', '销售选报价币种、填写分类原则，Agent 生成建议价', '销售逐项调整，核对成本与报价', '销售确认并导出报价版']
+const costSteps = ['技术给配置清单', '销售分类发起成本协作', '各岗位按人民币回填成本与依据', '成本自动带入模板，销售补空项后导出 Excel', '销售选报价币种、填写分类原则，Agent 生成建议价', '销售逐项调整，核对成本与报价', '销售确认并导出报价版']
 const priceCategoryLabels: Record<PriceCategory, string> = { internal: '自产产品', purchase: '外购设备', software: '软件', project: '施工 / 服务', extras: '补充费用' }
 
 export default function CommercialWorkbench({ stage, projectId, role }: { stage: string; projectId: string; role: Role }) {
