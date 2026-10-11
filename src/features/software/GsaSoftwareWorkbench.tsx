@@ -8,6 +8,7 @@ import { ResourceBrowser } from "@/components/ResourceBrowser";
 import { Collaboration } from "@/components/Collaboration";
 import { ProjectMaterialsPanel } from "./ProjectMaterialsPanel";
 import { MarkdownReply } from "./MarkdownReply";
+import F7TableTemplate, { type F7TemplateKind } from "./F7TableTemplate";
 
 type Inputs = {
   scope: "schedule" | "phases" | "custom"; point_low: number; point_high: number; device_count: number;
@@ -64,7 +65,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  const [calc,setCalc]=useState<Calculation|null>(null); const [busy,setBusy]=useState(false);
  const [error,setError]=useState("");const [question,setQuestion]=useState("");
  const [note]=useState(""); const [model,setModel]=useState<{configured:boolean;provider:string;model:string}|null>(null);
- const [drawer,setDrawer]=useState<"sources"|"parameters"|"server"|"workflow"|"favorites"|"tracking"|"f7Human"|null>(null);
+ const [drawer,setDrawer]=useState<"sources"|"parameters"|"server"|"workflow"|"favorites"|"tracking"|"f7Human"|"f7Template"|null>(null);
  const [flow,setFlow]=useState<Workflow|null>(null);
  const [optionIndex,setOptionIndex]=useState(0); const [clock,setClock]=useState(Date.now());
  useEffect(()=>{const timer=setInterval(()=>setClock(Date.now()),1000);return()=>clearInterval(timer);},[]);
@@ -83,6 +84,8 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  const [f7Hidden,setF7Hidden]=useState<string[]>([]);
  const [f7HumanId,setF7HumanId]=useState<string|null>(null);
  const [f7HumanInput,setF7HumanInput]=useState("");
+ const [f7TemplateKind,setF7TemplateKind]=useState<F7TemplateKind>("cost");
+ const [f7TemplateReturn,setF7TemplateReturn]=useState<"sources"|"f7Human"|null>(null);
  const [f7SelectedCollab,setF7SelectedCollab]=useState<string|null>(null);
  const [f7SelectedTracking,setF7SelectedTracking]=useState<string|null>(null);
  const [f7UploadBusy,setF7UploadBusy]=useState(false);
@@ -203,6 +206,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
   setBusy(true);setError("");
   try{await fn();}catch(e){setError(e instanceof Error?e.message:"操作失败");}finally{setBusy(false);}
  }
+ function openF7Template(kind:F7TemplateKind,returnTo:"sources"|"f7Human"|null=null){setF7TemplateKind(kind);setF7TemplateReturn(returnTo);setDrawer("f7Template");}
  function outputTitle(t:ChatTurn){if(isF7)return /报价|销售价|标价/.test(t.question)?"报价表":"成本表";if(stageId!=="F5")return t.artifactTitle||stage?.title||"工作成果";return t.artifactTitle|| (/偏离/.test(t.question)?"技术应答与偏离表":/澄清/.test(t.question)?"软件澄清表":/核对/.test(t.question)?"软件需求核对":"软件支持成果");}
  async function adoptOutput(t:ChatTurn,sourceConversationId=conversationId){await localApi(base+"/artifacts/adopt",json({source_id:t.artifactId?artifacts.find(a=>a.id===t.artifactId)?.source_id||t.id:t.id,title:outputTitle(t),content:t.answer,conversation_id:sourceConversationId}));await refresh();}
  async function downloadOutput(a:Artifact){
@@ -417,7 +421,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
     {started&&<button disabled={busy} onClick={()=>{setConversationId(crypto.randomUUID());setStarted(false);setFavoriteContext("");setF7Tasks(rows=>rows.map(task=>({...task,draft:task.draft||chatTurns.find(turn=>turn.id===task.turnId)?.answer||""})));setChatTurns([]);setRunQuestion("");setShowServer(false);setRestoredRun(null);setGenerationPrompt("");setChatNotice("");setQuestion("");baselineAudit.current=new Set(audit.map(a=>a.id));}}>新对话</button>}
     <button onClick={()=>setDrawer("favorites")}><Bookmark size={13}/> 收藏对话{favorites.length>0?" · "+favorites.length:""}</button>
     <button className={isF7?"gsa-nav-with-badge":undefined} aria-label={isF7?`资料，${f7PendingDocuments} 份待选`:undefined} onClick={()=>setDrawer("sources")}>资料{isF7&&f7PendingDocuments>0&&<span className="gsa-nav-badge" aria-hidden="true">{f7PendingDocuments>99?"99+":f7PendingDocuments}</span>}</button>
-    {isF7&&state.role==="销售"&&<button className="gsa-nav-with-badge" aria-label={`跟进，${f7OpenTasks.length} 项待处理`} onClick={()=>{setF7SelectedTracking(null);setDrawer("tracking");}}>跟进{f7OpenTasks.length>0&&<span className="gsa-nav-badge" aria-hidden="true">{f7OpenTasks.length>99?"99+":f7OpenTasks.length}</span>}</button>}
+    {isF7&&<button className="gsa-nav-with-badge" aria-label={`跟进，${f7OpenTasks.length} 项待处理`} onClick={()=>{setF7SelectedTracking(null);setDrawer("tracking");}}>跟进{f7OpenTasks.length>0&&<span className="gsa-nav-badge" aria-hidden="true">{f7OpenTasks.length>99?"99+":f7OpenTasks.length}</span>}</button>}
     <button className="gsa-nav-with-badge" aria-label={isF7?`协作，${f7PendingCollaboration} 项待处理`:messages.some(message=>!message.is_read&&message.recipient===account)?"协作，有新交接":"协作"} onClick={()=>{setF7SelectedCollab(null);setDrawer("workflow");}}>协作{isF7?f7PendingCollaboration>0&&<span className="gsa-nav-badge" aria-hidden="true">{f7PendingCollaboration>99?"99+":f7PendingCollaboration}</span>:messages.some(message=>!message.is_read&&message.recipient===account)&&<i className="gsa-notification-dot"/>}</button>
    </nav>
   </header>
@@ -452,9 +456,10 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
    <div className="gsa-composer-meta">{isF7&&<><input ref={f7FileInput} type="file" accept=".pdf,.txt,.md,.csv,.xlsx,.xls" hidden onChange={e=>{const file=e.target.files?.[0];if(file)void uploadF7Document(file);}}/><button className="gsa-attach-button" type="button" aria-label="上传文件" title="上传项目资料" disabled={f7UploadBusy||busy} onClick={()=>f7FileInput.current?.click()}><Paperclip size={16}/></button>{f7UploadNotice?<span className="gsa-attached-count" title={f7UploadNotice}>{f7UploadNotice}</span>:selectedPages.length>0&&<span className="gsa-attached-count">已选 {selectedPages.length} 页资料</span>}{f7UploadBusy&&<span>正在上传…</span>}</> }<select aria-label="当前模型" value={model?.model||"unconfigured"} disabled={busy||running}><option value={model?.model||"unconfigured"}>{model?.configured?(model.provider==="zhipu"?"智谱 · ":model.provider+" · ")+model.model:isF7?"模拟模式 · 无需 Key":"模型未配置"}</option></select>{busy&&<span>正在处理…</span>}</div></form>
   </footer>
   {!started&&favorites.length>0&&<div className="gsa-home-favorites">{favorites.slice(0,6).map(f=><div className="gsa-home-favorite" key={f.id}><button title={f.title} onClick={()=>void act(()=>restoreFavorite(f))}><i><MessageSquare size={19}/></i><span>{f.title}</span></button><button className="gsa-favorite-delete" aria-label={"删除收藏 "+f.title} onClick={()=>persistFavorites(favorites.filter(item=>item.id!==f.id))}><X size={13}/></button></div>)}</div>}
-  {drawer&&<div className="gsa-drawer-backdrop" onClick={()=>setDrawer(null)}><aside className={"gsa-drawer"+(drawer==="sources"?" gsa-materials-drawer":"")} onClick={e=>e.stopPropagation()} aria-label={isF7?"F7 工作侧栏":"软件工作侧栏"}>
-   <header><h3>{{sources:"项目资料",parameters:"方案参数",server:"方案生成依据",workflow:"协作消息",favorites:"收藏对话",tracking:"跟进",f7Human:"人工处理"}[drawer]}</h3><button aria-label="关闭侧栏" onClick={()=>setDrawer(null)}><X size={18}/></button></header>
+  {drawer&&<div className="gsa-drawer-backdrop" onClick={()=>setDrawer(null)}><aside className={"gsa-drawer"+(drawer==="sources"||drawer==="f7Template"?" gsa-materials-drawer":"")} onClick={e=>e.stopPropagation()} aria-label={isF7?"F7 工作侧栏":"软件工作侧栏"}>
+   <header><h3>{{sources:"项目资料",parameters:"方案参数",server:"方案生成依据",workflow:"协作消息",favorites:"收藏对话",tracking:"跟进",f7Human:"人工处理",f7Template:f7TemplateKind==="cost"?"成本表模板":"报价表模板"}[drawer]}</h3><button aria-label={drawer==="f7Template"&&f7TemplateReturn?"返回上一页":"关闭侧栏"} onClick={()=>setDrawer(drawer==="f7Template"?f7TemplateReturn:null)}><X size={18}/></button></header>
    <div className="gsa-drawer-body">
+    {drawer==="f7Template"&&isF7&&<F7TableTemplate kind={f7TemplateKind} projectId={projectId}/>}
     {drawer==="favorites"&&<>{favorites.length===0?<p className="gsa-muted">收藏的对话会显示在这里。</p>:favorites.map(f=><article className="gsa-favorite-row" key={f.id}><button onClick={()=>void act(()=>restoreFavorite(f))}><MessageSquare size={17}/><div><strong>{f.title}</strong><span>{f.text.slice(0,100)}</span></div><ArrowRight size={15}/></button><button aria-label={"删除收藏 "+f.title} title="取消收藏" onClick={()=>persistFavorites(favorites.filter(item=>item.id!==f.id))}><Trash2 size={15}/></button></article>)}</>}
     {drawer==="tracking"&&isF7&&<div className="gsa-f7-task-list">
      <div className="gsa-f7-task-counts"><strong>待跟进 {f7PendingFollowup.length}</strong><strong>待审核 {f7PendingReview.length}</strong></div>
@@ -471,6 +476,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
      <p>{f7HumanTask.kind==="access"?"CRM 面价、采购记录和产品池当前未接入。继续后只使用本机已选择资料；未查到的价格仍待补。":f7HumanTask.kind==="pricing"?"请说明销售定价原则。没有已确认规则时，可保留待补并直接查看审核草稿。":f7HumanTask.kind==="followup"?"请核对配置、数量和采购回价。可以保留此事项待跟进，同时继续审核当前待补草稿。":"请核对价格来源、币种和审批边界。可驳回并给出修改意见，或通过为内部草稿。"}</p>
      {f7HumanTask.kind==="followup"&&<div className="gsa-f7-checklist"><strong>人工跟进清单</strong><span>核对外购物料号和数量</span><span>与采购确认回价及有效期</span><span>记录来源；尚未确认的金额继续待补</span><small>演示不会实际发送询价。</small></div>}
      {f7HumanTask.kind!=="access"&&<div className="gsa-f7-draft"><MarkdownReply text={f7HumanTask.draft||chatTurns.find(turn=>turn.id===f7HumanTask.turnId)?.answer||"原草稿未找到，请返回对话查看。"}/></div>}
+     {f7HumanTask.kind==="review"&&<details open className="gsa-f7-review-template"><summary>{/报价|销售价|标价/.test(f7HumanTask.question)?"逐项报价表":"海外成本估算表"}模板预览</summary><F7TableTemplate kind={/报价|销售价|标价/.test(f7HumanTask.question)?"quote":"cost"} projectId={projectId}/></details>}
      {f7HumanTask.kind!=="access"&&<label>{f7HumanTask.kind==="pricing"?"销售定价原则":f7HumanTask.kind==="followup"?"补充信息":"修改意见"}<textarea value={f7HumanInput} onChange={e=>setF7HumanInput(e.target.value)} placeholder={f7HumanTask.kind==="pricing"?"输入有依据的定价原则…":f7HumanTask.kind==="followup"?"输入已确认的价格、来源或条件…":"说明要修改的项目和依据…"}/></label>}
      <div className="gsa-f7-human-actions"><button className="btn secondary" disabled={busy} onClick={()=>{setDrawer(null);setF7SelectedTracking(f7HumanTask.id);}}>稍后处理</button>
       {f7HumanTask.kind==="access"&&<><button className="btn secondary" disabled>授权并查询 · 待接入</button><button className="btn primary" disabled={busy} onClick={()=>continueF7Gate(f7HumanTask)}>使用已有资料继续</button></>}
@@ -479,6 +485,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
      </div>
     </div>}
     {drawer==="sources"&&!specialized&&<>
+     {isF7&&<div className="gsa-f7-template-links"><strong>表格模板</strong><p>先查看原表结构，再结合已确认资料补齐金额。</p><button onClick={()=>openF7Template("cost","sources")}>海外成本估算模板 V6 <ArrowRight size={14}/></button><button onClick={()=>openF7Template("quote","sources")}>逐项报价表 <ArrowRight size={14}/></button></div>}
      {isF7&&<p className="gsa-muted">已导入资料中，尚未选用于本次对话：{f7PendingDocuments} 份。</p>}
      <ResourceBrowser projectId={projectId} compact/>
      <h4>选择用于本次对话的资料页</h4>
