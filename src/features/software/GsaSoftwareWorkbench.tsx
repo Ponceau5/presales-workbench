@@ -170,8 +170,8 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  const change=(patch:Partial<Inputs>)=>{setInputs(v=>({...v,...patch}));setCalc(null);setDirty(true);};
  async function refresh(){
    if(!specialized){
-    const [m,a]=await Promise.all([localApi<{configured:boolean;provider:string;model:string}>("/api/model/status"),localApi<Artifact[]>(base+"/artifacts")]);
-    setModel(m);setArtifacts(a);return;
+    const [m,a,d]=await Promise.all([localApi<{configured:boolean;provider:string;model:string}>("/api/model/status"),localApi<Artifact[]>(base+"/artifacts"),isF7?localApi<{id:string;title:string;version:string;page_count:number}[]>(`/api/projects/${encodeURIComponent(projectId)}/documents`):Promise.resolve(null)]);
+    setModel(m);setArtifacts(a);if(d)setDocuments(d);return;
    }
    const [r,a,m,f,notifications]=await Promise.all([localApi<Run[]>(base+"/runs"),localApi<Audit[]>(base+"/audit"),
     localApi<{configured:boolean;provider:string;model:string}>("/api/model/status"),localApi<Workflow>(base+"/workflow"),localApi<CollaborationMessage[]>(base+"/collaboration")]);
@@ -189,7 +189,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
    try{
     await refresh();
     if(specialized){const m=await localApi<Material>(base+"/materials");setMaterials(m);}
-    else setDocuments(await localApi(`/api/projects/${encodeURIComponent(projectId)}/documents`));
+    else if(!isF7)setDocuments(await localApi(`/api/projects/${encodeURIComponent(projectId)}/documents`));
     setError("");
    }catch(e){setError(e instanceof Error?e.message:"资料读取失败");}
  }
@@ -220,10 +220,12 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  const f7OpenTasks=f7Tasks.filter(task=>task.status==="open");
  const f7PendingFollowup=f7OpenTasks.filter(task=>task.kind!=="review");
  const f7PendingReview=f7OpenTasks.filter(task=>task.kind==="review");
+ const f7PendingDocuments=documents.filter(document=>document.page_count>0&&!selectedPages.some(page=>page.document_id===document.id)).length;
  const f7Collaboration=[
   ...state.followups.filter(f=>f.projectId===projectId&&f.owner===state.role&&f.createdBy!==account).map(f=>({id:"followup:"+f.id,followupId:f.id,title:f.title,source:f.createdRole||"其他岗位",detail:f.source,status:f.status==="done"?"已处理":"待处理",at:f.completedAt||""})),
   ...state.deliveries.filter(d=>d.projectId===projectId&&d.toStage==="F7"&&d.owner===state.role&&d.senderRole!==state.role&&d.status!=="returned").map(d=>({id:"delivery:"+d.id,followupId:"",title:d.title,source:d.senderRole,detail:`${d.fromStage} → F7 · ${d.version}\n${d.text}\n依据：${d.evidence}`,status:d.status==="accepted"?"已接收":"待处理",at:d.at})),
  ].filter(task=>!f7Hidden.includes(task.id));
+ const f7PendingCollaboration=f7Collaboration.filter(task=>task.status==="待处理"&&!f7Processed.includes(task.id)).length;
  function f7TaskBlocked(task:F7HumanTask){return task.status==="open"&&f7Tasks.some(row=>row.turnId===task.turnId&&row.status==="open"&&(task.kind==="followup"&&row.kind==="access"||task.kind==="review"&&(row.kind==="access"||row.kind==="pricing")));}
  function openF7Human(task:F7HumanTask){setF7HumanId(task.id);setF7HumanInput("");setDrawer("f7Human");}
  function continueF7Gate(task:F7HumanTask){
@@ -411,11 +413,17 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  ...(chatNotice?[{id:"notice",kind:"notice" as const,at:chatNotice.startsWith("收到。我会")&&current?new Date(Date.parse(current.created_at)-1).toISOString():noticeAt}]:[])].sort((a,b)=>Date.parse(a.at)-Date.parse(b.at));
  return <section className={"gsa-chat "+(!started?"gsa-home ":"")+(isF7?"gsa-f7":"")}>
   <header className="gsa-chat-header"><div className="gsa-agent-title"><i><Sparkles size={18}/></i><div><strong>{isF7?"成本与报价 Agent":specialized?(canMerge?"解决方案 Agent":"软件 Agent"):(stageId==="F5"?"软件 Agent":(stage?.title||stageId)+" Agent")}</strong><span>{isF7?state.role:canMerge?"解决方案":"软件支持"} · {projectId}</span></div></div>
-   <nav>{started&&<button disabled={busy} onClick={()=>{setConversationId(crypto.randomUUID());setStarted(false);setFavoriteContext("");setF7Tasks(rows=>rows.map(task=>({...task,draft:task.draft||chatTurns.find(turn=>turn.id===task.turnId)?.answer||""})));setChatTurns([]);setRunQuestion("");setShowServer(false);setRestoredRun(null);setGenerationPrompt("");setChatNotice("");setQuestion("");baselineAudit.current=new Set(audit.map(a=>a.id));}}>新对话</button>}<button onClick={()=>setDrawer("favorites")}><Bookmark size={13}/> 收藏对话{favorites.length>0?" · "+favorites.length:""}</button><button onClick={()=>setDrawer("sources")}>资料</button>{isF7&&state.role==="销售"&&<button className="gsa-collaboration-button" onClick={()=>{setF7SelectedTracking(null);setDrawer("tracking");}}>跟进{f7OpenTasks.length>0&&<i className="gsa-notification-dot"/>}</button>}<button className="gsa-collaboration-button" aria-label={isF7?`协作，${f7Collaboration.filter(t=>t.status!=="已处理"&&!f7Processed.includes(t.id)).length} 项待处理`:messages.some(m=>!m.is_read&&m.recipient===account)?"协作，有新交接":"协作"} onClick={()=>{setF7SelectedCollab(null);setDrawer("workflow");}}>协作{(isF7?f7Collaboration.some(t=>t.status!=="已处理"&&!f7Processed.includes(t.id)):messages.some(m=>!m.is_read&&m.recipient===account))&&<i className="gsa-notification-dot"/>}</button></nav>
+   <nav>
+    {started&&<button disabled={busy} onClick={()=>{setConversationId(crypto.randomUUID());setStarted(false);setFavoriteContext("");setF7Tasks(rows=>rows.map(task=>({...task,draft:task.draft||chatTurns.find(turn=>turn.id===task.turnId)?.answer||""})));setChatTurns([]);setRunQuestion("");setShowServer(false);setRestoredRun(null);setGenerationPrompt("");setChatNotice("");setQuestion("");baselineAudit.current=new Set(audit.map(a=>a.id));}}>新对话</button>}
+    <button onClick={()=>setDrawer("favorites")}><Bookmark size={13}/> 收藏对话{favorites.length>0?" · "+favorites.length:""}</button>
+    <button className={isF7?"gsa-nav-with-badge":undefined} aria-label={isF7?`资料，${f7PendingDocuments} 份待选`:undefined} onClick={()=>setDrawer("sources")}>资料{isF7&&f7PendingDocuments>0&&<span className="gsa-nav-badge" aria-hidden="true">{f7PendingDocuments>99?"99+":f7PendingDocuments}</span>}</button>
+    {isF7&&state.role==="销售"&&<button className="gsa-nav-with-badge" aria-label={`跟进，${f7OpenTasks.length} 项待处理`} onClick={()=>{setF7SelectedTracking(null);setDrawer("tracking");}}>跟进{f7OpenTasks.length>0&&<span className="gsa-nav-badge" aria-hidden="true">{f7OpenTasks.length>99?"99+":f7OpenTasks.length}</span>}</button>}
+    <button className="gsa-nav-with-badge" aria-label={isF7?`协作，${f7PendingCollaboration} 项待处理`:messages.some(message=>!message.is_read&&message.recipient===account)?"协作，有新交接":"协作"} onClick={()=>{setF7SelectedCollab(null);setDrawer("workflow");}}>协作{isF7?f7PendingCollaboration>0&&<span className="gsa-nav-badge" aria-hidden="true">{f7PendingCollaboration>99?"99+":f7PendingCollaboration}</span>:messages.some(message=>!message.is_read&&message.recipient===account)&&<i className="gsa-notification-dot"/>}</button>
+   </nav>
   </header>
   {error&&<div className="gsa-chat-error" role="alert">{error}{(error.includes("请先登录")||error.includes("未登录")||error.includes("重新登录"))&&<button onClick={()=>{dispatch({type:"logout"});window.location.assign("/login");}}>重新登录</button>}<button onClick={()=>setError("")} aria-label="关闭错误"><X size={14}/></button></div>}
   {isF7&&model&&!model.configured&&<div className="gsa-f7-demo-banner" role="status"><strong>模拟模式 · 无需 Key</strong><span>可体验生成草稿、人工补充、修改和通过；金额与资料内容不会自动核算。</span></div>}
-  {isF7&&f7OpenTasks.length>0&&<section className="gsa-f7-workflow" aria-label="F7 人工处理流程"><div className="gsa-f7-workflow-head"><div><strong>需要你处理</strong><span>任务会保留在这里，也可从“跟进”中继续。</span></div><button onClick={()=>setDrawer("tracking")}>查看全部任务 <ArrowRight size={13}/></button></div><div className="gsa-f7-workflow-steps"><span>输入需求</span><span>生成草稿</span><span className={f7PendingFollowup.length?"active":"done"}>待跟进 {f7PendingFollowup.length}</span><span className={f7PendingReview.length?"active":"done"}>待审核 {f7PendingReview.length}</span><span>通过内部草稿</span></div><div className="gsa-f7-workflow-tasks">{[...f7PendingFollowup,...f7PendingReview].slice(0,4).map(task=><button key={task.id} disabled={f7TaskBlocked(task)} onClick={()=>openF7Human(task)}><small>{task.kind==="review"?"待审核":task.kind==="access"?"系统访问提示":task.kind==="pricing"?"销售输入":"待跟进"}</small><strong>{task.title}</strong><span>{f7TaskBlocked(task)?"请先处理前一步":"立即处理 →"}</span></button>)}</div></section>}
+
   <div className="gsa-transcript" ref={streamRef}>
    {!started&&<div className="gsa-welcome"><i><Sparkles size={25}/></i><h2>今天要做些什么？</h2><p>{isF7?"整理成本依据、生成成本表，或准备报价草稿。":"核对需求、整理澄清、起草应答，或一起处理软件方案。"}</p></div>}
    {timeline.map(item=><div key={item.id}>
@@ -448,7 +456,15 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
    <header><h3>{{sources:"项目资料",parameters:"方案参数",server:"方案生成依据",workflow:"协作消息",favorites:"收藏对话",tracking:"跟进",f7Human:"人工处理"}[drawer]}</h3><button aria-label="关闭侧栏" onClick={()=>setDrawer(null)}><X size={18}/></button></header>
    <div className="gsa-drawer-body">
     {drawer==="favorites"&&<>{favorites.length===0?<p className="gsa-muted">收藏的对话会显示在这里。</p>:favorites.map(f=><article className="gsa-favorite-row" key={f.id}><button onClick={()=>void act(()=>restoreFavorite(f))}><MessageSquare size={17}/><div><strong>{f.title}</strong><span>{f.text.slice(0,100)}</span></div><ArrowRight size={15}/></button><button aria-label={"删除收藏 "+f.title} title="取消收藏" onClick={()=>persistFavorites(favorites.filter(item=>item.id!==f.id))}><Trash2 size={15}/></button></article>)}</>}
-    {drawer==="tracking"&&isF7&&<div className="gsa-f7-task-list"><div className="gsa-f7-task-counts"><strong>待跟进 {f7PendingFollowup.length}</strong><strong>待审核 {f7PendingReview.length}</strong></div>{f7Tasks.length===0&&<p className="gsa-muted">暂无跟进或审核任务。生成成本表或报价表后，需要人工处理的事项会出现在这里。</p>}{f7Tasks.map(task=><article className="gsa-f7-task" key={task.id}><button className="gsa-f7-task-main" onClick={()=>setF7SelectedTracking(f7SelectedTracking===task.id?null:task.id)}><span><small>{task.kind==="review"?"审核":task.kind==="access"?"系统访问":task.kind==="pricing"?"销售输入":"跟进"} · {new Date(task.createdAt).toLocaleString("zh-CN")}</small><strong>{task.title}</strong></span><em>{task.status==="done"?"已处理":f7TaskBlocked(task)?"等待前一步":"待处理"}</em></button>{f7SelectedTracking===task.id&&<div className="gsa-f7-task-detail"><p>{task.question}</p>{task.status==="open"?<button className="btn primary" disabled={f7TaskBlocked(task)} onClick={()=>openF7Human(task)}>立即处理</button>:<button className="gsa-f7-close-task" onClick={()=>setF7Tasks(rows=>rows.filter(row=>row.id!==task.id))}><X size={14}/>关闭任务</button>}</div>}</article>)}</div>}
+    {drawer==="tracking"&&isF7&&<div className="gsa-f7-task-list">
+     <div className="gsa-f7-task-counts"><strong>待跟进 {f7PendingFollowup.length}</strong><strong>待审核 {f7PendingReview.length}</strong></div>
+     {f7Tasks.length===0&&<p className="gsa-muted">暂无跟进或审核任务。生成成本表或报价表后，需要人工处理的事项会出现在这里。</p>}
+     {[...f7OpenTasks,...f7Tasks.filter(task=>task.status==="done")].map(task=><article className="gsa-f7-task" key={task.id}>
+      <button className="gsa-f7-task-main" onClick={()=>setF7SelectedTracking(f7SelectedTracking===task.id?null:task.id)}><span><small>{task.kind==="review"?"审核":task.kind==="access"?"系统访问":task.kind==="pricing"?"销售输入":"跟进"} · {new Date(task.createdAt).toLocaleString("zh-CN")}</small><strong>{task.title}</strong></span><em>{task.status==="done"?"已处理":f7TaskBlocked(task)?"等待前一步":"待处理"}</em></button>
+      {task.status==="done"&&<button className="gsa-f7-task-x" aria-label={`关闭任务 ${task.title}`} title="关闭任务" onClick={()=>{setF7Tasks(rows=>rows.filter(row=>row.id!==task.id));setF7SelectedTracking(null);}}><X size={14}/></button>}
+      {f7SelectedTracking===task.id&&<div className="gsa-f7-task-detail"><p>{task.question}</p>{task.status==="open"&&<button className="btn primary" disabled={f7TaskBlocked(task)} onClick={()=>openF7Human(task)}>立即处理</button>}</div>}
+     </article>)}
+    </div>}
     {drawer==="f7Human"&&isF7&&f7HumanTask&&<div className="gsa-f7-human">
      <span className="gsa-f7-human-kicker">{f7HumanTask.kind==="review"?"需要人工审核":f7HumanTask.kind==="access"?"需要确认系统能力":"需要人工跟进"}</span>
      <h4>{f7HumanTask.title}</h4>
@@ -463,6 +479,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
      </div>
     </div>}
     {drawer==="sources"&&!specialized&&<>
+     {isF7&&<p className="gsa-muted">已导入资料中，尚未选用于本次对话：{f7PendingDocuments} 份。</p>}
      <ResourceBrowser projectId={projectId} compact/>
      <h4>选择用于本次对话的资料页</h4>
      {documents.length===0&&<p className="gsa-muted">暂无可读取的已导入资料。可以先在对话中补充内容，或在资料页导入文件。</p>}
@@ -504,7 +521,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
      {!canReview&&current?.status==="review"&&<p className="gsa-review-owner"><CheckCircle2 size={16}/>由软件产品审核采纳后，系统自动通知解决方案。</p>}
 
     </>}
-    {drawer==="workflow"&&isF7&&<div className="gsa-f7-task-list"><p className="gsa-muted">这里显示其他岗位交给当前岗位的本机协作事项。</p>{f7Collaboration.length===0&&<p className="gsa-muted">暂无协作任务。</p>}{f7Collaboration.map(task=>{const processed=task.status==="已处理"||f7Processed.includes(task.id);return <article className="gsa-f7-task" key={task.id}><button className="gsa-f7-task-main" onClick={()=>setF7SelectedCollab(f7SelectedCollab===task.id?null:task.id)}><span><small>{task.source}{task.at?" · "+new Date(task.at).toLocaleString("zh-CN"):""}</small><strong>{task.title}</strong></span><em>{processed?"已处理":"待处理"}</em></button>{processed&&<button className="gsa-f7-task-x" aria-label={"关闭任务 "+task.title} title="关闭任务" onClick={()=>setF7Hidden(rows=>[...rows,task.id])}><X size={14}/></button>}{f7SelectedCollab===task.id&&<div className="gsa-f7-task-detail"><p>{task.detail}</p>{!processed&&<button className="btn primary" disabled={busy||!storageReady} onClick={()=>{const request=`请根据这条协作任务开始处理：${task.title}。任务详情：${task.detail}。请整理成本或报价草稿，缺少依据的金额留空并列出待确认事项。`;setStarted(true);setDrawer(null);void act(()=>streamReply(request.slice(0,1000),{id:task.id,followupId:task.followupId}));}}>立即处理</button>}</div>}</article>})}</div>}
+    {drawer==="workflow"&&isF7&&<div className="gsa-f7-task-list"><p className="gsa-muted">这里显示其他岗位交给当前岗位的本机协作事项。</p>{f7Collaboration.length===0&&<p className="gsa-muted">暂无协作任务。</p>}{f7Collaboration.map(task=>{const processed=task.status!=="待处理"||f7Processed.includes(task.id);return <article className="gsa-f7-task" key={task.id}><button className="gsa-f7-task-main" onClick={()=>setF7SelectedCollab(f7SelectedCollab===task.id?null:task.id)}><span><small>{task.source}{task.at?" · "+new Date(task.at).toLocaleString("zh-CN"):""}</small><strong>{task.title}</strong></span><em>{processed?"已处理":"待处理"}</em></button>{processed&&<button className="gsa-f7-task-x" aria-label={"关闭任务 "+task.title} title="关闭任务" onClick={()=>setF7Hidden(rows=>[...rows,task.id])}><X size={14}/></button>}{f7SelectedCollab===task.id&&<div className="gsa-f7-task-detail"><p>{task.detail}</p>{!processed&&<button className="btn primary" disabled={busy||!storageReady} onClick={()=>{const request=`请根据这条协作任务开始处理：${task.title}。任务详情：${task.detail}。请整理成本或报价草稿，缺少依据的金额留空并列出待确认事项。`;setStarted(true);setDrawer(null);void act(()=>streamReply(request.slice(0,1000),{id:task.id,followupId:task.followupId}));}}>立即处理</button>}</div>}</article>})}</div>}
     {drawer==="workflow"&&!specialized&&!isF7&&<Collaboration projectId={projectId}/>}{drawer==="workflow"&&specialized&&<div className="gsa-message-list">{messages.length===0&&<p className="gsa-muted">暂无协作消息</p>}{messages.map(message=><article className={"gsa-message "+(!message.is_read?"unread":"")} key={message.id}><button className="gsa-message-delete" aria-label="删除协作消息" title="删除消息" disabled={busy} onClick={()=>void act(()=>deleteCollaboration(message))}><X size={14}/></button><header><span>{{system:"系统",agent:"Agent",solution:"解决方案",software:"软件产品",pm:"项目负责人"}[message.sender]||message.sender}</span><time>{new Date(message.created_at).toLocaleString("zh-CN")}</time></header><strong>{message.title}</strong>{message.kind==="equipment"&&<span className={"gsa-processing-status "+(message.processed?"processed":"")}>{message.processed?"已处理":"未处理"}</span>}<p>{message.body}</p><button className="btn primary" disabled={busy} onClick={()=>void act(async()=>{await readCollaboration(message);setQuestion(message.kind==="equipment"?"解决方案的清单已经做好，请生成服务器规格方案":canMerge&&message.kind==="deliverable"?"请将已采纳的服务器规格合入设备清单":"请帮我处理这条协作事项："+message.title+"。"+message.body);setDrawer(null);})}>处理</button></article>)}</div>}
 
    </div>
