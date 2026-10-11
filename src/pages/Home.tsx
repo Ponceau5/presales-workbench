@@ -110,7 +110,7 @@ export default function Home() {
       {view === "collaboration" && <Collaboration projectId={project.id} />}
       {view === "materials" && <ResourceBrowser projectId={project.id} />}
       {view === "milestones" && <Milestones reference={reference} />}
-      {view === "review" && (["F7", "F8"].includes(params.get("stage") || "F5") ?
+      {view === "review" && (params.get("stage") === "F8" ?
         <StageWorkbench key={project.id + params.get("stage")} stageId={params.get("stage") || "F5"} /> :
         <GsaSoftwareWorkbench key={project.id + ":" + (params.get("stage") || "F5")} projectId={project.id} stageId={params.get("stage") || "F5"} />)}
       {view === "changes" && <ChangeLog projectId={project.id} />}

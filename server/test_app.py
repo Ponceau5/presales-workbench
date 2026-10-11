@@ -1,5 +1,6 @@
 """Local API contract tests with synthetic source text only."""
 
+import io
 import os
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
+from openpyxl import Workbook
 
 TEMP = tempfile.TemporaryDirectory()
 os.environ["PRESALES_DATA_DIR"] = TEMP.name
@@ -17,6 +19,37 @@ from model_gateway import ModelError, answer_about_source  # noqa: E402
 
 
 class WorkflowApiTest(unittest.TestCase):
+    def test_f7_agent_prompt_requires_sourced_costs_and_internal_draft(self):
+        with patch("workspace_router.request_chat_stream", return_value=iter(["成本待补"])) as model:
+            reply = self.client.post(
+                "/api/projects/F7-TEST/workspaces/F7/ask-stream",
+                headers=self.auth("sales"),
+                json={"question": "生成成本表", "turn_id": "f7-test-turn", "stage_title": "成本汇总与供应链询价"},
+            )
+        self.assertEqual(reply.status_code, 200, reply.text)
+        self.assertIn("成本待补", reply.text)
+        prompt = model.call_args.args[0][0]["content"]
+        self.assertIn("缺失值留空", prompt)
+        self.assertIn("销售内部草稿", prompt)
+
+    def test_f7_spreadsheet_upload_is_readable_as_source_page(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "成本输入"
+        sheet.append(["物料", "数量", "价格来源"])
+        sheet.append(["测试设备", 2, "待采购确认"])
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        uploaded = self.client.post(
+            "/api/projects/F7-TEST/documents", headers=self.auth("sales"),
+            data={"title": "成本输入", "version": "V1"},
+            files={"file": ("cost.xlsx", buffer.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        with db() as connection:
+            page = connection.execute("SELECT text FROM document_pages WHERE document_id=? AND page=1", (uploaded.json()["id"],)).fetchone()
+        self.assertIn("测试设备 | 2 | 待采购确认", page["text"])
+
     def test_server_model_connection_uses_no_project_source(self):
         without_key = self.client.post("/api/model/test", headers=self.auth("software"))
         self.assertEqual(without_key.status_code, 502)

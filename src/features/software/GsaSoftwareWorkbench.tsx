@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, type ReactNode } from "react";
-import { FileText, LoaderCircle, ArrowUp, X, Download, Sparkles, ArrowRight, CheckCircle2, Bookmark, Copy, Trash2, MessageSquare } from "lucide-react";
+import { FileText, LoaderCircle, ArrowUp, X, Download, Sparkles, ArrowRight, CheckCircle2, Bookmark, Copy, Trash2, MessageSquare, Paperclip } from "lucide-react";
 import { useWorkbench } from "@/state/workbench";
 import { localApi, localApiBase, localApiReady, clearLocalApiSession } from "@/lib/localApi";
 import "./gsa-software.css";
@@ -30,6 +30,7 @@ type Workflow = {demo_reset_at?:string;status:string;revision:number;equipment_r
 type CollaborationMessage={id:string;title:string;body:string;sender:string;recipient:string;kind:string;created_at:string;is_read:number;processed?:boolean};
 type ChatTurn={artifactId?:string;artifactTitle?:string;runId?:string;createdAt?:string;id:string;question:string;answer:string;steps:{label:string;state:string}[];status:"running"|"done"|"error"|"stopped"};
 type Favorite={id:string;sourceId:string;title:string;text:string;turns:ChatTurn[];runId:string|null;createdAt:string;conversationId?:string;runQuestion?:string};
+type F7HumanTask={id:string;kind:"followup"|"review";turnId:string;title:string;question:string;status:"open"|"done";createdAt:string};
 function AgentReply({text,children,onFavorite,favorited=false,canSave=true}:{text:string;children?:ReactNode;onFavorite?:()=>void;favorited?:boolean;canSave?:boolean}){
  const [copied,setCopied]=useState(false);const [copyError,setCopyError]=useState(false);
  return <div className="gsa-reply"><i className="gsa-reply-avatar"><Sparkles size={17}/></i><div className="gsa-reply-body">{children??<MarkdownReply text={text}/>}{text&&<div className="gsa-message-tools">{onFavorite&&<button disabled={!canSave} aria-label={favorited?"取消收藏":"收藏对话"} title={favorited?"取消收藏":"收藏对话"} onClick={onFavorite}><Bookmark size={15} fill={favorited?"currentColor":"none"}/></button>}<button aria-label={copied?"已复制":"复制完整回复"} title={copied?"已复制":"复制完整回复"} onClick={()=>void navigator.clipboard.writeText(text).then(()=>{setCopied(true);setCopyError(false);setTimeout(()=>setCopied(false),1600);}).catch(()=>setCopyError(true))}>{copied?<CheckCircle2 size={15}/>:<Copy size={15}/>}</button>{copyError&&<small>复制失败，请选择文本复制</small>}</div>}</div></div>;
@@ -62,8 +63,8 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  const [runs,setRuns]=useState<Run[]>([]); const [audit,setAudit]=useState<Audit[]>([]);
  const [calc,setCalc]=useState<Calculation|null>(null); const [busy,setBusy]=useState(false);
  const [error,setError]=useState("");const [question,setQuestion]=useState("");
- const [note,setNote]=useState(""); const [model,setModel]=useState<{configured:boolean;provider:string;model:string}|null>(null);
- const [drawer,setDrawer]=useState<"sources"|"parameters"|"server"|"workflow"|"favorites"|null>(null);
+ const [note]=useState(""); const [model,setModel]=useState<{configured:boolean;provider:string;model:string}|null>(null);
+ const [drawer,setDrawer]=useState<"sources"|"parameters"|"server"|"workflow"|"favorites"|"tracking"|"f7Human"|null>(null);
  const [flow,setFlow]=useState<Workflow|null>(null);
  const [optionIndex,setOptionIndex]=useState(0); const [clock,setClock]=useState(Date.now());
  useEffect(()=>{const timer=setInterval(()=>setClock(Date.now()),1000);return()=>clearInterval(timer);},[]);
@@ -76,6 +77,17 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  const [chatTurns,setChatTurns]=useState<ChatTurn[]>(()=>savedConversation()?.turns??[]);
  const [conversationId,setConversationId]=useState(()=>savedConversation()?.conversationId||crypto.randomUUID());
  const [runQuestion,setRunQuestion]=useState(()=>savedConversation()?.runQuestion??"");
+ const isF7=stageId==="F7";
+ const [f7Tasks,setF7Tasks]=useState<F7HumanTask[]>([]);
+ const [f7Processed,setF7Processed]=useState<string[]>([]);
+ const [f7Hidden,setF7Hidden]=useState<string[]>([]);
+ const [f7HumanId,setF7HumanId]=useState<string|null>(null);
+ const [f7HumanInput,setF7HumanInput]=useState("");
+ const [f7SelectedCollab,setF7SelectedCollab]=useState<string|null>(null);
+ const [f7SelectedTracking,setF7SelectedTracking]=useState<string|null>(null);
+ const [f7UploadBusy,setF7UploadBusy]=useState(false);
+ const [f7UploadNotice,setF7UploadNotice]=useState("");
+ const f7FileInput=useRef<HTMLInputElement>(null);
 
  function conversationContext(){return JSON.stringify({turns:chatTurns.filter(t=>t.status==="done").map(t=>({question:t.question,answer:t.answer})),current_scheme:showServer?current?.narrative:null}).slice(-24000);}
 
@@ -84,7 +96,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  useEffect(()=>()=>streamController.current?.abort(),[]);
  const baselineAudit=useRef<Set<string>|null>(null);
  const sessionAccount=useRef(account);
- useEffect(()=>{if(sessionAccount.current===account)return;sessionAccount.current=account;const saved=savedConversation();setStarted(!!saved?.started);setShowServer(!!saved?.showServer);setChatTurns(saved?.turns??[]);setRunQuestion(saved?.runQuestion??"");setRestoredRun(null);setFavoriteContext("");baselineAudit.current=null;},[account]);
+ useEffect(()=>{if(sessionAccount.current===account)return;sessionAccount.current=account;const saved=savedConversation();setStarted(!!saved?.started);setShowServer(!!saved?.showServer);setChatTurns(saved?.turns??[]);setRunQuestion(saved?.runQuestion??"");setConversationId(saved?.conversationId||crypto.randomUUID());setRestoredRun(null);setFavoriteContext("");setF7Tasks([]);setF7Processed([]);setF7Hidden([]);baselineAudit.current=null;},[account]);
  const pendingSave=useRef<(()=>void)|null>(null);
  useEffect(()=>()=>pendingSave.current?.(),[]);
  const [storageReady,setStorageReady]=useState(false);
@@ -96,11 +108,12 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  useEffect(()=>{try{const value=JSON.parse(localStorage.getItem(favoriteKey)||"[]");setFavorites(Array.isArray(value)?value.filter(v=>v&&typeof v.title==="string"&&Array.isArray(v.turns)):[]);}catch{setFavorites([]);}},[favoriteKey]);
  useEffect(()=>{
   let cancelled=false;
-  void localApi<{revision:number;value:{current:ReturnType<typeof savedConversation>;favorites:Favorite[];selectedPages?:{document_id:string;page:number}[];pageNumbers?:Record<string,string>}|null}>(durableBase+"/state").then(saved=>{
+  void localApi<{revision:number;value:{current:ReturnType<typeof savedConversation>;favorites:Favorite[];selectedPages?:{document_id:string;page:number}[];pageNumbers?:Record<string,string>;f7Tasks?:F7HumanTask[];f7Processed?:string[];f7Hidden?:string[]}|null}>(durableBase+"/state").then(saved=>{
    if(cancelled)return;storageRevision.current=saved.revision;
    if(saved.value){const c=saved.value.current;
     if(c){setStarted(!!c.started);setShowServer(!!c.showServer);setChatTurns((c.turns??[]).map((t:ChatTurn)=>t.status==="running"?{...t,status:"stopped",answer:t.answer+"\n\n上次生成已中断，请继续发送请求。"}:t));setRunQuestion(c.runQuestion||"");setConversationId(c.conversationId||crypto.randomUUID());setRestoredRun(c.run??null);setInputs(c.inputs??c.run?.inputs??defaults);setPendingPrompt(c.generationPrompt||"");setPendingAt(c.pendingAt||new Date().toISOString());setNotice(c.chatNotice||"");setNoticeAt(c.noticeAt||new Date().toISOString());}
     setFavorites(saved.value.favorites??[]);setSelectedPages(saved.value.selectedPages??[]);setPageNumbers(saved.value.pageNumbers??{});
+    if(isF7){setF7Tasks(saved.value.f7Tasks??[]);setF7Processed(saved.value.f7Processed??[]);setF7Hidden(saved.value.f7Hidden??[]);}
    }
    migrateDialogs.current=!saved.value;setStorageReady(true);
   }).catch(e=>{if(!cancelled)setError("服务端对话读取失败："+e.message);});
@@ -140,20 +153,20 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  useEffect(()=>{const stream=streamRef.current;if(stream&&stream.scrollHeight-stream.scrollTop-stream.clientHeight<140)stream.scrollTop=stream.scrollHeight;},[current?.preview,current?.status]);
  useEffect(()=>{
   if(!storageReady)return;
-  const value={current:{inputs,started,showServer,turns:chatTurns,runQuestion,conversationId,run:showServer?current:null,generationPrompt,pendingAt,chatNotice,noticeAt},favorites,selectedPages,pageNumbers};
+  const value={current:{inputs,started,showServer,turns:chatTurns,runQuestion,conversationId,run:showServer?current:null,generationPrompt,pendingAt,chatNotice,noticeAt},favorites,selectedPages,pageNumbers,...(isF7?{f7Tasks,f7Processed,f7Hidden}:{})};
   const encoded=JSON.stringify(value);if(encoded===lastSaved.current)return;
   const save=()=>{
    saveQueue.current=saveQueue.current.then(async()=>{
     if(encoded===lastSaved.current)return;
     const dialogues:Record<string,unknown>={};
-    if(migrateDialogs.current)for(const f of favorites){const id=f.conversationId||f.id;try{const old=JSON.parse(localStorage.getItem("presales-dialogue:"+storageScope+":"+account+":"+id)||"null");if(old)dialogues[id]=old;}catch{}}
+    if(migrateDialogs.current)for(const f of favorites){const id=f.conversationId||f.id;try{const old=JSON.parse(localStorage.getItem("presales-dialogue:"+storageScope+":"+account+":"+id)||"null");if(old)dialogues[id]=old;}catch{/* Ignore unreadable legacy dialogue. */}}
     const saved=await localApi<{revision:number}>(durableBase+"/state",json({expected_revision:storageRevision.current,value:{...value,dialogues}}));
     storageRevision.current=saved.revision;lastSaved.current=encoded;migrateDialogs.current=false;
    }).catch(e=>setError("服务端保存失败，当前内容仍保留在此浏览器："+e.message));
   };
   pendingSave.current=save;const timer=setTimeout(save,350);
   return()=>clearTimeout(timer);
- },[storageReady,started,showServer,chatTurns,runQuestion,conversationId,current,generationPrompt,pendingAt,chatNotice,noticeAt,favorites,selectedPages,pageNumbers,inputs]);
+ },[storageReady,started,showServer,chatTurns,runQuestion,conversationId,current,generationPrompt,pendingAt,chatNotice,noticeAt,favorites,selectedPages,pageNumbers,inputs,f7Tasks,f7Processed,f7Hidden]);
  const change=(patch:Partial<Inputs>)=>{setInputs(v=>({...v,...patch}));setCalc(null);setDirty(true);};
  async function refresh(){
    if(!specialized){
@@ -190,7 +203,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
   setBusy(true);setError("");
   try{await fn();}catch(e){setError(e instanceof Error?e.message:"操作失败");}finally{setBusy(false);}
  }
- function outputTitle(t:ChatTurn){if(stageId!=="F5")return t.artifactTitle||stage?.title||"工作成果";return t.artifactTitle|| (/偏离/.test(t.question)?"技术应答与偏离表":/澄清/.test(t.question)?"软件澄清表":/核对/.test(t.question)?"软件需求核对":"软件支持成果");}
+ function outputTitle(t:ChatTurn){if(isF7)return /报价|销售价|标价/.test(t.question)?"报价表":"成本表";if(stageId!=="F5")return t.artifactTitle||stage?.title||"工作成果";return t.artifactTitle|| (/偏离/.test(t.question)?"技术应答与偏离表":/澄清/.test(t.question)?"软件澄清表":/核对/.test(t.question)?"软件需求核对":"软件支持成果");}
  async function adoptOutput(t:ChatTurn){await localApi(base+"/artifacts/adopt",json({source_id:t.artifactId?artifacts.find(a=>a.id===t.artifactId)?.source_id||t.id:t.id,title:outputTitle(t),content:t.answer,conversation_id:conversationId}));await refresh();}
  async function downloadOutput(a:Artifact){
   const response=await fetch(localApiBase+base+"/artifacts/"+a.id+"/download",{headers:{Authorization:"Bearer "+sessionStorage.getItem("presales-local-api-token")}});
@@ -203,6 +216,40 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
   const url=URL.createObjectURL(await response.blob());window.open(url,"_blank","noopener");setTimeout(()=>URL.revokeObjectURL(url),60000);
  }
  const result=calc??current?.calculation;
+ const f7HumanTask=f7Tasks.find(task=>task.id===f7HumanId);
+ const f7OpenTasks=f7Tasks.filter(task=>task.status==="open");
+ const f7Collaboration=[
+  ...state.followups.filter(f=>f.projectId===projectId&&f.owner===state.role&&f.createdBy!==account).map(f=>({id:"followup:"+f.id,followupId:f.id,title:f.title,source:f.createdRole||"其他岗位",detail:f.source,status:f.status==="done"?"已处理":"待处理",at:f.completedAt||""})),
+  ...state.deliveries.filter(d=>d.projectId===projectId&&d.toStage==="F7"&&d.owner===state.role&&d.senderRole!==state.role&&d.status!=="returned").map(d=>({id:"delivery:"+d.id,followupId:"",title:d.title,source:d.senderRole,detail:`${d.fromStage} → F7 · ${d.version}\n${d.text}\n依据：${d.evidence}`,status:d.status==="accepted"?"已接收":"待处理",at:d.at})),
+ ].filter(task=>!f7Hidden.includes(task.id));
+ function openF7Human(task:F7HumanTask){setF7HumanId(task.id);setF7HumanInput("");setDrawer("f7Human");}
+ async function submitF7Human(){
+  if(!f7HumanTask||busy)return;
+  const task=f7HumanTask;
+  const reply=f7HumanInput.trim();
+  if(!reply)return;
+  setDrawer(null);setF7HumanInput("");
+  await act(async()=>{
+   await streamReply((task.kind==="followup"?`针对“${task.question}”补充人工确认信息：${reply}。请据此继续处理，仍缺少依据的金额保持待补。`:`请按人工审核意见修改刚才的${task.title}：${reply}。保留原始依据，不能推断缺失价格或审批结果。`).slice(0,1000),undefined,true);
+   setF7Tasks(rows=>rows.map(row=>row.id===task.id?{...row,status:"done"}:row));
+  });
+ }
+ async function approveF7Draft(){
+  if(!f7HumanTask||f7HumanTask.kind!=="review")return;
+  const turn=chatTurns.find(t=>t.id===f7HumanTask.turnId);
+  if(!turn||turn.status!=="done")return;
+  await act(async()=>{await adoptOutput(turn);setF7Tasks(rows=>rows.map(row=>row.id===f7HumanTask.id?{...row,status:"done"}:row));setDrawer(null);setChatNotice("草稿已通过并保存为内部成果；待补的价格和条件仍需继续确认。");});
+ }
+ async function uploadF7Document(file:File){
+  if(!/\.(pdf|txt|md|csv|xlsx|xls)$/i.test(file.name)){setError("请选择 PDF、文本、CSV 或 Excel 文件。");return;}
+  setF7UploadBusy(true);setError("");
+  try{
+   const body=new FormData();body.append("title",file.name.replace(/\.[^.]+$/, ""));body.append("version","上传于 "+new Date().toLocaleString("zh-CN"));body.append("file",file);
+   const uploaded=await localApi<{id:string}>(`/api/projects/${encodeURIComponent(projectId)}/documents`,{method:"POST",body});
+   const list=await localApi<{id:string;title:string;version:string;page_count:number}[]>(`/api/projects/${encodeURIComponent(projectId)}/documents`);
+   setDocuments(list);setSelectedPages(rows=>[...rows.filter(p=>p.document_id!==uploaded.id),{document_id:uploaded.id,page:1}]);setF7UploadNotice(`已上传 ${file.name} · 已选第 1 页`);
+  }catch(e){setError(e instanceof Error?e.message:"上传失败");}finally{setF7UploadBusy(false);if(f7FileInput.current)f7FileInput.current.value="";}
+ }
 
  function persistFavorites(next:Favorite[]){try{localStorage.setItem(favoriteKey,JSON.stringify(next));setFavorites(next);}catch{setError("收藏未保存，本机存储空间不足或不可用。");}}
  function favoriteReply(sourceId:string,text:string,title:string){
@@ -233,8 +280,9 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
   if(!selectedTurns.length&&!run)setChatTurns([{id:favorite.id,question:favorite.title,answer:favorite.text,status:"done",steps:[],createdAt:favorite.createdAt}]);
   setQuestion("");setDrawer(null);
  }
- async function streamReply(text:string){
+ async function streamReply(text:string,collaboration?:{id:string;followupId:string},skipFollowup=false){
   const id=crypto.randomUUID();const controller=new AbortController();streamController.current=controller;
+  let completedAnswer="";
   let timedOut=false;
   const expire=()=>{timedOut=true;controller.abort();};
   let watchdog=setTimeout(expire,100000);
@@ -242,6 +290,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
   const update=(event:{type:string;label?:string;state?:string;text?:string;message?:string})=>{
    clearTimeout(watchdog);watchdog=setTimeout(expire,100000);
    if(event.type==="error")throw new Error(event.message||"生成失败");
+   if(event.type==="delta")completedAnswer+=event.text||"";
    setChatTurns(turns=>turns.map(t=>t.id!==id?t:{...t,answer:t.answer+(event.type==="delta"?event.text||"":""),steps:event.type==="step"?[...t.steps.filter(s=>s.label!==event.label),{label:event.label||"",state:event.state||"done"}]:t.steps,status:event.type==="done"?"done":t.status}));
   };
   try{
@@ -252,6 +301,14 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
    while(true){const chunk=await reader.read();buffer+=decoder.decode(chunk.value,{stream:!chunk.done});const events=buffer.split("\n\n");buffer=events.pop()||"";for(const event of events){const line=event.split("\n").find(v=>v.startsWith("data: "));if(line){const data=JSON.parse(line.slice(6));update(data);if(data.type==="done")done=true;}}if(chunk.done)break;}
    if(!done)throw new Error("连接中断，当前结果未完成，请重试");
    await refresh();
+   if(isF7){
+    const title=/报价|销售价|标价/.test(text)?"报价表":"成本表";
+    const review:F7HumanTask={id:crypto.randomUUID(),kind:"review",turnId:id,title:`审核${title}草稿`,question:text,status:"open",createdAt:new Date().toISOString()};
+    const needsFollowup=!skipFollowup&&/请(?:提供|补充|确认)|待(?:补|确认)|缺少.*(?:价格|依据|条件)/.test(completedAnswer);
+    const followup:F7HumanTask={id:crypto.randomUUID(),kind:"followup",turnId:id,title:`补充${title}条件`,question:text,status:"open",createdAt:new Date().toISOString()};
+    setF7Tasks(rows=>[...(needsFollowup?[followup]:[]),review,...rows]);openF7Human(needsFollowup?followup:review);
+    if(collaboration){setF7Processed(rows=>rows.includes(collaboration.id)?rows:[...rows,collaboration.id]);if(collaboration.followupId)dispatch({type:"followupComplete",id:collaboration.followupId,projectId,result:`已形成${title}草稿，等待人工审核。`});}
+   }
   }catch(e){const stopped=controller.signal.aborted&&!timedOut;
    const message=timedOut?"模型超过 100 秒未返回新内容，请稍后重试。":e instanceof Error?e.message:"生成失败";
    setChatTurns(turns=>turns.map(t=>t.id===id?{...t,status:stopped?"stopped":"error",answer:t.answer+(stopped?"": "\n\n"+message),steps:t.steps.map(step=>step.state==="running"?{...step,state:"error",label:stopped?"已停止":message}:step)}:t));if(!stopped){setQuestion(q=>q||text);throw new Error(message);}}
@@ -339,15 +396,15 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  ...(showServer&&current?[{id:"scheme:"+current.id,kind:"scheme" as const,at:current.created_at}]:[]),
  ...(generationPrompt?[{id:"pending",kind:"pending" as const,at:pendingAt}]:[]),
  ...(chatNotice?[{id:"notice",kind:"notice" as const,at:chatNotice.startsWith("收到。我会")&&current?new Date(Date.parse(current.created_at)-1).toISOString():noticeAt}]:[])].sort((a,b)=>Date.parse(a.at)-Date.parse(b.at));
- return <section className={"gsa-chat "+(!started?"gsa-home":"")}>
-  <header className="gsa-chat-header"><div className="gsa-agent-title"><i><Sparkles size={18}/></i><div><strong>{specialized?(canMerge?"解决方案 Agent":"软件 Agent"):(stageId==="F5"?"软件 Agent":(stage?.title||stageId)+" Agent")}</strong><span>{canMerge?"解决方案":"软件支持"} · {projectId}</span></div></div>
-   <nav>{started&&<button disabled={busy} onClick={()=>{setConversationId(crypto.randomUUID());setStarted(false);setFavoriteContext("");setChatTurns([]);setRunQuestion("");setShowServer(false);setRestoredRun(null);setGenerationPrompt("");setChatNotice("");setQuestion("");baselineAudit.current=new Set(audit.map(a=>a.id));}}>新对话</button>}<button onClick={()=>setDrawer("favorites")}><Bookmark size={13}/> 收藏对话{favorites.length>0?" · "+favorites.length:""}</button><button onClick={()=>setDrawer("sources")}>资料</button><button className="gsa-collaboration-button" aria-label={messages.some(m=>!m.is_read&&m.recipient===account)?"协作，有新交接":"协作"} onClick={()=>{setDrawer("workflow");}}>协作{messages.some(m=>!m.is_read&&m.recipient===account)&&<i className="gsa-notification-dot"/>}</button></nav>
+ return <section className={"gsa-chat "+(!started?"gsa-home ":"")+(isF7?"gsa-f7":"")}>
+  <header className="gsa-chat-header"><div className="gsa-agent-title"><i><Sparkles size={18}/></i><div><strong>{isF7?"成本与报价 Agent":specialized?(canMerge?"解决方案 Agent":"软件 Agent"):(stageId==="F5"?"软件 Agent":(stage?.title||stageId)+" Agent")}</strong><span>{isF7?state.role:canMerge?"解决方案":"软件支持"} · {projectId}</span></div></div>
+   <nav>{started&&<button disabled={busy} onClick={()=>{setConversationId(crypto.randomUUID());setStarted(false);setFavoriteContext("");setChatTurns([]);setRunQuestion("");setShowServer(false);setRestoredRun(null);setGenerationPrompt("");setChatNotice("");setQuestion("");baselineAudit.current=new Set(audit.map(a=>a.id));}}>新对话</button>}<button onClick={()=>setDrawer("favorites")}><Bookmark size={13}/> 收藏对话{favorites.length>0?" · "+favorites.length:""}</button><button onClick={()=>setDrawer("sources")}>资料</button>{isF7&&state.role==="销售"&&<button className="gsa-collaboration-button" onClick={()=>{setF7SelectedTracking(null);setDrawer("tracking");}}>跟进{f7OpenTasks.length>0&&<i className="gsa-notification-dot"/>}</button>}<button className="gsa-collaboration-button" aria-label={isF7?`协作，${f7Collaboration.filter(t=>t.status!=="已处理"&&!f7Processed.includes(t.id)).length} 项待处理`:messages.some(m=>!m.is_read&&m.recipient===account)?"协作，有新交接":"协作"} onClick={()=>{setF7SelectedCollab(null);setDrawer("workflow");}}>协作{(isF7?f7Collaboration.some(t=>t.status!=="已处理"&&!f7Processed.includes(t.id)):messages.some(m=>!m.is_read&&m.recipient===account))&&<i className="gsa-notification-dot"/>}</button></nav>
   </header>
-  {error&&<div className="gsa-chat-error" role="alert">{error}{(error.includes("请先登录")||error.includes("未登录"))&&<button onClick={()=>{dispatch({type:"logout"});window.location.assign("/login");}}>重新登录</button>}<button onClick={()=>setError("")} aria-label="关闭错误"><X size={14}/></button></div>}
+  {error&&<div className="gsa-chat-error" role="alert">{error}{(error.includes("请先登录")||error.includes("未登录")||error.includes("重新登录"))&&<button onClick={()=>{dispatch({type:"logout"});window.location.assign("/login");}}>重新登录</button>}<button onClick={()=>setError("")} aria-label="关闭错误"><X size={14}/></button></div>}
   <div className="gsa-transcript" ref={streamRef}>
-   {!started&&<div className="gsa-welcome"><i><Sparkles size={25}/></i><h2>今天要做些什么？</h2><p>核对需求、整理澄清、起草应答，或一起处理软件方案。</p></div>}
+   {!started&&<div className="gsa-welcome"><i><Sparkles size={25}/></i><h2>今天要做些什么？</h2><p>{isF7?"整理成本依据、生成成本表，或准备报价草稿。":"核对需求、整理澄清、起草应答，或一起处理软件方案。"}</p></div>}
    {timeline.map(item=><div key={item.id}>
-    {item.kind==="turn"&&item.turn&&<><div className="gsa-user-message">{item.turn.question}</div>{item.turn.steps.length>0&&<details className="gsa-execution" open={item.turn.status==="running"}><summary>{item.turn.status==="running"?"正在处理":"执行过程"}</summary>{item.turn.steps.map(step=><div key={step.label}>{step.state==="done"?<CheckCircle2 size={13}/>:step.state==="error"?<X size={13}/>:<LoaderCircle size={13} className="spin"/>}{step.label}</div>)}</details>}<AgentReply text={item.turn.answer} canSave={item.turn.status==="done"} onFavorite={()=>favoriteReply(item.id,item.turn!.answer,item.turn!.question)}><MarkdownReply text={item.turn.answer}/>{(item.turn.runId||runs.some(r=>r.id===item.id))&&<button className="gsa-history-action" onClick={()=>void act(()=>openHistorical(item.turn!.runId||item.id))}>查看方案 · 可采纳或修改<ArrowRight size={14}/></button>}{item.turn.status==="done"&&item.turn.answer&&!item.turn.runId&&<div className="gsa-output-adoption">{(()=>{const adopted=artifacts.find(a=>(a.source_id===item.turn!.id||a.id===item.turn!.artifactId)&&a.content===item.turn!.answer);return adopted?<><span>已采纳 · V{adopted.revision}</span><button onClick={()=>void act(()=>downloadOutput(adopted))}><Download size={14}/>下载</button></>:canReview?<button disabled={busy} onClick={()=>void act(()=>adoptOutput(item.turn!))}><CheckCircle2 size={14}/>采纳成果</button>:null;})()}</div>}{item.turn.status==="running"&&<span className="gsa-stream-cursor"/>}</AgentReply></>}
+    {item.kind==="turn"&&item.turn&&<><div className="gsa-user-message">{item.turn.question}</div>{item.turn.steps.length>0&&<details className="gsa-execution" open={item.turn.status==="running"}><summary>{item.turn.status==="running"?"正在处理":"执行过程"}</summary>{item.turn.steps.map(step=><div key={step.label}>{step.state==="done"?<CheckCircle2 size={13}/>:step.state==="error"?<X size={13}/>:<LoaderCircle size={13} className="spin"/>}{step.label}</div>)}</details>}<AgentReply text={item.turn.answer} canSave={item.turn.status==="done"} favorited={favorites.some(f=>f.conversationId===conversationId)} onFavorite={()=>favoriteReply(item.id,item.turn!.answer,item.turn!.question)}><MarkdownReply text={item.turn.answer}/>{(item.turn.runId||runs.some(r=>r.id===item.id))&&<button className="gsa-history-action" onClick={()=>void act(()=>openHistorical(item.turn!.runId||item.id))}>查看方案 · 可采纳或修改<ArrowRight size={14}/></button>}{item.turn.status==="done"&&item.turn.answer&&!item.turn.runId&&<div className="gsa-output-adoption">{(()=>{const adopted=artifacts.find(a=>(a.source_id===item.turn!.id||a.id===item.turn!.artifactId)&&a.content===item.turn!.answer);const pending=f7Tasks.find(t=>t.turnId===item.turn!.id&&t.kind==="review"&&t.status==="open");return adopted?<><span>已采纳 · V{adopted.revision}</span><button onClick={()=>void act(()=>downloadOutput(adopted))}><Download size={14}/>下载</button></>:isF7?<button disabled={!pending||busy} onClick={()=>pending&&openF7Human(pending)}><CheckCircle2 size={14}/>审核草稿</button>:canReview?<button disabled={busy} onClick={()=>void act(()=>adoptOutput(item.turn!))}><CheckCircle2 size={14}/>采纳成果</button>:null;})()}</div>}{item.turn.status==="running"&&<span className="gsa-stream-cursor"/>}</AgentReply></>}
     {item.kind==="notice"&&<AgentReply text={chatNotice}/>}
     {item.kind==="scheme"&&runQuestion&&<div className="gsa-user-message">{runQuestion}</div>}
    {item.kind==="pending"&&<><div className="gsa-user-message">{generationPrompt}</div><AgentReply text=""><p>收到，使用设备清单 V{flow?.equipment_revision}。采样周期{generationPrompt.match(/(\d+)\s*秒/)?.[1]||(showServer?current?.inputs.sampling_seconds:inputs.sampling_seconds)||inputs.sampling_seconds} 秒、历史保留 {showServer?current?.inputs.retention_years||inputs.retention_years:inputs.retention_years} 年。接入范围按三期机房与配套系统全量估算，事件和波形暂未计入。</p>{(()=>{const match=generationPrompt.match(/(?:再?加|增加|新增|还有(?:大概|约)?|另有(?:大概|约)?)\s*(\d+(?:\.\d+)?)\s*(万|w)?\s*(?:个|的)?\s*测点/i);if(!match)return null;const added=Number(match[1])*(match[2]?10000:1);const points=current?.calculation.points??{low:inputs.point_low,high:inputs.point_high};return <p>新增 {fmt(added)} 测点，计算范围改为 {fmt(points.low+added)}–{fmt(points.high+added)} 点；设备数量保持原假设，需另行确认。</p>;})()}<div className="gsa-actions"><button className="btn primary" disabled={busy||running} onClick={()=>void act(generateFromChat)}>确认，{showServer?"重新生成":"生成方案"}</button><button className="btn secondary" onClick={()=>setDrawer("parameters")}>调整范围与参数</button></div></AgentReply></>}
@@ -366,15 +423,18 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
   </div>
   <footer className="gsa-composer">
    {!started&&stageId==="F5"&&<div className="gsa-quick"><button onClick={()=>setQuestion("请帮我核对软件技术规格书中的需求")}>核对软件需求</button><button onClick={()=>setQuestion("请整理软件需求中需要澄清的问题")}>整理澄清问题</button><button onClick={()=>setQuestion("请根据软件规格书起草技术应答与偏离项，标明待确认内容")}>起草应答与偏离表</button></div>}
-   {!started&&stageId!=="F5"&&<div className="gsa-quick">{["核对输入资料","整理待确认问题","起草"+(stage?.title||"工作成果")].map(q=><button key={q} onClick={()=>setQuestion(q)}>{q}</button>)}</div>}
-   <form onSubmit={e=>{e.preventDefault();void send();}}><textarea aria-label={stageId==="F5"?"与软件 Agent 对话":"与"+(stage?.title||stageId)+" Agent 对话"} placeholder="告诉我你要做什么…" onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();if(storageReady&&!busy&&!running&&(!specialized||materials))void send();}}} value={question} onChange={e=>setQuestion(e.target.value)} maxLength={1000}/><button type={streamController.current?"button":"submit"} aria-label={streamController.current?"停止生成":"发送"} onClick={()=>{if(streamController.current)streamController.current.abort();}} disabled={!streamController.current&&(!storageReady||busy||running||(specialized&&!materials)||!question.trim())}>{streamController.current?<X size={18}/>:<ArrowUp size={18}/>}</button>
-   <div className="gsa-composer-meta"><select aria-label="当前模型" value={model?.model||"unconfigured"} disabled={busy||running}><option value={model?.model||"unconfigured"}>{model?.configured?(model.provider==="zhipu"?"智谱 · ":model.provider+" · ")+model.model:"模型未配置"}</option></select>{busy&&<span>正在处理…</span>}</div></form>
+   {!started&&isF7&&<div className="gsa-quick"><button onClick={()=>setQuestion("请根据已确认的配置、采购回价和项目资料整理成本表，缺少价格或来源的项目保留待补。")}>成本表</button><button onClick={()=>setQuestion("请根据已确认成本和销售定价原则准备报价表草稿，列出金额缺口与待审核事项。")}>报价表</button></div>}
+   {!started&&stageId!=="F5"&&!isF7&&<div className="gsa-quick">{["核对输入资料","整理待确认问题","起草"+(stage?.title||"工作成果")].map(q=><button key={q} onClick={()=>setQuestion(q)}>{q}</button>)}</div>}
+   <form onSubmit={e=>{e.preventDefault();void send();}}><textarea aria-label={isF7?"与成本与报价 Agent 对话":stageId==="F5"?"与软件 Agent 对话":"与"+(stage?.title||stageId)+" Agent 对话"} placeholder="告诉我你要做什么…" onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();if(storageReady&&!busy&&!running&&(!specialized||materials))void send();}}} value={question} onChange={e=>setQuestion(e.target.value)} maxLength={1000}/><button type={streamController.current?"button":"submit"} aria-label={streamController.current?"停止生成":"发送"} onClick={()=>{if(streamController.current)streamController.current.abort();}} disabled={!streamController.current&&(!storageReady||busy||running||(specialized&&!materials)||!question.trim())}>{streamController.current?<X size={18}/>:<ArrowUp size={18}/>}</button>
+   <div className="gsa-composer-meta">{isF7&&<><input ref={f7FileInput} type="file" accept=".pdf,.txt,.md,.csv,.xlsx,.xls" hidden onChange={e=>{const file=e.target.files?.[0];if(file)void uploadF7Document(file);}}/><button className="gsa-attach-button" type="button" aria-label="上传文件" title="上传项目资料" disabled={f7UploadBusy||busy} onClick={()=>f7FileInput.current?.click()}><Paperclip size={16}/></button>{f7UploadNotice?<span className="gsa-attached-count" title={f7UploadNotice}>{f7UploadNotice}</span>:selectedPages.length>0&&<span className="gsa-attached-count">已选 {selectedPages.length} 页资料</span>}{f7UploadBusy&&<span>正在上传…</span>}</> }<select aria-label="当前模型" value={model?.model||"unconfigured"} disabled={busy||running}><option value={model?.model||"unconfigured"}>{model?.configured?(model.provider==="zhipu"?"智谱 · ":model.provider+" · ")+model.model:"模型未配置"}</option></select>{busy&&<span>正在处理…</span>}</div></form>
   </footer>
   {!started&&favorites.length>0&&<div className="gsa-home-favorites">{favorites.slice(0,6).map(f=><div className="gsa-home-favorite" key={f.id}><button title={f.title} onClick={()=>void act(()=>restoreFavorite(f))}><i><MessageSquare size={19}/></i><span>{f.title}</span></button><button className="gsa-favorite-delete" aria-label={"删除收藏 "+f.title} onClick={()=>persistFavorites(favorites.filter(item=>item.id!==f.id))}><X size={13}/></button></div>)}</div>}
-  {drawer&&<div className="gsa-drawer-backdrop" onClick={()=>setDrawer(null)}><aside className={"gsa-drawer"+(drawer==="sources"?" gsa-materials-drawer":"")} onClick={e=>e.stopPropagation()} aria-label="软件工作侧栏">
-   <header><h3>{{sources:"项目资料",parameters:"方案参数",server:"方案生成依据",workflow:"协作消息",favorites:"收藏对话"}[drawer]}</h3><button aria-label="关闭侧栏" onClick={()=>setDrawer(null)}><X size={18}/></button></header>
+  {drawer&&<div className="gsa-drawer-backdrop" onClick={()=>setDrawer(null)}><aside className={"gsa-drawer"+(drawer==="sources"?" gsa-materials-drawer":"")} onClick={e=>e.stopPropagation()} aria-label={isF7?"F7 工作侧栏":"软件工作侧栏"}>
+   <header><h3>{{sources:"项目资料",parameters:"方案参数",server:"方案生成依据",workflow:"协作消息",favorites:"收藏对话",tracking:"跟进",f7Human:"人工处理"}[drawer]}</h3><button aria-label="关闭侧栏" onClick={()=>setDrawer(null)}><X size={18}/></button></header>
    <div className="gsa-drawer-body">
     {drawer==="favorites"&&<>{favorites.length===0?<p className="gsa-muted">收藏的对话会显示在这里。</p>:favorites.map(f=><article className="gsa-favorite-row" key={f.id}><button onClick={()=>void act(()=>restoreFavorite(f))}><MessageSquare size={17}/><div><strong>{f.title}</strong><span>{f.text.slice(0,100)}</span></div><ArrowRight size={15}/></button><button aria-label={"删除收藏 "+f.title} title="取消收藏" onClick={()=>persistFavorites(favorites.filter(item=>item.id!==f.id))}><Trash2 size={15}/></button></article>)}</>}
+    {drawer==="tracking"&&isF7&&<div className="gsa-f7-task-list">{f7Tasks.length===0&&<p className="gsa-muted">暂无跟进或审核任务。生成成本表或报价表后，需要人工处理的事项会出现在这里。</p>}{f7Tasks.map(task=><article className="gsa-f7-task" key={task.id}><button className="gsa-f7-task-main" onClick={()=>setF7SelectedTracking(f7SelectedTracking===task.id?null:task.id)}><span><small>{task.kind==="followup"?"跟进":"审核"} · {new Date(task.createdAt).toLocaleString("zh-CN")}</small><strong>{task.title}</strong></span><em>{task.status==="done"?"已处理":"待处理"}</em></button>{f7SelectedTracking===task.id&&<div className="gsa-f7-task-detail"><p>{task.question}</p>{task.status==="open"?<button className="btn primary" onClick={()=>openF7Human(task)}>立即处理</button>:<button className="gsa-f7-close-task" onClick={()=>setF7Tasks(rows=>rows.filter(row=>row.id!==task.id))}><X size={14}/>关闭任务</button>}</div>}</article>)}</div>}
+    {drawer==="f7Human"&&isF7&&f7HumanTask&&<div className="gsa-f7-human"><span className="gsa-f7-human-kicker">{f7HumanTask.kind==="followup"?"需要人工补充":"需要人工审核"}</span><h4>{f7HumanTask.title}</h4><p>{f7HumanTask.kind==="followup"?"Agent 已生成初稿，但仍有价格、来源或条件需要确认。请提供确切信息；暂时没有依据的项目继续保留待补。":"请核对草稿的价格来源、币种、有效期和审批边界。你可以提出修改意见，也可以将当前内容通过为内部草稿。"}</p><div className="gsa-f7-draft"><MarkdownReply text={chatTurns.find(turn=>turn.id===f7HumanTask.turnId)?.answer||"草稿正在生成，请稍候。"}/></div><label>{f7HumanTask.kind==="followup"?"补充信息":"修改意见"}<textarea value={f7HumanInput} onChange={e=>setF7HumanInput(e.target.value)} placeholder={f7HumanTask.kind==="followup"?"输入已确认的价格、来源或条件…":"说明要修改的项目和依据…"}/></label><div className="gsa-f7-human-actions"><button className="btn secondary" disabled={busy} onClick={()=>{setDrawer(null);setF7SelectedTracking(f7HumanTask.id);}}>稍后处理</button><button className="btn secondary" disabled={busy||!f7HumanInput.trim()} onClick={()=>void submitF7Human()}>{f7HumanTask.kind==="followup"?"提交并继续处理":"按意见修改草稿"}</button>{f7HumanTask.kind==="review"&&<button className="btn primary" disabled={busy} onClick={()=>void approveF7Draft()}>通过内部草稿</button>}</div></div>}
     {drawer==="sources"&&!specialized&&<>
      <ResourceBrowser projectId={projectId} compact/>
      <h4>选择用于本次对话的资料页</h4>
@@ -417,7 +477,8 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
      {!canReview&&current?.status==="review"&&<p className="gsa-review-owner"><CheckCircle2 size={16}/>由软件产品审核采纳后，系统自动通知解决方案。</p>}
 
     </>}
-    {drawer==="workflow"&&!specialized&&<Collaboration projectId={projectId}/>}{drawer==="workflow"&&specialized&&<div className="gsa-message-list">{messages.length===0&&<p className="gsa-muted">暂无协作消息</p>}{messages.map(message=><article className={"gsa-message "+(!message.is_read?"unread":"")} key={message.id}><button className="gsa-message-delete" aria-label="删除协作消息" title="删除消息" disabled={busy} onClick={()=>void act(()=>deleteCollaboration(message))}><X size={14}/></button><header><span>{{system:"系统",agent:"Agent",solution:"解决方案",software:"软件产品",pm:"项目负责人"}[message.sender]||message.sender}</span><time>{new Date(message.created_at).toLocaleString("zh-CN")}</time></header><strong>{message.title}</strong>{message.kind==="equipment"&&<span className={"gsa-processing-status "+(message.processed?"processed":"")}>{message.processed?"已处理":"未处理"}</span>}<p>{message.body}</p><button className="btn primary" disabled={busy} onClick={()=>void act(async()=>{await readCollaboration(message);setQuestion(message.kind==="equipment"?"解决方案的清单已经做好，请生成服务器规格方案":canMerge&&message.kind==="deliverable"?"请将已采纳的服务器规格合入设备清单":"请帮我处理这条协作事项："+message.title+"。"+message.body);setDrawer(null);})}>处理</button></article>)}</div>}
+    {drawer==="workflow"&&isF7&&<div className="gsa-f7-task-list"><p className="gsa-muted">这里显示其他岗位交给当前岗位的本机协作事项。</p>{f7Collaboration.length===0&&<p className="gsa-muted">暂无协作任务。</p>}{f7Collaboration.map(task=>{const processed=task.status==="已处理"||f7Processed.includes(task.id);return <article className="gsa-f7-task" key={task.id}><button className="gsa-f7-task-main" onClick={()=>setF7SelectedCollab(f7SelectedCollab===task.id?null:task.id)}><span><small>{task.source}{task.at?" · "+new Date(task.at).toLocaleString("zh-CN"):""}</small><strong>{task.title}</strong></span><em>{processed?"已处理":"待处理"}</em></button>{processed&&<button className="gsa-f7-task-x" aria-label={"关闭任务 "+task.title} title="关闭任务" onClick={()=>setF7Hidden(rows=>[...rows,task.id])}><X size={14}/></button>}{f7SelectedCollab===task.id&&<div className="gsa-f7-task-detail"><p>{task.detail}</p>{!processed&&<button className="btn primary" disabled={busy||!storageReady} onClick={()=>{const request=`请根据这条协作任务开始处理：${task.title}。任务详情：${task.detail}。请整理成本或报价草稿，缺少依据的金额留空并列出待确认事项。`;setStarted(true);setDrawer(null);void act(()=>streamReply(request.slice(0,1000),{id:task.id,followupId:task.followupId}));}}>立即处理</button>}</div>}</article>})}</div>}
+    {drawer==="workflow"&&!specialized&&!isF7&&<Collaboration projectId={projectId}/>}{drawer==="workflow"&&specialized&&<div className="gsa-message-list">{messages.length===0&&<p className="gsa-muted">暂无协作消息</p>}{messages.map(message=><article className={"gsa-message "+(!message.is_read?"unread":"")} key={message.id}><button className="gsa-message-delete" aria-label="删除协作消息" title="删除消息" disabled={busy} onClick={()=>void act(()=>deleteCollaboration(message))}><X size={14}/></button><header><span>{{system:"系统",agent:"Agent",solution:"解决方案",software:"软件产品",pm:"项目负责人"}[message.sender]||message.sender}</span><time>{new Date(message.created_at).toLocaleString("zh-CN")}</time></header><strong>{message.title}</strong>{message.kind==="equipment"&&<span className={"gsa-processing-status "+(message.processed?"processed":"")}>{message.processed?"已处理":"未处理"}</span>}<p>{message.body}</p><button className="btn primary" disabled={busy} onClick={()=>void act(async()=>{await readCollaboration(message);setQuestion(message.kind==="equipment"?"解决方案的清单已经做好，请生成服务器规格方案":canMerge&&message.kind==="deliverable"?"请将已采纳的服务器规格合入设备清单":"请帮我处理这条协作事项："+message.title+"。"+message.body);setDrawer(null);})}>处理</button></article>)}</div>}
 
    </div>
   </aside></div>}
