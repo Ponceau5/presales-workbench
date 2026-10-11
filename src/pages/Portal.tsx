@@ -284,7 +284,7 @@ export default function Portal() {
                               ? "changed"
                               : "")
                       }
-                      to={"/projects/" + p.id + "?view=flow&stage=" + s.id}
+                      to={"/projects/" + p.id + "?view=review&stage=" + s.id}
                     >
                       {s.id}
                     </Link>

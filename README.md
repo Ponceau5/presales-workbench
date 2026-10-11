@@ -27,7 +27,7 @@ python3 -m venv .venv
 
 软件 F5 以会话为主入口：“提问 → 查看逐字原文引用 → 提取候选 → 人工核对与交接”。默认优先使用服务端配置的 DeepSeek Key；未配置 DeepSeek 而配置了 Kimi Key 时使用 Kimi。真实模型问答和提取只读取所选原文页的前 12,000 字符。无 Key 时仍可提问，但仅用本地检索定位原文，不生成软件应答结论；关键词候选扫描整份文件。问答不会自动修改工件，只有核对清单中的人工批准才能写回。
 
-DeepSeek Key 在 [DeepSeek 开放平台](https://platform.deepseek.com/)创建。将 `.env.example` 复制为仓库根目录的 `.env.local`，填写 `DEEPSEEK_API_KEY`；默认接口为 `https://api.deepseek.com`，模型为 `deepseek-flash`。如需固定供应商，设置 `PRESALES_MODEL_PROVIDER=deepseek` 或 `kimi`；默认 `auto`。修改后重启本机 API，再用设置页“测试服务端连接”。不要把 Key 粘贴到聊天、浏览器连接设置或提交到 GitHub。
+DeepSeek Key 在 [DeepSeek 开放平台](https://platform.deepseek.com/)创建。将 `.env.example` 复制为仓库根目录的 `.env.local`，填写 `DEEPSEEK_API_KEY`；默认接口为 `https://api.deepseek.com`，模型为 `deepseek-flash`。如需固定供应商，设置 `PRESALES_MODEL_PROVIDER=deepseek` 、`kimi` 或 `zhipu`；默认 `auto`。修改后重启本机 API，再用设置页“测试服务端连接”。不要把 Key 粘贴到聊天、浏览器连接设置或提交到 GitHub。
 
 向企业的 Kimi 开放平台管理员确认 API 账号及可用额度，再到 [Kimi 开放平台](https://platform.kimi.com/) 的 API Keys 页面创建 API Key。所需的是**开放平台 API Key**，不是网页登录密码或浏览器 Cookie。企业聊天账号与 API 权限可能分开，需管理员确认。
 
@@ -137,3 +137,7 @@ F5 默认从要求跟进进入；关联澄清及研发工件必须发布后才�
 软件账号进入 F5 时默认打开“资料提取与核对”。选择 BMS 或 DCOM 文件 → 读取并提取要求 → 原文与候选要求并排核对、纠正 → 确认提取内容 → 进入专业判断。提取确认独立于产品满足批准；缺少原文核对时不能批准客户应答。来源、运行编号、执行时间、核对账号及修改前后内容留痕。
 
 Mock 执行会读取本地文件的文本副本，然后载入预置的提取样例，**没有使用 LLM 自动解析完整规格书，也没有证明已覆盖所有要求**。运行记录与候选标签对此明确提示。专业跟进和客户应答仍按责任岗位确认。其他工作区默认从资料进入，并提供可点击流程和“核对”视图；只有部分项目资料支持正文预览，其他仍以活文件链接供人工核对。
+
+### 智谱服务端接入
+
+在仓库根目录 `.env.local` 设置 `PRESALES_MODEL_PROVIDER=zhipu`、`ZHIPU_API_KEY`、`ZHIPU_MODEL=glm-4.7-flash`、`ZHIPU_BASE_URL=https://open.bigmodel.cn/api/paas/v4`。模型可按控制台额度覆盖范围修改。重启本机 API 后，在设置页测试服务端连接；测试只发送固定短句，不发送项目资料。密钥仅保存在服务端，禁止提交到仓库。

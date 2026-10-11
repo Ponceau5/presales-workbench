@@ -10,7 +10,7 @@ type Requirement = {
   id: string; document_id: string; page: number; quote: string; text: string;
   status: string; revision: number; source_version: string; source_title: string;
   disposition: string | null; customer_answer: string | null;
-  extractor: "mock" | "kimi" | "deepseek"; extraction_run_id: string | null;
+  extractor: "mock" | "kimi" | "deepseek" | "zhipu"; extraction_run_id: string | null;
 };
 type Handoff = {
   id: string; project_id: string; requirement_id: string; owner: string;
@@ -269,7 +269,7 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
             </select>
           </div>
           {queueRows.map((row) => <button className={row.id === current?.id ? "selected" : ""} key={row.id} onClick={() => setSelectedRequirement(row.id)}>
-            <span>第 {row.page} 页 · {statusLabel[row.status] || row.status} · {row.extractor === "mock" ? "关键词" : row.extractor === "deepseek" ? "DeepSeek" : "Kimi"}</span>
+            <span>第 {row.page} 页 · {statusLabel[row.status] || row.status} · {row.extractor === "mock" ? "关键词" : row.extractor === "zhipu" ? "智谱" : row.extractor === "deepseek" ? "DeepSeek" : "Kimi"}</span>
             <strong>{row.quote}</strong>
           </button>)}
           {!visibleRows.length && <p>此版本尚无候选。上传并执行提取后，可在这里逐条核对。</p>}
@@ -283,7 +283,7 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
           <h4>人工处理</h4>
           {current ? <>
             <p>来源：{current.source_title} · {current.source_version} · 修订 {current.revision}</p>
-            <p>提取：{current.extractor === "mock" ? "关键词" : `${current.extractor === "deepseek" ? "DeepSeek" : "Kimi"} · 运行 ${current.extraction_run_id?.slice(0, 8)}`}；候选必须核对原文后才能进入判断。</p>
+            <p>提取：{current.extractor === "mock" ? "关键词" : `${current.extractor === "zhipu" ? "智谱" : current.extractor === "deepseek" ? "DeepSeek" : "Kimi"} · 运行 ${current.extraction_run_id?.slice(0, 8)}`}；候选必须核对原文后才能进入判断。</p>
             <label>核对后的要求<textarea rows={4} value={requirementText} readOnly={account !== "software"} onChange={(event) => setRequirementText(event.target.value)} /></label>
             {account === "software" && <>
               <label>处理说明<input value={note} onChange={(event) => setNote(event.target.value)} placeholder="说明核对依据或判断" /></label>

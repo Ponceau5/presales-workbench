@@ -1,4 +1,8 @@
-export const localApiBase = "http://127.0.0.1:8000";
+export const localApiBase = import.meta.env.DEV ? "" : "http://127.0.0.1:8000";
+async function serviceFetch(url: string, init: RequestInit) {
+  try { return await fetch(url, init); }
+  catch { throw new Error("无法连接本机协作服务，请检查 8000 后端服务后重试。输入内容已保留。"); }
+}
 const tokenKey = "presales-local-api-token";
 const accountKey = "presales-local-api-account";
 
@@ -13,7 +17,7 @@ export function clearLocalApiSession() {
 
 export async function connectLocalApi(username: string, password: string) {
   clearLocalApiSession();
-  const response = await fetch(`${localApiBase}/api/session`, {
+  const response = await serviceFetch(`${localApiBase}/api/session`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password }),
@@ -28,7 +32,7 @@ export async function connectLocalApi(username: string, password: string) {
 export async function localApi<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = sessionStorage.getItem(tokenKey);
   if (!token) throw new Error("请启动本机协作服务后重新登录");
-  const response = await fetch(`${localApiBase}${path}`, {
+  const response = await serviceFetch(`${localApiBase}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${token}`,

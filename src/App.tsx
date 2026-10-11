@@ -1,15 +1,17 @@
+import { BrandMark } from "@/components/BrandMark";
 import {
   loadShared,
   mergeShared,
   saveShared,
   sharedKey,
+  sharedWorkspace,
 } from "@/lib/sharedWorkspace";
 import type { Action } from "@/state/workbench";
 import { PersonalTasks } from "@/components/PersonalTasks";
 import Login from "@/pages/Login";
 import Activity from "@/pages/Activity";
 import { accounts } from "@/lib/accounts";
-import { clearLocalApiSession } from "@/lib/localApi";
+import { localApi, localApiReady, clearLocalApiSession } from "@/lib/localApi";
 import KnowledgeLibrary from "@/pages/KnowledgeLibrary";
 import Resources from "@/pages/Resources";
 import { ProjectAssistant } from "@/components/ProjectAssistant";
@@ -28,7 +30,6 @@ import {
 import {
   PanelLeftClose,
   PanelLeftOpen,
-  Layers3,
   FolderOpen,
   SlidersHorizontal,
   LayoutDashboard,
@@ -93,9 +94,29 @@ export default function App() {
     } catch {
       /* Use the local baseline. */
     }
-    return mergeShared(s, loadShared());
+    const merged = mergeShared(s, loadShared());
+    if (!merged.projects.some(p => p.id === "GSA02")) merged.projects.push({ id: "GSA02", name: "泰国 GSA02", owner: "软件产品", updated: "2026-10-10" });
+    return merged;
   });
   const stateRef = useRef(state);
+  const sharedQueue=useRef(Promise.resolve());
+  const [persistenceError,setPersistenceError]=useState("");
+  const [sharedReady,setSharedReady]=useState(false);
+  useEffect(()=>{
+   if(!state.accountId||!localApiReady(state.accountId)){setSharedReady(false);return;}
+   let cancelled=false;
+   void localApi<{revision:number;value:ReturnType<typeof sharedWorkspace>|null}>("/api/workbench/state").then(async remote=>{
+    if(cancelled)return;
+    const legacy=sharedWorkspace(stateRef.current);
+    if(remote.value&&remote.revision===1&&(legacy.activity?.length||0)>(remote.value.activity?.length||0)){
+     await localApi("/api/workbench/state",{method:"POST",body:JSON.stringify({expected_revision:remote.revision,value:legacy})});remote.value=legacy;
+    }
+    if(remote.value){saveShared(mergeShared(stateRef.current,remote.value));const next=mergeShared(stateRef.current,remote.value);stateRef.current=next;setState(next);}
+    else await localApi("/api/workbench/state",{method:"POST",body:JSON.stringify({expected_revision:0,value:sharedWorkspace(stateRef.current)})});
+    if(!cancelled){setSharedReady(true);setPersistenceError("");}
+   }).catch(e=>{if(!cancelled)setPersistenceError("工作台状态同步失败："+e.message);});
+   return()=>{cancelled=true;};
+  },[state.accountId]);
   const dispatch = useCallback((action: Action) => {
     if (action.type === "logout" && !stateRef.current.running) clearLocalApiSession();
     const current = mergeShared(stateRef.current, loadShared());
@@ -116,6 +137,20 @@ export default function App() {
     ) {
       try {
         saveShared(next);
+        if(next.accountId&&localApiReady(next.accountId)){
+         sharedQueue.current=sharedQueue.current.then(async()=>{
+          for(let attempt=0;attempt<3;attempt++){
+           const remote=await localApi<{revision:number;value:ReturnType<typeof sharedWorkspace>|null}>("/api/workbench/state");
+           const merged=mergeShared(current,remote.value);
+           const applied=reducer(merged,action);
+           try{
+            await localApi("/api/workbench/state",{method:"POST",body:JSON.stringify({expected_revision:remote.revision,value:sharedWorkspace(applied)})});
+            // Merge business state only; account and current navigation stay local.
+            const synchronized=mergeShared(stateRef.current,sharedWorkspace(applied));saveShared(synchronized);stateRef.current=synchronized;setState(synchronized);setPersistenceError("");return;
+           }catch(e){if(!(e instanceof Error)||!e.message.includes("已更新")||attempt===2)throw e;}
+          }
+         }).catch(e=>setPersistenceError("状态未保存到服务端，请保留当前页面并重试："+e.message));
+        }
       } catch {
         /* Remain usable in memory. */
       }
@@ -246,7 +281,7 @@ export default function App() {
         <aside className="sidebar">
           <Link className="brand" to="/">
             <span className="brand-mark">
-              <Layers3 size={22} />
+              <BrandMark size={35} />
             </span>
             <span>售前工作台</span>
           </Link>
@@ -316,7 +351,7 @@ export default function App() {
                     <ChevronDown size={13} />
                   </button>
                   <Link
-                    to={"/projects/" + id}
+                    to={"/projects/" + id + "?view=flow"}
                     onClick={() => {
                       dispatch({ type: "projectSwitch", id });
                     }}
@@ -344,13 +379,14 @@ export default function App() {
                       .map((s) => (
                         <Link
                           key={s.id}
-                          to={"/projects/" + id + "?view=flow&stage=" + s.id}
+                          to={"/projects/" + id + "?view=review&stage=" + s.id}
                           onClick={() =>
                             dispatch({ type: "projectSwitch", id })
                           }
                           className={
                             project.id === id &&
-                            location.pathname.endsWith("/" + s.id)
+                            new URLSearchParams(location.search).get("view") === "review" &&
+                            new URLSearchParams(location.search).get("stage") === s.id
                               ? "active"
                               : ""
                           }
@@ -443,7 +479,9 @@ export default function App() {
                 </button>
               </div>
             )}
-            <Routes>
+            {persistenceError&&<div role="alert" className="gsa-chat-error">{persistenceError}</div>}
+        {!sharedReady&&state.accountId&&localApiReady(state.accountId)&&<div role="status" className="muted">正在同步工作台…</div>}
+        <Routes>
               <Route path="/activity" element={<Activity />} />
               <Route path="/tasks" element={<PersonalTasks />} />
 

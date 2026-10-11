@@ -66,6 +66,6 @@
 .software-agent-source header span{color:var(--text-secondary);font-size:11px}
 .software-agent-source header button{border:0;background:none;color:var(--text-secondary);cursor:pointer}
 .software-agent-source pre{margin:0;padding:20px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:12px;line-height:1.9}
-.software-agent-source mark{background:#f5d877;color:#1d2530}
+.software-agent-source mark{background:#f5d877;color:#1d3029}
 @media(max-width:900px){.software-agent-source{width:100%;min-width:0}.software-agent-composer-actions{gap:9px}.software-agent-composer-actions span{display:none}}
 @media(max-width:600px){.software-agent-citations button{grid-template-columns:1fr 16px}.software-agent-citations button span:first-child{grid-column:1/-1}.software-agent-intro p{font-size:12px}.software-agent-messages{padding:18px 14px}.software-agent-composer{padding:10px 14px}}

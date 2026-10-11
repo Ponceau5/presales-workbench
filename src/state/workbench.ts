@@ -156,6 +156,7 @@ export const initialState = (settings: LLMSettings): State => ({
   followups: [],
   projects: [
     rackProject,
+    { id: "GSA02", name: "泰国 GSA02", owner: "软件产品", updated: "2026-10-10" },
     {
       id: "DEMO-026",
       name: "数据中心二期",

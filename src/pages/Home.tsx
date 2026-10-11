@@ -4,7 +4,6 @@ import { Milestones } from "@/components/Milestones";
 import { ChangeLog } from "@/components/ChangeLog";
 import { ResourceBrowser } from "@/components/ResourceBrowser";
 import {
-  ReferenceWorkbench,
   ReferenceFacts,
 } from "@/components/ReferenceWorkbench";
 import StageWorkbench from "@/pages/StageWorkbench";
@@ -17,11 +16,13 @@ import { useWorkbench } from "@/state/workbench";
 import { stages } from "@/lib/stages";
 import { ProjectFlow } from "@/components/ProjectFlow";
 import { Heading, Tag } from "@/components/WorkbenchUI";
+import { GsaSoftwareWorkbench } from "@/features/software/GsaSoftwareWorkbench";
 export default function Home() {
   const { state, dispatch } = useWorkbench();
   const { projectId } = useParams();
   const [params, setParams] = useSearchParams();
-  const view = params.get("view") || "flow";
+  const requestedView = params.get("view") || "flow";
+  const view = requestedView;
   const [factsOpen, setFactsOpen] = useState(false);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
   const reference = state.projects.find((p) => p.id === projectId)?.reference;
@@ -67,7 +68,7 @@ export default function Home() {
     );
   return (
     <>
-      <header className="project-page-heading">
+      <header className={"project-page-heading" + (view === "review" ? " project-workspace-heading" : "")}>
         <div>
           <h1>{project.name.replace(" · RCJM1", "")}</h1>
           <span>{project.id}</span>
@@ -109,21 +110,9 @@ export default function Home() {
       {view === "collaboration" && <Collaboration projectId={project.id} />}
       {view === "materials" && <ResourceBrowser projectId={project.id} />}
       {view === "milestones" && <Milestones reference={reference} />}
-      {view === "review" &&
-        (params.get("stage") === "F5" ? (
-          <ReferenceWorkbench
-            key={project.id + state.sourceVersion + (params.get("item") || "")}
-            stage="F5"
-            projectId={project.id}
-          />
-        ) : (
-          <>
-            <StageWorkbench
-              key={project.id + params.get("stage")}
-              stageId={params.get("stage") || "F1"}
-            />
-          </>
-        ))}
+      {view === "review" && (["F7", "F8"].includes(params.get("stage") || "F5") ?
+        <StageWorkbench key={project.id + params.get("stage")} stageId={params.get("stage") || "F5"} /> :
+        <GsaSoftwareWorkbench key={project.id + ":" + (params.get("stage") || "F5")} projectId={project.id} stageId={params.get("stage") || "F5"} />)}
       {view === "changes" && <ChangeLog projectId={project.id} />}
       {view === "attention" && (
         <section className="issue-register">

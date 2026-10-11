@@ -1,0 +1,425 @@
+import { useEffect, useState, useRef, type ReactNode } from "react";
+import { FileText, LoaderCircle, ArrowUp, X, Download, Sparkles, ArrowRight, CheckCircle2, Bookmark, Copy, Trash2, MessageSquare } from "lucide-react";
+import { useWorkbench } from "@/state/workbench";
+import { localApi, localApiBase, localApiReady, clearLocalApiSession } from "@/lib/localApi";
+import "./gsa-software.css";
+import { stages } from "@/lib/stages";
+import { ResourceBrowser } from "@/components/ResourceBrowser";
+import { Collaboration } from "@/components/Collaboration";
+import { ProjectMaterialsPanel } from "./ProjectMaterialsPanel";
+import { MarkdownReply } from "./MarkdownReply";
+
+type Inputs = {
+  scope: "schedule" | "phases" | "custom"; point_low: number; point_high: number; device_count: number;
+  sampling_seconds: number; retention_years: number; record_types: number; cache_days: number;
+  events_per_device_day: number; waveform_devices: number; waveforms_per_device_day: number;
+  backup_copies: number; raid_usable_ratio: number; headroom: number; phase_ids: string[];
+  sampling_confirmed: boolean; scope_confirmed: boolean; assumptions_confirmed: boolean; scope_note: string;
+};
+type Material = {
+  manifest: {id:string;title:string;sha256:string}[];
+  schedule: {total:number;totals:Record<string,number>; rows:{device_type:string;quantity:number;points_per_device:number;points:number;source:string;warning:string}[]};
+  phases:{id:string;name:string;range:string;low:number;high:number;mw:number;devices_low:number;devices_high:number}[];
+  warnings:string[]; spec_pages:{page:number;text:string}[];
+  historical:{name:string;spec:string;quantity:number}[];
+};
+type Storage = {points:number;samples_per_second:number;time_series_gb:number;pg_gb:number;cache_gb:number;backup_gb:number;raw_data_gb:number};
+type Calculation = {points:{low:number;high:number;mid:number;source:string};low:Storage;high:Storage;limitations:string[]};
+type Run = {selected_option?:string;source_hashes?:{id:string;sha256:string}[];equipment_revision?:number;created_at:string;stage_message?:string;draft?:{options:{name:string}[];recommended_index:number};preview?:string;id:string;status:string;revision:number;inputs:Inputs;calculation:Calculation;narrative:string|null;error:string|null;provider:string;model:string;reviewed_by:string|null;review_note:string|null};
+type Workflow = {demo_reset_at?:string;status:string;revision:number;equipment_revision:number;equipment_note:string|null;request_note:string|null;run_id:string|null;merged_file:string|null};
+type CollaborationMessage={id:string;title:string;body:string;sender:string;recipient:string;kind:string;created_at:string;is_read:number;processed?:boolean};
+type ChatTurn={artifactId?:string;artifactTitle?:string;runId?:string;createdAt?:string;id:string;question:string;answer:string;steps:{label:string;state:string}[];status:"running"|"done"|"error"|"stopped"};
+type Favorite={id:string;sourceId:string;title:string;text:string;turns:ChatTurn[];runId:string|null;createdAt:string;conversationId?:string;runQuestion?:string};
+function AgentReply({text,children,onFavorite,favorited=false,canSave=true}:{text:string;children?:ReactNode;onFavorite?:()=>void;favorited?:boolean;canSave?:boolean}){
+ const [copied,setCopied]=useState(false);const [copyError,setCopyError]=useState(false);
+ return <div className="gsa-reply"><i className="gsa-reply-avatar"><Sparkles size={17}/></i><div className="gsa-reply-body">{children??<MarkdownReply text={text}/>}{text&&<div className="gsa-message-tools">{onFavorite&&<button disabled={!canSave} aria-label={favorited?"取消收藏":"收藏对话"} title={favorited?"取消收藏":"收藏对话"} onClick={onFavorite}><Bookmark size={15} fill={favorited?"currentColor":"none"}/></button>}<button aria-label={copied?"已复制":"复制完整回复"} title={copied?"已复制":"复制完整回复"} onClick={()=>void navigator.clipboard.writeText(text).then(()=>{setCopied(true);setCopyError(false);setTimeout(()=>setCopied(false),1600);}).catch(()=>setCopyError(true))}>{copied?<CheckCircle2 size={15}/>:<Copy size={15}/>}</button>{copyError&&<small>复制失败，请选择文本复制</small>}</div>}</div></div>;
+}
+type Artifact={id:string;source_id:string;title:string;content:string;revision:number;adopted_by:string;created_at:string};
+type Audit = {id:string;action:string;actor:string;detail:string;created_at:string};
+
+const defaults:Inputs={scope:"phases",point_low:71000,point_high:83000,device_count:2390,
+ sampling_seconds:60,retention_years:3,record_types:1,cache_days:1095,events_per_device_day:0,
+ waveform_devices:0,waveforms_per_device_day:0,backup_copies:1,raid_usable_ratio:2/3,headroom:0.2,
+ phase_ids:["p1","p2","p3"],sampling_confirmed:false,scope_confirmed:false,assumptions_confirmed:false,
+ scope_note:""};
+const labels:Record<string,string>={running:"生成中",review:"待你审核",approved:"已批准",rejected:"已退回",failed:"生成失败",stale:"可采纳或继续修改"};
+const json=(data:unknown)=>({method:"POST",body:JSON.stringify(data)});
+const fmt=(v:number)=>v.toLocaleString("zh-CN",{maximumFractionDigits:2});
+
+export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId?:string;stageId?:string}){
+ const specialized=projectId==="GSA02"&&stageId==="F5";
+ const base=specialized?"/api/projects/GSA02/software":`/api/projects/${encodeURIComponent(projectId)}/workspaces/${stageId}`;
+ const stage=stages.find(s=>s.id===stageId)??(stageId==="F5"?{title:"软件技术支持"}:undefined);
+ const durableBase=`/api/projects/${encodeURIComponent(projectId)}/workspaces/${stageId}`;
+ const storageScope=projectId+(stageId==="F5"?"":":"+stageId);
+ const [selectedPages,setSelectedPages]=useState<{document_id:string;page:number}[]>([]);
+ const [documents,setDocuments]=useState<{id:string;title:string;version:string;page_count:number}[]>([]);
+ const [pageNumbers,setPageNumbers]=useState<Record<string,string>>({});
+ const {state,dispatch}=useWorkbench(); const account=state.accountId;
+ const [artifacts,setArtifacts]=useState<Artifact[]>([]);
+ const [materials,setMaterials]=useState<Material|null>(null);
+ const [inputs,setInputs]=useState<Inputs>(defaults);
+ const [runs,setRuns]=useState<Run[]>([]); const [audit,setAudit]=useState<Audit[]>([]);
+ const [calc,setCalc]=useState<Calculation|null>(null); const [busy,setBusy]=useState(false);
+ const [error,setError]=useState("");const [question,setQuestion]=useState("");
+ const [note,setNote]=useState(""); const [model,setModel]=useState<{configured:boolean;provider:string;model:string}|null>(null);
+ const [drawer,setDrawer]=useState<"sources"|"parameters"|"server"|"workflow"|"favorites"|null>(null);
+ const [flow,setFlow]=useState<Workflow|null>(null);
+ const [optionIndex,setOptionIndex]=useState(0); const [clock,setClock]=useState(Date.now());
+ useEffect(()=>{const timer=setInterval(()=>setClock(Date.now()),1000);return()=>clearInterval(timer);},[]);
+ const canEdit=!specialized||account==="software"||account==="pm"; const canReview=!specialized||account==="software"; const canMerge=specialized&&account==="solution";
+ const conversationKey="presales-conversation:"+storageScope+":"+account;
+ function savedConversation(){try{return JSON.parse(sessionStorage.getItem(conversationKey)||"null");}catch{return null;}}
+ const [started,setStarted]=useState(()=>!!savedConversation()?.started);
+ const [showServer,setShowServer]=useState(()=>!!savedConversation()?.showServer);
+ const [messages,setMessages]=useState<CollaborationMessage[]>([]);
+ const [chatTurns,setChatTurns]=useState<ChatTurn[]>(()=>savedConversation()?.turns??[]);
+ const [conversationId,setConversationId]=useState(()=>savedConversation()?.conversationId||crypto.randomUUID());
+ const [runQuestion,setRunQuestion]=useState(()=>savedConversation()?.runQuestion??"");
+
+ function conversationContext(){return JSON.stringify({turns:chatTurns.filter(t=>t.status==="done").map(t=>({question:t.question,answer:t.answer})),current_scheme:showServer?current?.narrative:null}).slice(-24000);}
+
+
+ const streamController=useRef<AbortController|null>(null);
+ useEffect(()=>()=>streamController.current?.abort(),[]);
+ const baselineAudit=useRef<Set<string>|null>(null);
+ const sessionAccount=useRef(account);
+ useEffect(()=>{if(sessionAccount.current===account)return;sessionAccount.current=account;const saved=savedConversation();setStarted(!!saved?.started);setShowServer(!!saved?.showServer);setChatTurns(saved?.turns??[]);setRunQuestion(saved?.runQuestion??"");setRestoredRun(null);setFavoriteContext("");baselineAudit.current=null;},[account]);
+ const pendingSave=useRef<(()=>void)|null>(null);
+ useEffect(()=>()=>pendingSave.current?.(),[]);
+ const [storageReady,setStorageReady]=useState(false);
+ const storageRevision=useRef(0);const saveQueue=useRef(Promise.resolve());const lastSaved=useRef("");const migrateDialogs=useRef(false);
+ const [favorites,setFavorites]=useState<Favorite[]>([]);
+ const [favoriteContext,setFavoriteContext]=useState("");
+ const [restoredRun,setRestoredRun]=useState<Run|null>(()=>savedConversation()?.run??null);
+ const favoriteKey="presales-favorites:"+storageScope+":"+account;
+ useEffect(()=>{try{const value=JSON.parse(localStorage.getItem(favoriteKey)||"[]");setFavorites(Array.isArray(value)?value.filter(v=>v&&typeof v.title==="string"&&Array.isArray(v.turns)):[]);}catch{setFavorites([]);}},[favoriteKey]);
+ useEffect(()=>{
+  let cancelled=false;
+  void localApi<{revision:number;value:{current:ReturnType<typeof savedConversation>;favorites:Favorite[];selectedPages?:{document_id:string;page:number}[];pageNumbers?:Record<string,string>}|null}>(durableBase+"/state").then(saved=>{
+   if(cancelled)return;storageRevision.current=saved.revision;
+   if(saved.value){const c=saved.value.current;
+    if(c){setStarted(!!c.started);setShowServer(!!c.showServer);setChatTurns((c.turns??[]).map((t:ChatTurn)=>t.status==="running"?{...t,status:"stopped",answer:t.answer+"\n\n上次生成已中断，请继续发送请求。"}:t));setRunQuestion(c.runQuestion||"");setConversationId(c.conversationId||crypto.randomUUID());setRestoredRun(c.run??null);setInputs(c.inputs??c.run?.inputs??defaults);setPendingPrompt(c.generationPrompt||"");setPendingAt(c.pendingAt||new Date().toISOString());setNotice(c.chatNotice||"");setNoticeAt(c.noticeAt||new Date().toISOString());}
+    setFavorites(saved.value.favorites??[]);setSelectedPages(saved.value.selectedPages??[]);setPageNumbers(saved.value.pageNumbers??{});
+   }
+   migrateDialogs.current=!saved.value;setStorageReady(true);
+  }).catch(e=>{if(!cancelled)setError("服务端对话读取失败："+e.message);});
+  return()=>{cancelled=true;};
+ },[account]);
+ const current=restoredRun?(runs.find(r=>r.id===restoredRun.id)??restoredRun):runs[0]; const running=current?.status==="running";
+
+ useEffect(()=>{setOptionIndex(current?.draft?.recommended_index??0);},[current?.id,current?.draft?.recommended_index]);
+ useEffect(()=>{
+  if(!running||!current)return;
+  const controller=new AbortController();const id=current.id;
+  void (async()=>{try{
+   const response=await fetch(localApiBase+base+"/runs/"+id+"/stream",{headers:{Authorization:"Bearer "+sessionStorage.getItem("presales-local-api-token")},signal:controller.signal});
+   if(!response.ok||!response.body)throw new Error("方案实时连接未建立，正在重新同步");
+   const reader=response.body.getReader(),decoder=new TextDecoder();let buffer="";
+   while(true){const chunk=await reader.read();buffer+=decoder.decode(chunk.value,{stream:!chunk.done});const events=buffer.split("\n\n");buffer=events.pop()||"";for(const event of events){const line=event.split("\n").find(v=>v.startsWith("data: "));if(line){const run=JSON.parse(line.slice(6)) as Run;setRuns(rows=>rows.map(r=>r.id===id?run:r));}}if(chunk.done)break;}
+  }catch(e){if(!controller.signal.aborted)setError(e instanceof Error?e.message:"实时连接中断，正在同步任务状态");}})();
+  return()=>controller.abort();
+ },[current?.id,running]);
+ const confirmed=inputs.sampling_confirmed&&inputs.scope_confirmed&&inputs.assumptions_confirmed&&!!inputs.scope_note.trim();
+ const [selection,setSelection]=useState<string|null>(null);
+ const streamRef=useRef<HTMLDivElement>(null);
+ const [pendingAt,setPendingAt]=useState(()=>savedConversation()?.pendingAt||new Date().toISOString());
+ const [generationPrompt,setPendingPrompt]=useState(()=>savedConversation()?.generationPrompt||"");
+ function setGenerationPrompt(text:string){setPendingAt(new Date().toISOString());setPendingPrompt(text);}
+ const [noticeAt,setNoticeAt]=useState(()=>savedConversation()?.noticeAt||new Date().toISOString());
+ const [chatNotice,setNotice]=useState(()=>savedConversation()?.chatNotice||"");
+ function setChatNotice(text:string){setNoticeAt(new Date().toISOString());setNotice(text);}
+ const [dirty,setDirty]=useState(false);
+ useEffect(()=>{
+  if(sessionAccount.current!==account)return;
+  const saved={started,showServer,turns:chatTurns,runQuestion,conversationId,run:showServer?current:null,generationPrompt,pendingAt,chatNotice,noticeAt};
+  try{sessionStorage.setItem(conversationKey,JSON.stringify(saved));if(started)localStorage.setItem("presales-dialogue:"+storageScope+":"+account+":"+conversationId,JSON.stringify(saved));}catch{setError("对话未保存，本机存储空间不足。");}
+ },[started,showServer,chatTurns,runQuestion,conversationKey,conversationId,current,generationPrompt,pendingAt,chatNotice,noticeAt]);
+
+ useEffect(()=>{const stream=streamRef.current;if(stream)stream.scrollTop=stream.scrollHeight;},[audit.length,runs.length,generationPrompt,chatNotice,chatTurns]);
+ useEffect(()=>{const stream=streamRef.current;if(stream&&stream.scrollHeight-stream.scrollTop-stream.clientHeight<140)stream.scrollTop=stream.scrollHeight;},[current?.preview,current?.status]);
+ useEffect(()=>{
+  if(!storageReady)return;
+  const value={current:{inputs,started,showServer,turns:chatTurns,runQuestion,conversationId,run:showServer?current:null,generationPrompt,pendingAt,chatNotice,noticeAt},favorites,selectedPages,pageNumbers};
+  const encoded=JSON.stringify(value);if(encoded===lastSaved.current)return;
+  const save=()=>{
+   saveQueue.current=saveQueue.current.then(async()=>{
+    if(encoded===lastSaved.current)return;
+    const dialogues:Record<string,unknown>={};
+    if(migrateDialogs.current)for(const f of favorites){const id=f.conversationId||f.id;try{const old=JSON.parse(localStorage.getItem("presales-dialogue:"+storageScope+":"+account+":"+id)||"null");if(old)dialogues[id]=old;}catch{}}
+    const saved=await localApi<{revision:number}>(durableBase+"/state",json({expected_revision:storageRevision.current,value:{...value,dialogues}}));
+    storageRevision.current=saved.revision;lastSaved.current=encoded;migrateDialogs.current=false;
+   }).catch(e=>setError("服务端保存失败，当前内容仍保留在此浏览器："+e.message));
+  };
+  pendingSave.current=save;const timer=setTimeout(save,350);
+  return()=>clearTimeout(timer);
+ },[storageReady,started,showServer,chatTurns,runQuestion,conversationId,current,generationPrompt,pendingAt,chatNotice,noticeAt,favorites,selectedPages,pageNumbers,inputs]);
+ const change=(patch:Partial<Inputs>)=>{setInputs(v=>({...v,...patch}));setCalc(null);setDirty(true);};
+ async function refresh(){
+   if(!specialized){
+    const [m,a]=await Promise.all([localApi<{configured:boolean;provider:string;model:string}>("/api/model/status"),localApi<Artifact[]>(base+"/artifacts")]);
+    setModel(m);setArtifacts(a);return;
+   }
+   const [r,a,m,f,notifications]=await Promise.all([localApi<Run[]>(base+"/runs"),localApi<Audit[]>(base+"/audit"),
+    localApi<{configured:boolean;provider:string;model:string}>("/api/model/status"),localApi<Workflow>(base+"/workflow"),localApi<CollaborationMessage[]>(base+"/collaboration")]);
+   if(baselineAudit.current===null)baselineAudit.current=new Set(a.map(item=>item.id));
+   setArtifacts(await localApi<Artifact[]>(base+"/artifacts"));
+   const resetKey="presales-demo-reset:"+storageScope+":"+account;
+   if(f.demo_reset_at&&localStorage.getItem(resetKey)!==f.demo_reset_at){
+    streamController.current?.abort();setStarted(false);setShowServer(false);setRestoredRun(null);setChatTurns([]);setRunQuestion("");setPendingPrompt("");setNotice("");setQuestion("");setFavoriteContext("");setConversationId(crypto.randomUUID());setDrawer(null);setInputs(defaults);
+    sessionStorage.removeItem(conversationKey);localStorage.setItem(resetKey,f.demo_reset_at);
+   }
+   setRuns(r);setAudit(a);setModel(m);setFlow(f);setMessages(notifications);
+ }
+ async function load(){
+   if(!account||!localApiReady(account)){setError("本机服务尚未登录。请重新登录或在设置中连接服务。");return;}
+   try{
+    await refresh();
+    if(specialized){const m=await localApi<Material>(base+"/materials");setMaterials(m);}
+    else setDocuments(await localApi(`/api/projects/${encodeURIComponent(projectId)}/documents`));
+    setError("");
+   }catch(e){setError(e instanceof Error?e.message:"资料读取失败");}
+ }
+ useEffect(()=>{void load();},[account]); // 数据由登录账号的服务端会话获取。
+ useEffect(()=>{
+  if(!account||!localApiReady(account))return;
+  const timer=setInterval(()=>{if(!account||!localApiReady(account))return;void refresh().catch(e=>{const message=e instanceof Error?e.message:String(e);if(message.includes("请先登录"))clearLocalApiSession();setError(message);});},4000);
+  return()=>clearInterval(timer);
+ },[running,account]);
+ async function act(fn:()=>Promise<void>){
+  setBusy(true);setError("");
+  try{await fn();}catch(e){setError(e instanceof Error?e.message:"操作失败");}finally{setBusy(false);}
+ }
+ function outputTitle(t:ChatTurn){if(stageId!=="F5")return t.artifactTitle||stage?.title||"工作成果";return t.artifactTitle|| (/偏离/.test(t.question)?"技术应答与偏离表":/澄清/.test(t.question)?"软件澄清表":/核对/.test(t.question)?"软件需求核对":"软件支持成果");}
+ async function adoptOutput(t:ChatTurn){await localApi(base+"/artifacts/adopt",json({source_id:t.artifactId?artifacts.find(a=>a.id===t.artifactId)?.source_id||t.id:t.id,title:outputTitle(t),content:t.answer,conversation_id:conversationId}));await refresh();}
+ async function downloadOutput(a:Artifact){
+  const response=await fetch(localApiBase+base+"/artifacts/"+a.id+"/download",{headers:{Authorization:"Bearer "+sessionStorage.getItem("presales-local-api-token")}});
+  if(!response.ok)throw new Error("下载失败");
+  const url=URL.createObjectURL(await response.blob());const link=document.createElement("a");link.href=url;link.download=`${projectId}_${a.title}_V${a.revision}.md`;link.click();URL.revokeObjectURL(url);
+ }
+ async function openSource(id:string){
+  const response=await fetch(localApiBase+base+"/sources/"+id,{headers:{Authorization:"Bearer "+sessionStorage.getItem("presales-local-api-token")}});
+  if(!response.ok)throw new Error("原件读取失败");
+  const url=URL.createObjectURL(await response.blob());window.open(url,"_blank","noopener");setTimeout(()=>URL.revokeObjectURL(url),60000);
+ }
+ const result=calc??current?.calculation;
+
+ function persistFavorites(next:Favorite[]){try{localStorage.setItem(favoriteKey,JSON.stringify(next));setFavorites(next);}catch{setError("收藏未保存，本机存储空间不足或不可用。");}}
+ function favoriteReply(sourceId:string,text:string,title:string){
+  const saved=favorites.find(f=>f.sourceId===sourceId||f.conversationId===conversationId);
+  if(saved){persistFavorites(favorites.filter(f=>f.id!==saved.id));return;}
+  persistFavorites([{id:crypto.randomUUID(),sourceId,title:title.slice(0,40),text,turns:chatTurns.filter(t=>t.status==="done"),conversationId,runQuestion,runId:sourceId===current?.id||showServer?current?.id??null:null,createdAt:new Date().toISOString()},...favorites].slice(0,32));
+ }
+ useEffect(()=>{
+  if(!started)return;
+  const saved=favorites.find(f=>f.conversationId===conversationId);if(!saved)return;
+  const turns=chatTurns.filter(t=>t.status!=="running");
+  if(JSON.stringify(saved.turns)===JSON.stringify(turns)&&saved.runId===(showServer?current?.id??null:null)&&saved.runQuestion===runQuestion)return;
+  persistFavorites(favorites.map(f=>f.id===saved.id?{...f,turns,runId:showServer?current?.id??null:null,runQuestion}:f));
+ },[chatTurns,current?.id,conversationId,runQuestion,showServer]);
+ async function restoreFavorite(favorite:Favorite){
+  if(busy)return;
+  const id=favorite.conversationId||favorite.id;
+  let saved:ReturnType<typeof savedConversation>=await localApi(durableBase+"/dialogues/"+encodeURIComponent(id));
+  try{if(!saved)saved=JSON.parse(localStorage.getItem("presales-dialogue:"+storageScope+":"+account+":"+id)||"null");}catch{/* Older favorite remains readable. */}
+  const selectedTurns:ChatTurn[]=saved?.turns??favorite.turns;
+  const runId=saved?.run?.id??favorite.runId;
+  let run:Run|null=null;
+  if(runId)run=await localApi<Run>(base+"/runs/"+runId);
+  setFavoriteContext(JSON.stringify({title:favorite.title,selected_reply:favorite.text,conversation:selectedTurns.map(t=>({question:t.question,answer:t.answer}))}).slice(0,12000));
+  if(!favorite.conversationId)persistFavorites(favorites.map(f=>f.id===favorite.id?{...f,conversationId:id}:f));
+  setConversationId(id);setRunQuestion(saved?.runQuestion||favorite.runQuestion||favorite.title);setRestoredRun(run);setChatTurns(selectedTurns);setShowServer(!!run);setStarted(true);
+  setPendingPrompt(saved?.generationPrompt||"");setPendingAt(saved?.pendingAt||new Date().toISOString());setNotice(saved?.chatNotice||"");setNoticeAt(saved?.noticeAt||new Date().toISOString());
+  if(!selectedTurns.length&&!run)setChatTurns([{id:favorite.id,question:favorite.title,answer:favorite.text,status:"done",steps:[],createdAt:favorite.createdAt}]);
+  setQuestion("");setDrawer(null);
+ }
+ async function streamReply(text:string){
+  const id=crypto.randomUUID();const controller=new AbortController();streamController.current=controller;
+  let timedOut=false;
+  const expire=()=>{timedOut=true;controller.abort();};
+  let watchdog=setTimeout(expire,100000);
+  setQuestion("");setChatTurns(turns=>[...turns,{id,question:text,artifactTitle:chatTurns.at(-1)?.artifactTitle,answer:"",steps:[],status:"running",createdAt:new Date().toISOString()}]);
+  const update=(event:{type:string;label?:string;state?:string;text?:string;message?:string})=>{
+   clearTimeout(watchdog);watchdog=setTimeout(expire,100000);
+   if(event.type==="error")throw new Error(event.message||"生成失败");
+   setChatTurns(turns=>turns.map(t=>t.id!==id?t:{...t,answer:t.answer+(event.type==="delta"?event.text||"":""),steps:event.type==="step"?[...t.steps.filter(s=>s.label!==event.label),{label:event.label||"",state:event.state||"done"}]:t.steps,status:event.type==="done"?"done":t.status}));
+  };
+  try{
+   const response=await fetch(localApiBase+base+"/ask-stream",{...json({question:text,favorite_context:favoriteContext,conversation_context:conversationContext(),turn_id:id,selected_pages:selectedPages,stage_title:stage?.title||stageId,project_name:state.projects.find(p=>p.id===projectId)?.name||projectId}),headers:{"Content-Type":"application/json",Authorization:"Bearer "+sessionStorage.getItem("presales-local-api-token")},signal:controller.signal});
+   if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(body.detail||"生成请求失败");}
+   if(!response.body)throw new Error("浏览器无法读取内容流");
+   const reader=response.body.getReader();const decoder=new TextDecoder();let buffer="";let done=false;
+   while(true){const chunk=await reader.read();buffer+=decoder.decode(chunk.value,{stream:!chunk.done});const events=buffer.split("\n\n");buffer=events.pop()||"";for(const event of events){const line=event.split("\n").find(v=>v.startsWith("data: "));if(line){const data=JSON.parse(line.slice(6));update(data);if(data.type==="done")done=true;}}if(chunk.done)break;}
+   if(!done)throw new Error("连接中断，当前结果未完成，请重试");
+   await refresh();
+  }catch(e){const stopped=controller.signal.aborted&&!timedOut;
+   const message=timedOut?"模型超过 100 秒未返回新内容，请稍后重试。":e instanceof Error?e.message:"生成失败";
+   setChatTurns(turns=>turns.map(t=>t.id===id?{...t,status:stopped?"stopped":"error",answer:t.answer+(stopped?"": "\n\n"+message),steps:t.steps.map(step=>step.state==="running"?{...step,state:"error",label:stopped?"已停止":message}:step)}:t));if(!stopped){setQuestion(q=>q||text);throw new Error(message);}}
+  finally{clearTimeout(watchdog);streamController.current=null;}
+ }
+ async function deleteCollaboration(message:CollaborationMessage){await localApi(base+"/collaboration/"+message.id,{method:"DELETE"});await refresh();}
+ async function readCollaboration(message:CollaborationMessage){await localApi(base+"/collaboration/"+message.id+"/read",{method:"POST"});await refresh();}
+ async function openHistorical(runId:string){
+  const selected=await localApi<Run>(base+"/runs/"+runId);
+  if(current)setChatTurns(turns=>turns.some(t=>t.id===current.id)?turns:[...turns,{id:current.id,runId:current.id,createdAt:current.created_at,question:runQuestion||"服务器规格方案",answer:current.narrative||current.preview||current.error||"",steps:[],status:current.status==="failed"?"error":"done"}]);
+  setRestoredRun(selected);setRunQuestion((selected.inputs as Inputs&{change_note?:string}).change_note||"服务器规格方案");setShowServer(true);setStarted(true);setDrawer("server");
+ }
+ async function approveDraft(){
+  if(!current)return;
+  await localApi(base+"/runs/"+current.id+"/decision",json({action:"approve",note:note.trim()||"软件产品确认服务器规格方案",expected_revision:current.revision,expected_flow_revision:flow?.revision,option_index:optionIndex}));
+  setChatNotice("已采纳，系统已通知解决方案。");await refresh();
+ }
+ async function mergeFromChat(){
+  if(!flow||!current||!canMerge)throw new Error("请由解决方案岗位处理已采纳的方案");
+  await localApi(base+"/workflow/merge",json({expected_revision:flow.revision,expected_run_revision:current.revision,note:"Agent 合入软件产品已审核采纳的服务器规格"}));
+  setChatNotice("已将采纳的服务器规格合入完整设备清单，系统已通知软件产品。");setQuestion("");await refresh();
+ }
+ async function generateFromChat(){
+  const source=showServer?current?.inputs??inputs:inputs;
+  const sampling=generationPrompt.match(/(\d+)\s*秒/);
+  const extra=generationPrompt.match(/(?:再?加|增加|新增|还有(?:大概|约)?|另有(?:大概|约)?)\s*(\d+(?:\.\d+)?)\s*(万|w)?\s*(?:个|的)?\s*测点/i);
+  const baseline=current?.calculation.points??{low:source.point_low,high:source.point_high};
+  const addition=extra?Number(extra[1])*(extra[2]?10000:1):0;
+  const payload={...source,...(addition?{scope:"custom" as const,point_low:baseline.low+addition,point_high:baseline.high+addition}:{}),sampling_seconds:sampling?Number(sampling[1]):source.sampling_seconds,sampling_confirmed:true,scope_confirmed:true,assumptions_confirmed:true,
+   scope_note:addition?`在原范围 ${baseline.low}–${baseline.high} 点上增加 ${addition} 点；新增设备数量待确认` :source.scope_note||"按现有三期机房及配套系统全量估算；DCOM 上送子集待确认；事件、波形暂未计入",change_note:generationPrompt,favorite_context:favoriteContext,conversation_context:conversationContext()};
+  const created=await localApi<{id:string}>(base+"/runs",json(payload));
+  if(showServer&&current)setChatTurns(turns=>turns.some(t=>t.id===current.id)?turns:[...turns,{id:current.id,runId:current.id,question:runQuestion||"生成服务器规格方案",answer:current.narrative||current.preview||current.error||"",steps:[],status:current.status==="failed"?"error":"done",createdAt:current.created_at}]);
+  setRunQuestion(generationPrompt);setRestoredRun(await localApi<Run>(base+"/runs/"+created.id));setShowServer(true);setInputs(payload);setGenerationPrompt("");setQuestion("");setChatNotice("收到。我会核对资料、计算测点与存储，再生成一份供你审核的服务器规格方案。");await refresh();
+ }
+ async function send(){
+  const text=question.trim();if(!text)return;setStarted(true);
+  if(/^\d+(?:\.\d+)?$/.test(text)){
+   setChatTurns(turns=>[...turns,{id:crypto.randomUUID(),createdAt:new Date().toISOString(),question:text,answer:`“${text}”指什么？是要调整测点数量、采样周期，还是选择某个方案？请补充单位或具体要求。`,steps:[],status:"done"}]);setQuestion("");return;
+  }
+  if(!specialized){
+   if(/调出|查看.*采纳|拿出/.test(text)){
+    const all=await localApi<Artifact[]>(base+"/artifacts");setArtifacts(all);const version=text.match(/(?:V|版本)\s*(\d+)/i);const chosen=all.find(a=>!version||a.revision===Number(version[1]));
+    setChatTurns(t=>[...t,{id:crypto.randomUUID(),artifactId:chosen?.id,artifactTitle:chosen?.title,question:text,answer:chosen?.content||"没有找到对应的已采纳成果。",steps:[],status:"done",createdAt:new Date().toISOString()}]);setQuestion("");return;
+   }
+   await act(()=>streamReply(text));return;
+  }
+  if(/调出来|调出|拿出来|查看.*采纳|查看.*澄清表|查看.*偏离表/.test(text)){
+   const all=await localApi<Artifact[]>(base+"/artifacts");setArtifacts(all);
+   const kind=/澄清/.test(text)?"澄清":/偏离/.test(text)?"偏离":/需求|核对/.test(text)?"核对":"";
+   const version=text.match(/(?:V|版本)\s*(\d+)/i);
+   const chosen=all.find(a=>(!kind||a.title.includes(kind))&&(!version||a.revision===Number(version[1])));
+   setChatTurns(turns=>[...turns,{id:crypto.randomUUID(),artifactId:chosen?.id,artifactTitle:chosen?.title,createdAt:new Date().toISOString(),question:text,answer:chosen?chosen.content:"没有找到对应的已采纳成果，请告诉我是澄清表、偏离表还是需求核对结果。",steps:[],status:"done"}]);setQuestion("");return;
+  }
+  if(/推送|发送给解决方案|交给解决方案/.test(text)){
+   setChatNotice(current?.status==="approved"?"采纳时系统已自动通知解决方案。":"请先选择候选方案并审核采纳，系统会自动通知解决方案。");setQuestion("");return;
+  }
+  if(/查看.*方案|继续.*方案/.test(text)&&current){setShowServer(true);setQuestion("");setChatNotice("");return;}
+  if(/审核通过|确认通过|方案通过/.test(text)&&current?.status==="review"){
+   await act(approveDraft);setQuestion("");return;
+  }
+  if(/服务器|测点|采样|存储/.test(text)&&/生成|修改|调整|重新|改成|改为|增加|新增|再加/.test(text)||showServer&&!chatTurns.at(-1)?.artifactTitle&&/修改|调整|重新|改成|改为|部署|本地|改一下/.test(text)&&!/澄清|偏离|应答/.test(text)){
+   if(!canEdit){setChatNotice("服务器规格由软件产品生成和审核。");return;}
+   if(!flow||flow.status==="waiting_equipment"){setChatNotice("还未收到解决方案交付的清单。请先完成清单交接。");return;}
+   if(!/修改|调整|重算|重新|改成|改为|增加|新增|再加|新版本|新方案/.test(text)){
+    await act(async()=>{
+     const existing=await localApi<Run|null>(base+"/matching-run");
+     if(existing){
+      const selected=existing.selected_option||existing.draft?.options[existing.draft.recommended_index]?.name||"服务器规格方案";
+      setChatTurns(turns=>[...turns,{id:crypto.randomUUID(),runId:existing.id,createdAt:new Date().toISOString(),question:text,answer:`已有与当前清单 **V${flow.equipment_revision}** 对应的服务器规格方案 **V${existing.revision}**。\n\n当前${existing.status==="approved"?"已采纳":"推荐"}方案：**${selected}**。\n\n你可以查看现有方案，或告诉我需要修改什么，我再生成新版本。`,steps:[],status:"done"}]);setQuestion("");
+     }else{setGenerationPrompt(text);setChatNotice("");setQuestion("");}
+    });return;
+   }
+   setGenerationPrompt(text);setChatNotice("");setQuestion("");return;
+  }
+  if(/合并.*清单|更新.*清单|合入.*清单/.test(text)){await act(mergeFromChat);return;}
+  await act(()=>streamReply(text));
+ }
+ async function downloadMerged(){
+  const response=await fetch(localApiBase+base+"/workflow/merged-file",{headers:{Authorization:"Bearer "+sessionStorage.getItem("presales-local-api-token")}});
+  if(!response.ok)throw new Error("清单下载失败");
+  const url=URL.createObjectURL(await response.blob());const a=document.createElement("a");a.href=url;a.download=flow?.merged_file||"GSA02.xlsx";a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);
+ }
+ const timeline: {id:string;at:string;kind:"turn"|"scheme"|"pending"|"notice";turn?:ChatTurn}[]=[
+ ...chatTurns.filter(t=>!(showServer&&t.id===current?.id)).map((turn,i)=>({id:turn.id,kind:"turn" as const,turn,at:turn.createdAt||audit.find(a=>{try{return a.action==="ask"&&JSON.parse(a.detail).question===turn.question;}catch{return false;}})?.created_at||runs.find(r=>r.id===turn.id)?.created_at||new Date(i).toISOString()})),
+ ...(showServer&&current?[{id:"scheme:"+current.id,kind:"scheme" as const,at:current.created_at}]:[]),
+ ...(generationPrompt?[{id:"pending",kind:"pending" as const,at:pendingAt}]:[]),
+ ...(chatNotice?[{id:"notice",kind:"notice" as const,at:chatNotice.startsWith("收到。我会")&&current?new Date(Date.parse(current.created_at)-1).toISOString():noticeAt}]:[])].sort((a,b)=>Date.parse(a.at)-Date.parse(b.at));
+ return <section className={"gsa-chat "+(!started?"gsa-home":"")}>
+  <header className="gsa-chat-header"><div className="gsa-agent-title"><i><Sparkles size={18}/></i><div><strong>{specialized?(canMerge?"解决方案 Agent":"软件 Agent"):(stageId==="F5"?"软件 Agent":(stage?.title||stageId)+" Agent")}</strong><span>{canMerge?"解决方案":"软件支持"} · {projectId}</span></div></div>
+   <nav>{started&&<button disabled={busy} onClick={()=>{setConversationId(crypto.randomUUID());setStarted(false);setFavoriteContext("");setChatTurns([]);setRunQuestion("");setShowServer(false);setRestoredRun(null);setGenerationPrompt("");setChatNotice("");setQuestion("");baselineAudit.current=new Set(audit.map(a=>a.id));}}>新对话</button>}<button onClick={()=>setDrawer("favorites")}><Bookmark size={13}/> 收藏对话{favorites.length>0?" · "+favorites.length:""}</button><button onClick={()=>setDrawer("sources")}>资料</button><button className="gsa-collaboration-button" aria-label={messages.some(m=>!m.is_read&&m.recipient===account)?"协作，有新交接":"协作"} onClick={()=>{setDrawer("workflow");}}>协作{messages.some(m=>!m.is_read&&m.recipient===account)&&<i className="gsa-notification-dot"/>}</button></nav>
+  </header>
+  {error&&<div className="gsa-chat-error" role="alert">{error}{(error.includes("请先登录")||error.includes("未登录"))&&<button onClick={()=>{dispatch({type:"logout"});window.location.assign("/login");}}>重新登录</button>}<button onClick={()=>setError("")} aria-label="关闭错误"><X size={14}/></button></div>}
+  <div className="gsa-transcript" ref={streamRef}>
+   {!started&&<div className="gsa-welcome"><i><Sparkles size={25}/></i><h2>今天要做些什么？</h2><p>核对需求、整理澄清、起草应答，或一起处理软件方案。</p></div>}
+   {timeline.map(item=><div key={item.id}>
+    {item.kind==="turn"&&item.turn&&<><div className="gsa-user-message">{item.turn.question}</div>{item.turn.steps.length>0&&<details className="gsa-execution" open={item.turn.status==="running"}><summary>{item.turn.status==="running"?"正在处理":"执行过程"}</summary>{item.turn.steps.map(step=><div key={step.label}>{step.state==="done"?<CheckCircle2 size={13}/>:step.state==="error"?<X size={13}/>:<LoaderCircle size={13} className="spin"/>}{step.label}</div>)}</details>}<AgentReply text={item.turn.answer} canSave={item.turn.status==="done"} onFavorite={()=>favoriteReply(item.id,item.turn!.answer,item.turn!.question)}><MarkdownReply text={item.turn.answer}/>{(item.turn.runId||runs.some(r=>r.id===item.id))&&<button className="gsa-history-action" onClick={()=>void act(()=>openHistorical(item.turn!.runId||item.id))}>查看方案 · 可采纳或修改<ArrowRight size={14}/></button>}{item.turn.status==="done"&&item.turn.answer&&!item.turn.runId&&<div className="gsa-output-adoption">{(()=>{const adopted=artifacts.find(a=>(a.source_id===item.turn!.id||a.id===item.turn!.artifactId)&&a.content===item.turn!.answer);return adopted?<><span>已采纳 · V{adopted.revision}</span><button onClick={()=>void act(()=>downloadOutput(adopted))}><Download size={14}/>下载</button></>:canReview?<button disabled={busy} onClick={()=>void act(()=>adoptOutput(item.turn!))}><CheckCircle2 size={14}/>采纳成果</button>:null;})()}</div>}{item.turn.status==="running"&&<span className="gsa-stream-cursor"/>}</AgentReply></>}
+    {item.kind==="notice"&&<AgentReply text={chatNotice}/>}
+    {item.kind==="scheme"&&runQuestion&&<div className="gsa-user-message">{runQuestion}</div>}
+   {item.kind==="pending"&&<><div className="gsa-user-message">{generationPrompt}</div><AgentReply text=""><p>收到，使用设备清单 V{flow?.equipment_revision}。采样周期{generationPrompt.match(/(\d+)\s*秒/)?.[1]||(showServer?current?.inputs.sampling_seconds:inputs.sampling_seconds)||inputs.sampling_seconds} 秒、历史保留 {showServer?current?.inputs.retention_years||inputs.retention_years:inputs.retention_years} 年。接入范围按三期机房与配套系统全量估算，事件和波形暂未计入。</p>{(()=>{const match=generationPrompt.match(/(?:再?加|增加|新增|还有(?:大概|约)?|另有(?:大概|约)?)\s*(\d+(?:\.\d+)?)\s*(万|w)?\s*(?:个|的)?\s*测点/i);if(!match)return null;const added=Number(match[1])*(match[2]?10000:1);const points=current?.calculation.points??{low:inputs.point_low,high:inputs.point_high};return <p>新增 {fmt(added)} 测点，计算范围改为 {fmt(points.low+added)}–{fmt(points.high+added)} 点；设备数量保持原假设，需另行确认。</p>;})()}<div className="gsa-actions"><button className="btn primary" disabled={busy||running} onClick={()=>void act(generateFromChat)}>确认，{showServer?"重新生成":"生成方案"}</button><button className="btn secondary" onClick={()=>setDrawer("parameters")}>调整范围与参数</button></div></AgentReply></>}
+   {item.kind==="scheme"&&current&&<div className="gsa-inline-draft">{!running&&<div className="gsa-review-card"><div className="gsa-review-icon"><FileText size={21}/></div><div><strong>服务器规格方案 <em>V{current.revision}</em></strong><span>{labels[current.status]||current.status}{current.error?" · "+current.error:""}</span></div><button disabled={running||!current.narrative} onClick={()=>setDrawer("server")}>{"查看方案"}<ArrowRight size={15}/></button></div>}
+    {(current.equipment_revision!=null&&current.equipment_revision!==flow?.equipment_revision||current.source_hashes?.some(old=>{const latest=materials?.manifest.find(m=>m.id===old.id);return !!latest&&latest.sha256!==old.sha256;}))&&<p className="gsa-version-warning">该方案参考的资料版本非最新版本{current.equipment_revision?`（清单 V${current.equipment_revision}）`:"（历史版本未记录）"}，仍可采纳或继续修改。</p>}
+    {!running&&current.calculation&&<div className="gsa-draft-facts"><span>{fmt(current.calculation.points.low)}–{fmt(current.calculation.points.high)} 测点</span><span>{current.inputs.sampling_seconds} 秒采样</span><span>{current.inputs.retention_years} 年保留</span></div>}
+    {(current.narrative||current.preview)&&<div className="gsa-inline-content"><AgentReply canSave={!running} text={current.narrative||current.preview||""} favorited={favorites.some(f=>f.sourceId===current.id)} onFavorite={()=>favoriteReply(current.id,current.narrative||"","服务器规格方案")}><div className="gsa-narrative"><MarkdownReply text={current.narrative||current.preview||""}/>{running&&<span className="gsa-stream-cursor"/>}</div></AgentReply></div>}
+    {current.status==="failed"&&canEdit&&<button className="btn secondary" onClick={()=>{setGenerationPrompt("请重新生成服务器规格方案");}}>重试</button>}
+    {(["review","stale","rejected"].includes(current.status)||current.status==="approved"&&flow?.run_id!==current.id)&&current.draft&&canReview&&!running&&<div className="gsa-adoption"><div className="gsa-option-list">{current.draft.options.map((o,i)=><button className={optionIndex===i?"selected":""} key={i} aria-pressed={optionIndex===i} onClick={()=>setOptionIndex(i)}><CheckCircle2 size={16}/><span>{o.name}</span>{i===current.draft?.recommended_index&&<small>推荐</small>}</button>)}</div><button className="btn primary" disabled={busy} onClick={()=>void act(approveDraft)}>采纳方案<ArrowRight size={15}/></button></div>}
+
+
+   </div>}
+   {item.kind==="scheme"&&running&&<div><div className="gsa-execution"><details open><summary>正在生成服务器规格</summary><div><CheckCircle2 size={13}/>已读取清单与规格书</div><div><CheckCircle2 size={13}/>已计算测点与存储</div><div><LoaderCircle size={13} className="spin"/>{current.stage_message||"正在等待模型输出"} · 已等待 {Math.max(0,Math.floor((clock-Date.parse(current.created_at))/1000))} 秒</div></details></div></div>}
+   </div>)}
+   {started&&flow?.status==="merged"&&<div className="gsa-chat-card"><strong>完整设备清单</strong><button onClick={()=>void act(downloadMerged)}><Download size={14}/>下载</button></div>}
+  </div>
+  <footer className="gsa-composer">
+   {!started&&stageId==="F5"&&<div className="gsa-quick"><button onClick={()=>setQuestion("请帮我核对软件技术规格书中的需求")}>核对软件需求</button><button onClick={()=>setQuestion("请整理软件需求中需要澄清的问题")}>整理澄清问题</button><button onClick={()=>setQuestion("请根据软件规格书起草技术应答与偏离项，标明待确认内容")}>起草应答与偏离表</button></div>}
+   {!started&&stageId!=="F5"&&<div className="gsa-quick">{["核对输入资料","整理待确认问题","起草"+(stage?.title||"工作成果")].map(q=><button key={q} onClick={()=>setQuestion(q)}>{q}</button>)}</div>}
+   <form onSubmit={e=>{e.preventDefault();void send();}}><textarea aria-label={stageId==="F5"?"与软件 Agent 对话":"与"+(stage?.title||stageId)+" Agent 对话"} placeholder="告诉我你要做什么…" onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();if(storageReady&&!busy&&!running&&(!specialized||materials))void send();}}} value={question} onChange={e=>setQuestion(e.target.value)} maxLength={1000}/><button type={streamController.current?"button":"submit"} aria-label={streamController.current?"停止生成":"发送"} onClick={()=>{if(streamController.current)streamController.current.abort();}} disabled={!streamController.current&&(!storageReady||busy||running||(specialized&&!materials)||!question.trim())}>{streamController.current?<X size={18}/>:<ArrowUp size={18}/>}</button>
+   <div className="gsa-composer-meta"><select aria-label="当前模型" value={model?.model||"unconfigured"} disabled={busy||running}><option value={model?.model||"unconfigured"}>{model?.configured?(model.provider==="zhipu"?"智谱 · ":model.provider+" · ")+model.model:"模型未配置"}</option></select>{busy&&<span>正在处理…</span>}</div></form>
+  </footer>
+  {!started&&favorites.length>0&&<div className="gsa-home-favorites">{favorites.slice(0,6).map(f=><div className="gsa-home-favorite" key={f.id}><button title={f.title} onClick={()=>void act(()=>restoreFavorite(f))}><i><MessageSquare size={19}/></i><span>{f.title}</span></button><button className="gsa-favorite-delete" aria-label={"删除收藏 "+f.title} onClick={()=>persistFavorites(favorites.filter(item=>item.id!==f.id))}><X size={13}/></button></div>)}</div>}
+  {drawer&&<div className="gsa-drawer-backdrop" onClick={()=>setDrawer(null)}><aside className={"gsa-drawer"+(drawer==="sources"?" gsa-materials-drawer":"")} onClick={e=>e.stopPropagation()} aria-label="软件工作侧栏">
+   <header><h3>{{sources:"项目资料",parameters:"方案参数",server:"方案生成依据",workflow:"协作消息",favorites:"收藏对话"}[drawer]}</h3><button aria-label="关闭侧栏" onClick={()=>setDrawer(null)}><X size={18}/></button></header>
+   <div className="gsa-drawer-body">
+    {drawer==="favorites"&&<>{favorites.length===0?<p className="gsa-muted">收藏的对话会显示在这里。</p>:favorites.map(f=><article className="gsa-favorite-row" key={f.id}><button onClick={()=>void act(()=>restoreFavorite(f))}><MessageSquare size={17}/><div><strong>{f.title}</strong><span>{f.text.slice(0,100)}</span></div><ArrowRight size={15}/></button><button aria-label={"删除收藏 "+f.title} title="取消收藏" onClick={()=>persistFavorites(favorites.filter(item=>item.id!==f.id))}><Trash2 size={15}/></button></article>)}</>}
+    {drawer==="sources"&&!specialized&&<>
+     <ResourceBrowser projectId={projectId} compact/>
+     <h4>选择用于本次对话的资料页</h4>
+     {documents.length===0&&<p className="gsa-muted">暂无可读取的已导入资料。可以先在对话中补充内容，或在资料页导入文件。</p>}
+     {documents.map(d=><div className="gsa-source-detail" key={d.id}><strong>{d.title} · {d.version}</strong><label className="gsa-check">页码<input aria-label={d.title+"页码"} placeholder="例如 1,2,3" value={pageNumbers[d.id]||""} onChange={e=>{const value=e.target.value;setPageNumbers(v=>({...v,[d.id]:value}));setSelectedPages(v=>[...v.filter(p=>p.document_id!==d.id),...Array.from(new Set(value.split(/[,，\s]+/).map(Number).filter(n=>Number.isInteger(n)&&n>0&&n<=d.page_count))).slice(0,10).map(page=>({document_id:d.id,page}))]);}}/></label></div>)}
+    </>}
+    {drawer==="sources"&&specialized&&<ProjectMaterialsPanel sources={materials?.manifest??[]} selected={selection} onSelect={setSelection} onOpen={id=>void act(()=>openSource(id))} onRefresh={()=>void act(async()=>{await localApi(base+"/import",{method:"POST"});await load();})} busy={busy||running} canRefresh={canEdit} pages={materials?.spec_pages??[]} rows={materials?.schedule.rows??[]} warnings={materials?.warnings??[]} equipmentVersion={flow?.equipment_revision} onAsk={text=>{setQuestion(text);setDrawer(null);}}/>}
+    {drawer==="parameters"&&<><p className="gsa-muted">采样周期默认 60 秒，请确认或修改。</p>
+     <fieldset disabled={!canEdit||busy||running}><legend>接入范围</legend>
+      <select aria-label="测点估算口径" value={inputs.scope} onChange={e=>change({scope:e.target.value as Inputs["scope"],scope_confirmed:false})}>
+       <option value="phases">分期经验估算 · 新增机房与配套系统</option><option value="schedule">软件点表 · BMS/EPMS 楼栋全量</option><option value="custom">人工确认的 DCOM 上送测点范围</option>
+      </select>
+      {inputs.scope==="phases"&&materials?.phases.map(p=><label className="gsa-phase" key={p.id}><input type="checkbox" checked={inputs.phase_ids.includes(p.id)} onChange={e=>change({phase_ids:e.target.checked?[...inputs.phase_ids,p.id]:inputs.phase_ids.filter(id=>id!==p.id),scope_confirmed:false})}/><span><strong>{p.name} · {p.mw} MW · {fmt(p.low)}–{fmt(p.high)} 点</strong><small>{p.range}</small></span></label>)}
+      {inputs.scope==="custom"&&<div className="gsa-fields"><label>测点下限<input type="number" min={1} value={inputs.point_low} onChange={e=>change({point_low:Number(e.target.value),scope_confirmed:false})}/></label><label>测点上限<input type="number" min={inputs.point_low} value={inputs.point_high} onChange={e=>change({point_high:Number(e.target.value),scope_confirmed:false})}/></label></div>}
+      <p className="gsa-muted">请确认全量预算或 DCOM 上送子集。</p>
+      <textarea aria-label="接入范围确认说明" placeholder="接入范围与依据" value={inputs.scope_note} onChange={e=>change({scope_note:e.target.value,scope_confirmed:false})} maxLength={1000}/>
+      <div className="gsa-fields">
+       {([["sampling_seconds","采样周期（秒）"],["retention_years","历史保留（年）"],["device_count","接入设备数（估算）"],["cache_days","缓存累计/保留（天）"],["record_types","监测记录类型数"]] as const).map(([k,label])=><label key={k}>{label}<input type="number" min={k==="cache_days"||k==="device_count"?0:1} step="any" value={inputs[k]} onChange={e=>change({[k]:Number(e.target.value),...(k==="sampling_seconds"?{sampling_confirmed:false}:{assumptions_confirmed:false})})}/></label>)}
+      </div>
+      <details><summary>更多存储假设</summary><div className="gsa-fields">
+       {([["events_per_device_day","事件数/设备/天"],["waveform_devices","出波形设备数"],["waveforms_per_device_day","波形条数/设备/天"],["backup_copies","完整备份副本数"],["raid_usable_ratio","RAID 可用比例"],["headroom","规划余量比例"]] as const).map(([k,label])=><label key={k}>{label}<input type="number" min={0} step="any" value={inputs[k]} onChange={e=>change({[k]:Number(e.target.value),assumptions_confirmed:false})}/></label>)}
+      </div></details>
+      <p className="gsa-muted">事件与波形默认 0 为暂未计入；缓存默认三年线性累计（1095 天）。如滚动清空，请修改保留天数。</p>
+      <label className="gsa-check"><input type="checkbox" checked={inputs.sampling_confirmed} onChange={e=>change({sampling_confirmed:e.target.checked})}/>已确认采样周期为 {inputs.sampling_seconds} 秒</label>
+      <label className="gsa-check"><input type="checkbox" checked={inputs.scope_confirmed} onChange={e=>change({scope_confirmed:e.target.checked})}/>已确认接入范围与估算口径</label>
+      <label className="gsa-check"><input type="checkbox" checked={inputs.assumptions_confirmed} onChange={e=>change({assumptions_confirmed:e.target.checked})}/>已核对存储假设及暂未计入项</label>
+     </fieldset>
+     <div className="gsa-actions"><button className="btn secondary" disabled={!canEdit||busy||running||!confirmed||!materials} onClick={()=>void act(async()=>{setCalc(await localApi(base+"/calculate",json(inputs)));setDrawer("server");})}>计算规模与存储</button>
+      <button className="btn primary" disabled={!canEdit||busy||running||!confirmed||!materials||!model?.configured||!flow||flow.status==="waiting_equipment"} onClick={()=>void act(async()=>{const created=await localApi<{id:string}>(base+"/runs",json({...inputs,conversation_context:conversationContext()}));if(showServer&&current)setChatTurns(turns=>[...turns,{id:current.id,runId:current.id,createdAt:current.created_at,question:runQuestion||"生成服务器规格方案",answer:current.narrative||current.preview||current.error||"",steps:[],status:current.status==="failed"?"error":"done"}]);setRestoredRun(await localApi<Run>(base+"/runs/"+created.id));setRunQuestion("按确认的参数生成服务器规格方案");setPendingPrompt("");setStarted(true);setShowServer(true);setDirty(false);setCalc(null);setDrawer(null);await refresh();})}>{running?<><LoaderCircle size={15}/>生成中</>:"生成服务器方案草稿"}</button></div>
+
+    </>}
+    {drawer==="server"&&<>
+     {current&&<div className="gsa-review-summary"><span>{labels[current.status]}</span><strong>GSA02 · 服务器规格方案</strong><p>设备清单 V{flow?.equipment_revision} · {current.inputs.sampling_seconds} 秒采样 · {current.inputs.retention_years} 年保留</p></div>}
+     {result&&<><h4>{fmt(result.points.low)}–{fmt(result.points.high)} 点</h4><p className="gsa-muted">{result.points.source}</p>{dirty&&!calc&&<p className="gsa-reminder">参数已修改，请重新计算。</p>}
+      <table><thead><tr><th>指标</th><th>下限</th><th>上限</th></tr></thead><tbody>{([["samples_per_second","采样/秒"],["time_series_gb","时序库 GB"],["pg_gb","业务库 GB"],["cache_gb","缓存 GB"],["backup_gb","备份 GB"],["raw_data_gb","原始数据盘 GB"]] as const).map(([k,label])=><tr key={k}><td>{label}</td><td>{fmt(result.low[k])}</td><td>{fmt(result.high[k])}</td></tr>)}</tbody></table>
+      <details><summary>计算边界</summary>{result.limitations.map(l=><p key={l}>{l}</p>)}</details></>}
+     {current?.error&&<p className="gsa-error">{current.error}</p>}{current?.narrative&&<AgentReply text={current.narrative} favorited={favorites.some(f=>f.sourceId===current.id)} onFavorite={()=>favoriteReply(current.id,current.narrative||"","服务器规格方案")}><div className="gsa-narrative"><MarkdownReply text={current.narrative}/></div></AgentReply>}
+
+     {current&&<details><summary>生成参数与执行过程</summary><p>读取已交接清单和 CMMS 摘录 → 测点范围估算 → 调用存储计算工具 → 模型生成候选方案 → 软件产品采纳。</p><p>设备数 {current.inputs.device_count}；缓存 {current.inputs.cache_days} 天；备份 {current.inputs.backup_copies} 份；RAID 可用比例 {current.inputs.raid_usable_ratio.toFixed(3)}；余量 {current.inputs.headroom*100}%。</p><p>{current.inputs.scope_note}</p></details>}
+     {!canReview&&current?.status==="review"&&<p className="gsa-review-owner"><CheckCircle2 size={16}/>由软件产品审核采纳后，系统自动通知解决方案。</p>}
+
+    </>}
+    {drawer==="workflow"&&!specialized&&<Collaboration projectId={projectId}/>}{drawer==="workflow"&&specialized&&<div className="gsa-message-list">{messages.length===0&&<p className="gsa-muted">暂无协作消息</p>}{messages.map(message=><article className={"gsa-message "+(!message.is_read?"unread":"")} key={message.id}><button className="gsa-message-delete" aria-label="删除协作消息" title="删除消息" disabled={busy} onClick={()=>void act(()=>deleteCollaboration(message))}><X size={14}/></button><header><span>{{system:"系统",agent:"Agent",solution:"解决方案",software:"软件产品",pm:"项目负责人"}[message.sender]||message.sender}</span><time>{new Date(message.created_at).toLocaleString("zh-CN")}</time></header><strong>{message.title}</strong>{message.kind==="equipment"&&<span className={"gsa-processing-status "+(message.processed?"processed":"")}>{message.processed?"已处理":"未处理"}</span>}<p>{message.body}</p><button className="btn primary" disabled={busy} onClick={()=>void act(async()=>{await readCollaboration(message);setQuestion(message.kind==="equipment"?"解决方案的清单已经做好，请生成服务器规格方案":canMerge&&message.kind==="deliverable"?"请将已采纳的服务器规格合入设备清单":"请帮我处理这条协作事项："+message.title+"。"+message.body);setDrawer(null);})}>处理</button></article>)}</div>}
+
+   </div>
+  </aside></div>}
+ </section>;
+}

@@ -27,16 +27,25 @@ class ModelConfig:
 
 def model_config() -> ModelConfig:
     choice = os.environ.get("PRESALES_MODEL_PROVIDER", "auto").strip().lower()
-    if choice not in {"auto", "deepseek", "kimi"}:
+    if choice not in {"auto", "deepseek", "kimi", "zhipu", "siliconflow"}:
         raise ModelError("模型供应商配置无效")
     if choice == "auto":
         choice = "deepseek" if os.environ.get("DEEPSEEK_API_KEY", "").strip() else (
-            "kimi" if os.environ.get("MOONSHOT_API_KEY", "").strip() else "deepseek"
+            "kimi" if os.environ.get("MOONSHOT_API_KEY", "").strip() else (
+                "zhipu" if os.environ.get("ZHIPU_API_KEY", "").strip() else "deepseek")
         )
+    if choice == "siliconflow":
+        return ModelConfig("siliconflow", os.environ.get("SILICONFLOW_MODEL", "THUDM/GLM-4-9B-0414").strip() or "THUDM/GLM-4-9B-0414",
+                           os.environ.get("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1").rstrip("/"),
+                           os.environ.get("SILICONFLOW_API_KEY", "").strip())
     if choice == "deepseek":
         return ModelConfig("deepseek", os.environ.get("DEEPSEEK_MODEL", "deepseek-flash").strip() or "deepseek-flash",
                            os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/"),
                            os.environ.get("DEEPSEEK_API_KEY", "").strip())
+    if choice == "zhipu":
+        return ModelConfig("zhipu", os.environ.get("ZHIPU_MODEL", "glm-4.7-flash").strip() or "glm-4.7-flash",
+                           os.environ.get("ZHIPU_BASE_URL", "https://open.bigmodel.cn/api/paas/v4").rstrip("/"),
+                           os.environ.get("ZHIPU_API_KEY", "").strip())
     return ModelConfig("kimi", os.environ.get("MOONSHOT_MODEL", "kimi-k2.6").strip() or "kimi-k2.6",
                        os.environ.get("MOONSHOT_BASE_URL", "https://api.moonshot.cn/v1").rstrip("/"),
                        os.environ.get("MOONSHOT_API_KEY", "").strip())
@@ -46,16 +55,18 @@ def request_chat(messages: list[dict[str, str]], max_tokens: int,
                  config: ModelConfig | None = None, json_mode: bool = False) -> str:
     config = config or model_config()
     if not config.configured:
-        raise ModelError(f"服务端尚未配置 {config.provider.upper()}_API_KEY" if config.provider == "deepseek"
-                         else "服务端尚未配置 MOONSHOT_API_KEY")
+        key_name = {"deepseek": "DEEPSEEK_API_KEY", "kimi": "MOONSHOT_API_KEY", "zhipu": "ZHIPU_API_KEY", "siliconflow": "SILICONFLOW_API_KEY"}[config.provider]
+        raise ModelError(f"服务端尚未配置 {key_name}")
     if not config.base_url.startswith("https://"):
         raise ModelError("模型接口必须使用 HTTPS")
     payload: dict[str, object] = {"model": config.model, "messages": messages,
                                   "max_tokens": max_tokens, "stream": False}
-    if config.provider == "deepseek":
+    if config.provider in {"deepseek", "zhipu"}:
         payload["thinking"] = {"type": "disabled"}
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+    if config.provider == "siliconflow" and json_mode:
+        payload["response_format"] = {"type": "json_object"}
     request = Request(
         config.base_url + "/chat/completions",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -66,6 +77,14 @@ def request_chat(messages: list[dict[str, str]], max_tokens: int,
         with urlopen(request, timeout=90) as response:
             result = json.load(response)
     except HTTPError as error:
+        # 只解释已知错误码，避免把供应商原始响应或密钥写进日志。
+        code = ""
+        try:
+            code = str(json.loads(error.read()).get("error", {}).get("code", ""))
+        except (ValueError, AttributeError):
+            pass
+        if config.provider == "zhipu" and code == "1305":
+            raise ModelError("智谱模型当前访问量过大（HTTP 429 / 1305），请稍后重试或在服务端选择额度支持的其他模型") from error
         raise ModelError(f"{config.provider} 接口返回 HTTP {error.code}；请检查 Key、模型和额度") from error
     except (URLError, TimeoutError) as error:
         raise ModelError(f"{config.provider} 连接失败或超时，请检查网络和接口地址") from error
@@ -76,6 +95,59 @@ def request_chat(messages: list[dict[str, str]], max_tokens: int,
         return content
     except (KeyError, IndexError, TypeError, ValueError) as error:
         raise ModelError("模型没有返回可读取的内容") from error
+
+
+def _request_chat_stream(messages, max_tokens=2400, config=None, json_mode=False):
+    """Forward visible content deltas only, never hidden reasoning."""
+    config=config or model_config()
+    if not config.configured:raise ModelError("服务端尚未配置模型 Key")
+    if not config.base_url.startswith("https://"):raise ModelError("模型接口必须使用 HTTPS")
+    payload={"model":config.model,"messages":messages,"max_tokens":max_tokens,"stream":True}
+    if config.provider in {"deepseek","zhipu"}:payload["thinking"]={"type":"disabled"}
+    if json_mode:payload["response_format"]={"type":"json_object"}
+    request=Request(config.base_url+"/chat/completions",data=json.dumps(payload,ensure_ascii=False).encode(),headers={"Authorization":"Bearer "+config.api_key,"Content-Type":"application/json"},method="POST")
+    received=completed=False
+    try:
+        with urlopen(request,timeout=90) as response:
+            for raw in response:
+                line=raw.decode("utf-8").strip()
+                if not line.startswith("data:"):continue
+                data=line[5:].strip()
+                if data=="[DONE]":completed=True;break
+                value=json.loads(data)
+                if value.get("error"):raise ModelError("模型流返回错误，请重试")
+                choices=value.get("choices",[])
+                if not choices:continue
+                if choices[0].get("finish_reason"):completed=True
+                delta=choices[0].get("delta",{}).get("content")
+                if isinstance(delta,str) and delta:received=True;yield delta
+        if not received:raise ModelError("模型没有返回可读取的内容")
+        if not completed:raise ModelError("模型连接中断，当前结果未完成")
+    except HTTPError as e:
+        code=""
+        try:code=str(json.loads(e.read()).get("error",{}).get("code",""))
+        except (ValueError,AttributeError):pass
+        if config.provider=="zhipu" and code=="1305":raise ModelError("智谱访问繁忙（429 / 1305），请稍后重试") from e
+        raise ModelError(f"{config.provider} 接口返回 HTTP {e.code}，请检查额度") from e
+    except (URLError,TimeoutError) as e:raise ModelError("模型连接失败或超时，请重试") from e
+    except (ValueError,UnicodeError) as e:raise ModelError("模型流格式异常，请重试") from e
+
+
+def request_chat_stream(messages, max_tokens=2400, config=None, json_mode=False, on_provider=None):
+    config=config or model_config()
+    received=False
+    try:
+        for piece in _request_chat_stream(messages,max_tokens,config,json_mode):
+            received=True
+            yield piece
+    except ModelError as error:
+        eligible=any(word in str(error) for word in ("1305", "超时", "连接失败", "HTTP 503", "HTTP 502"))
+        key=os.environ.get("DEEPSEEK_API_KEY", "").strip()
+        if received or config.provider!="zhipu" or not key or not eligible:raise
+        fallback=ModelConfig("deepseek",os.environ.get("DEEPSEEK_MODEL","deepseek-flash").strip(),
+                             os.environ.get("DEEPSEEK_BASE_URL","https://api.deepseek.com").rstrip("/"),key)
+        if on_provider:on_provider(fallback)
+        yield from _request_chat_stream(messages,max_tokens,fallback,json_mode)
 
 
 def parse_json(content: str) -> dict:

@@ -33,6 +33,8 @@ def load_local_env() -> None:
         name = name.strip()
         if name in {"MOONSHOT_API_KEY", "MOONSHOT_MODEL", "MOONSHOT_BASE_URL",
                     "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "DEEPSEEK_BASE_URL",
+                    "ZHIPU_API_KEY", "ZHIPU_MODEL", "ZHIPU_BASE_URL",
+                    "SILICONFLOW_API_KEY", "SILICONFLOW_MODEL", "SILICONFLOW_BASE_URL",
                     "PRESALES_MODEL_PROVIDER"}:
             os.environ.setdefault(name, value.strip().strip('"').strip("'"))
 
@@ -61,8 +63,8 @@ SESSIONS: dict[str, str] = {}
 app = FastAPI(title="售前工作台 · 本机测试 API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:3000", "http://localhost:3000"],
-    allow_methods=["GET", "POST"],
+    allow_origins=["http://127.0.0.1:3000", "http://localhost:3000", "http://127.0.0.1:7100", "http://localhost:7100", "http://localhost:7101", "http://127.0.0.1:7101"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -932,3 +934,10 @@ def tasks(account: str = Depends(actor)):
                                "title": row["question"], "status": "待处理答复",
                                "owner": row["owner"] + " → 软件产品"})
     return result
+
+
+from gsa_router import install as install_gsa
+install_gsa(app, DB_PATH, FILES_DIR, actor, require_account)
+
+from workspace_router import install as install_workspaces
+install_workspaces(app, db, actor, now, log)

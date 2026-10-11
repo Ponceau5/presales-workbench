@@ -328,7 +328,7 @@ test("多项目数据隔离，返回项目恢复评审与事实；重置仅清�
   assert.equal(s.stageStates.F3.generated, true);
   s = reducer(s, { type: "reset", settings: defaultSettings });
   assert.equal(s.stageStates.F3.generated, false);
-  assert.equal(s.projects.length, 3);
+  assert.equal(s.projects.length, initialState(defaultSettings).projects.length + 1);
   s = reducer(s, { type: "projectSwitch", id: "DEMO-026" });
   assert.equal(s.facts.length, 11);
 });

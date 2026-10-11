@@ -220,7 +220,7 @@ export default function Settings() {
         </div>
         <div>
           <Section title="服务端模型">
-            <p>{!serverReady ? "本机 API 未连接" : serverModel?.configured ? `${serverModel.provider === "deepseek" ? "DeepSeek" : "Kimi"} · ${serverModel.model} · 已配置` : "未配置 API Key"}</p>
+            <p>{!serverReady ? "本机 API 未连接" : serverModel?.configured ? `${serverModel.provider === "zhipu" ? "智谱" : serverModel.provider === "deepseek" ? "DeepSeek" : "Kimi"} · ${serverModel.model} · 已配置` : "未配置 API Key"}</p>
             <button className="btn secondary" disabled={!serverModel?.configured || serverTesting} onClick={() => void testServerModel()}>
               {serverTesting ? "测试中" : "测试服务端连接"}
             </button>
