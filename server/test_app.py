@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -20,7 +21,9 @@ from model_gateway import ModelError, answer_about_source  # noqa: E402
 
 class WorkflowApiTest(unittest.TestCase):
     def test_f7_agent_prompt_requires_sourced_costs_and_internal_draft(self):
-        with patch("workspace_router.request_chat_stream", return_value=iter(["成本待补"])) as model:
+        with patch("workspace_router.model_config", return_value=SimpleNamespace(configured=True)), patch(
+            "workspace_router.request_chat_stream", return_value=iter(["成本待补"]),
+        ) as model:
             reply = self.client.post(
                 "/api/projects/F7-TEST/workspaces/F7/ask-stream",
                 headers=self.auth("sales"),
@@ -31,6 +34,34 @@ class WorkflowApiTest(unittest.TestCase):
         prompt = model.call_args.args[0][0]["content"]
         self.assertIn("缺失值留空", prompt)
         self.assertIn("销售内部草稿", prompt)
+
+    def test_f7_without_key_simulates_revision_and_internal_approval(self):
+        endpoint = "/api/projects/F7-DEMO/workspaces/F7"
+        with patch("workspace_router.model_config", return_value=SimpleNamespace(configured=False)), patch(
+            "workspace_router.request_chat_stream",
+        ) as model:
+            first = self.client.post(endpoint + "/ask-stream", headers=self.auth("sales"),
+                                     json={"question": "生成报价表", "turn_id": "f7-demo-first"})
+            revised = self.client.post(endpoint + "/ask-stream", headers=self.auth("sales"),
+                                       json={"question": "请按人工审核意见修改刚才的报价表：补充采购来源，金额待确认。",
+                                             "turn_id": "f7-demo-revised"})
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(revised.status_code, 200, revised.text)
+        self.assertIn("模拟演示", first.text)
+        self.assertIn("待人工处理", first.text)
+        self.assertIn("修订演示", revised.text)
+        self.assertIn("人工输入记录", revised.text)
+        self.assertIn('"type": "done"', revised.text)
+        model.assert_not_called()
+        with db() as connection:
+            saved = connection.execute("SELECT content FROM workspace_replies WHERE id=?", ("f7-demo-revised",)).fetchone()
+        self.assertIsNotNone(saved)
+        self.assertIn("未调用 AI", saved["content"])
+        approved = self.client.post(endpoint + "/artifacts/adopt", headers=self.auth("sales"),
+                                    json={"source_id": "f7-demo-revised", "title": "报价表演示草稿",
+                                          "content": saved["content"], "conversation_id": "f7-demo-chat"})
+        self.assertEqual(approved.status_code, 200, approved.text)
+        self.assertIn("模拟演示", approved.json()["content"])
 
     def test_f7_spreadsheet_upload_is_readable_as_source_page(self):
         workbook = Workbook()
