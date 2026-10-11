@@ -15,6 +15,32 @@ const quoteHeaders = ["项目", "配置版本", "清单ID", "成本类型", "名
 const quoteCategories = ["自产产品", "外购设备", "软件", "施工与服务", "补充费用"];
 const csvCell = (value: string) => `"${value.replaceAll('"', '""')}"`;
 
+export function f7ReviewSummary(kind: F7TemplateKind, draft?: string, generatedAt?: string) {
+  const label = kind === "cost" ? "总成本" : "总报价";
+  const totalLine = draft?.split(/\r?\n/).find(line => line.includes(label) && !/待补|待确认|未确认|空白/.test(line));
+  const amount = totalLine?.match(/(CNY|RMB|USD|RM|人民币|[¥￥])\s*([\d,]+(?:\.\d+)?)/i);
+  const total = amount ? `${amount[1]} ${amount[2]}` : "待核算";
+  const rows = draft?.split(/\r?\n/).filter(line => /^\|.*\|$/.test(line) && !/^\|[\s:|\-]+\|$/.test(line)) ?? [];
+  const blank = draft ? rows.length ? rows.filter(line => /待补|待确认|未确认|空白/.test(line)).length : null : kind === "cost"
+    ? costSheets[0].rows.reduce((count, row) => count + row.cells.filter(cell => cell.input && (cell.value === null || cell.value === "")).length, 0)
+    : quoteCategories.length;
+  const date = generatedAt ? new Date(generatedAt) : null;
+  const validDate = date && !Number.isNaN(date.getTime()) ? date : null;
+  const pad = (number: number) => String(number).padStart(2, "0");
+  const version = validDate ? `V${validDate.getFullYear()}${pad(validDate.getMonth() + 1)}${pad(validDate.getDate())}-${pad(validDate.getHours())}${pad(validDate.getMinutes())}` : kind === "cost" ? "参考模板 V6" : "报价模板 V1";
+  const dateLabel = validDate ? validDate.toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "尚未生成";
+  return { label, total, blank, version, dateLabel, templateOnly: !draft };
+}
+
+export function F7ReviewSummary({ kind, draft, generatedAt }: { kind: F7TemplateKind; draft?: string; generatedAt?: string }) {
+  const summary = f7ReviewSummary(kind, draft, generatedAt);
+  return <div className="gsa-f7-review-summary" aria-label={`${kind === "cost" ? "成本表" : "报价表"}审核摘要`}>
+    <div><small>{summary.label}</small><strong>{summary.total}</strong></div>
+    <div><small>空白项{summary.templateOnly ? " · 模板待填" : " · 草稿待补"}</small><strong>{summary.blank === null ? "待统计" : `${summary.blank} 条`}</strong></div>
+    <div className="version"><small>生成日期 · 版本</small><strong>{summary.version}</strong><span>{summary.dateLabel}</span></div>
+  </div>;
+}
+
 function saveBlob(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -43,11 +69,12 @@ function columnName(index: number) {
   return name;
 }
 
-export default function F7TableTemplate({ kind, projectId }: { kind: F7TemplateKind; projectId: string }) {
+export default function F7TableTemplate({ kind, projectId, draft, generatedAt }: { kind: F7TemplateKind; projectId: string; draft?: string; generatedAt?: string }) {
   const [active, setActive] = useState(0);
   const [downloadError, setDownloadError] = useState("");
   const sheet = costSheets[active];
   return <section className="gsa-f7-template" aria-label={kind === "cost" ? "海外成本估算模板预览" : "逐项报价表模板预览"}>
+    <F7ReviewSummary kind={kind} draft={draft} generatedAt={generatedAt}/>
     <div className="gsa-f7-template-head">
       <div><strong>{kind === "cost" ? "海外成本估算模板 V6" : "逐项报价表"}</strong><p>{kind === "cost" ? "参考模板共 7 个页签。保留原有公式、格式与填写说明；当前只带入项目编号。" : "沿用旧版逐项报价表的 16 列结构，供成本、定价与审核逐项填写。"}</p></div>
       <button className="btn secondary" onClick={() => void downloadF7Template(kind, projectId).catch(error => setDownloadError(error instanceof Error ? error.message : "下载失败"))}><Download size={14}/>下载{kind === "cost" ? " Excel" : " CSV"} 模板</button>
