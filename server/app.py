@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import csv
 import json
 import os
 import re
@@ -235,6 +236,38 @@ def pages(path: Path) -> list[str]:
             return [page.extract_text() or "" for page in PdfReader(str(path)).pages]
         except Exception as error:
             raise HTTPException(status_code=422, detail="PDF 无法提取文本") from error
+    if path.suffix.lower() in {".csv", ".xlsx", ".xls"}:
+        def tabular_page(name: str, rows) -> str:
+            lines = [f"工作表：{name}"]
+            for index, row in enumerate(rows):
+                if index >= 1000:
+                    lines.append("[后续行未导入；请缩小文件或拆分工作表]")
+                    break
+                cells = [str(cell).strip().replace("\n", " ")[:500] if cell is not None else "" for cell in list(row)[:50]]
+                lines.append(" | ".join(cells))
+                if sum(map(len, lines)) > 30000:
+                    lines.append("[后续内容未导入；请缩小文件或拆分工作表]")
+                    break
+            return "\n".join(lines)
+        try:
+            if path.suffix.lower() == ".csv":
+                with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                    return [tabular_page(path.stem, csv.reader(handle))]
+            if path.suffix.lower() == ".xlsx":
+                from openpyxl import load_workbook
+                workbook = load_workbook(path, read_only=True, data_only=True)
+                try:
+                    return [tabular_page(sheet.title, sheet.values) for sheet in workbook.worksheets[:12]]
+                finally:
+                    workbook.close()
+            import xlrd
+            workbook = xlrd.open_workbook(path, on_demand=True)
+            try:
+                return [tabular_page(sheet.name, (sheet.row_values(index) for index in range(sheet.nrows))) for sheet in workbook.sheets()[:12]]
+            finally:
+                workbook.release_resources()
+        except Exception as error:
+            raise HTTPException(status_code=422, detail="表格文件无法读取，请检查格式和编码") from error
     try:
         return [path.read_text(encoding="utf-8")]
     except UnicodeDecodeError as error:

@@ -1,13 +1,16 @@
 """Local API contract tests with synthetic source text only."""
 
+import io
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
+from openpyxl import Workbook
 
 TEMP = tempfile.TemporaryDirectory()
 os.environ["PRESALES_DATA_DIR"] = TEMP.name
@@ -17,6 +20,114 @@ from model_gateway import ModelError, answer_about_source  # noqa: E402
 
 
 class WorkflowApiTest(unittest.TestCase):
+    def test_f7_demo_crm_totals_and_template_inputs_reconcile(self):
+        from f7_demo import scenario
+        data = scenario()
+        total = data["totals"]
+        self.assertEqual(total["cost"], 1128602.67)
+        self.assertEqual(total["quote"], 1520550)
+        self.assertEqual(total["cost"], round(sum(total[key] for key in ("materials", "software", "labor", "operations", "tax", "financing")), 2))
+        self.assertEqual(total["quote"], sum(row["qty"] * row["quoteUnit"] for row in data["quoteRows"]))
+        self.assertEqual(total["cost"], round(sum(row["qty"] * row["costUnit"] for row in data["quoteRows"]), 2))
+        self.assertIn("演示测算", data["templateInputs"]["1:B12"])
+        self.assertEqual(data["templateInputs"]["1:B7"], total["quote"])
+        self.assertEqual(data["calculatedCells"]["1:F50"], total["cost"])
+        self.assertEqual(data["calculatedCells"]["1:F28"], data["calculatedCells"]["2:F14"] * 35000)
+        self.assertEqual(data["calculatedCells"]["1:F45"], data["calculatedCells"]["4:B28"])
+        self.assertEqual(data["calculatedCells"]["1:F19"], sum(data["templateInputs"][f"1:F{row}"] for row in range(20, 27)))
+
+    def test_f7_demo_crm_endpoint_and_price_revision(self):
+        from f7_demo import scenario
+        endpoint = "/api/projects/F7-DEMO/workspaces/F7"
+        response = self.client.get(endpoint + "/demo-scenario", headers=self.auth("sales"))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["crm"][0]["sku"], "DEMO-PMC-01")
+        self.assertEqual(self.client.get("/api/projects/F7-DEMO/workspaces/F8/demo-scenario", headers=self.auth("sales")).status_code, 404)
+        base = scenario()
+        revised = scenario("服务器采购单价改为 68000 元", "")
+        self.assertEqual(revised["calculatedCells"]["1:F20"] if "1:F20" in revised["calculatedCells"] else revised["templateInputs"]["1:F20"], 136000)
+        self.assertEqual(revised["totals"]["cost"], base["totals"]["cost"] - 14000)
+        self.assertEqual(revised["totals"]["quote"], base["totals"]["quote"])
+
+    def test_f8_without_key_keeps_mapping_and_quote_unconfirmed(self):
+        endpoint = "/api/projects/F8-DEMO/workspaces/F8"
+        with patch("workspace_router.model_config", return_value=SimpleNamespace(configured=False)), patch(
+            "workspace_router.request_chat_stream",
+        ) as model:
+            mapping = self.client.post(endpoint + "/ask-stream", headers=self.auth("sales"),
+                                       json={"question": "整理 BOQ 映射表", "turn_id": "f8-demo-mapping"})
+            quote = self.client.post(endpoint + "/ask-stream", headers=self.auth("sales"),
+                                     json={"question": "生成客户报价表", "turn_id": "f8-demo-quote"})
+        self.assertEqual(mapping.status_code, 200, mapping.text)
+        self.assertEqual(quote.status_code, 200, quote.text)
+        self.assertIn("BOQ 映射表", mapping.text)
+        self.assertIn("客户报价表", quote.text)
+        self.assertIn("待确认", mapping.text)
+        self.assertIn("待补", quote.text)
+        self.assertIn('"type": "done"', quote.text)
+        model.assert_not_called()
+
+    def test_f7_agent_prompt_requires_sourced_costs_and_internal_draft(self):
+        with patch("workspace_router.model_config", return_value=SimpleNamespace(configured=True)), patch(
+            "workspace_router.request_chat_stream", return_value=iter(["成本待补"]),
+        ) as model:
+            reply = self.client.post(
+                "/api/projects/F7-TEST/workspaces/F7/ask-stream",
+                headers=self.auth("sales"),
+                json={"question": "生成成本表", "turn_id": "f7-test-turn", "stage_title": "成本汇总与供应链询价"},
+            )
+        self.assertEqual(reply.status_code, 200, reply.text)
+        self.assertIn("成本待补", reply.text)
+        prompt = model.call_args.args[0][0]["content"]
+        self.assertIn("缺失值留空", prompt)
+        self.assertIn("销售内部草稿", prompt)
+
+    def test_f7_without_key_simulates_revision_and_internal_approval(self):
+        endpoint = "/api/projects/F7-DEMO/workspaces/F7"
+        with patch("workspace_router.model_config", return_value=SimpleNamespace(configured=False)), patch(
+            "workspace_router.request_chat_stream",
+        ) as model:
+            first = self.client.post(endpoint + "/ask-stream", headers=self.auth("sales"),
+                                     json={"question": "生成报价表", "turn_id": "f7-demo-first"})
+            revised = self.client.post(endpoint + "/ask-stream", headers=self.auth("sales"),
+                                       json={"question": "请按人工审核意见修改刚才的报价表：补充采购来源，金额待确认。",
+                                             "turn_id": "f7-demo-revised"})
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(revised.status_code, 200, revised.text)
+        self.assertIn("模拟演示", first.text)
+        self.assertIn("待人工处理", first.text)
+        self.assertIn("修订演示", revised.text)
+        self.assertIn("人工输入记录", revised.text)
+        self.assertIn('"type": "done"', revised.text)
+        model.assert_not_called()
+        with db() as connection:
+            saved = connection.execute("SELECT content FROM workspace_replies WHERE id=?", ("f7-demo-revised",)).fetchone()
+        self.assertIsNotNone(saved)
+        self.assertIn("未调用 AI", saved["content"])
+        approved = self.client.post(endpoint + "/artifacts/adopt", headers=self.auth("sales"),
+                                    json={"source_id": "f7-demo-revised", "title": "报价表演示草稿",
+                                          "content": saved["content"], "conversation_id": "f7-demo-chat"})
+        self.assertEqual(approved.status_code, 200, approved.text)
+        self.assertIn("模拟演示", approved.json()["content"])
+
+    def test_f7_spreadsheet_upload_is_readable_as_source_page(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "成本输入"
+        sheet.append(["物料", "数量", "价格来源"])
+        sheet.append(["测试设备", 2, "待采购确认"])
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        uploaded = self.client.post(
+            "/api/projects/F7-TEST/documents", headers=self.auth("sales"),
+            data={"title": "成本输入", "version": "V1"},
+            files={"file": ("cost.xlsx", buffer.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        with db() as connection:
+            page = connection.execute("SELECT text FROM document_pages WHERE document_id=? AND page=1", (uploaded.json()["id"],)).fetchone()
+        self.assertIn("测试设备 | 2 | 待采购确认", page["text"])
+
     def test_server_model_connection_uses_no_project_source(self):
         without_key = self.client.post("/api/model/test", headers=self.auth("software"))
         self.assertEqual(without_key.status_code, 502)
