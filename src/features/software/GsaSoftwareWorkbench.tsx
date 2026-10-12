@@ -49,6 +49,21 @@ const labels:Record<string,string>={running:"生成中",review:"待你审核",ap
 const json=(data:unknown)=>({method:"POST",body:JSON.stringify(data)});
 const fmt=(v:number)=>v.toLocaleString("zh-CN",{maximumFractionDigits:2});
 
+// Clear the F7/F8 history left in older browser storage once per browser and tab.
+// Project documents and adopted artifacts are stored separately and stay intact.
+const historyResetKey="presales-f7f8-history-cleared-20261012";
+const historyKey=/^presales-(?:conversation|dialogue|favorites):[^:]+:F[78]:/;
+if(typeof window!=="undefined"){
+ for(const kind of ["localStorage","sessionStorage"] as const){
+  try{
+   const storage=window[kind];
+   if(storage.getItem(historyResetKey))continue;
+   for(let i=storage.length-1;i>=0;i--){const key=storage.key(i);if(key&&historyKey.test(key))storage.removeItem(key);}
+   storage.setItem(historyResetKey,"1");
+  }catch{/* Storage can be unavailable in private browser sessions. */}
+ }
+}
+
 export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId?:string;stageId?:string}){
  const specialized=projectId==="GSA02"&&stageId==="F5";
  const base=specialized?"/api/projects/GSA02/software":`/api/projects/${encodeURIComponent(projectId)}/workspaces/${stageId}`;
