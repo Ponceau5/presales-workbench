@@ -20,6 +20,24 @@ from model_gateway import ModelError, answer_about_source  # noqa: E402
 
 
 class WorkflowApiTest(unittest.TestCase):
+    def test_f8_without_key_keeps_mapping_and_quote_unconfirmed(self):
+        endpoint = "/api/projects/F8-DEMO/workspaces/F8"
+        with patch("workspace_router.model_config", return_value=SimpleNamespace(configured=False)), patch(
+            "workspace_router.request_chat_stream",
+        ) as model:
+            mapping = self.client.post(endpoint + "/ask-stream", headers=self.auth("sales"),
+                                       json={"question": "整理 BOQ 映射表", "turn_id": "f8-demo-mapping"})
+            quote = self.client.post(endpoint + "/ask-stream", headers=self.auth("sales"),
+                                     json={"question": "生成客户报价表", "turn_id": "f8-demo-quote"})
+        self.assertEqual(mapping.status_code, 200, mapping.text)
+        self.assertEqual(quote.status_code, 200, quote.text)
+        self.assertIn("BOQ 映射表", mapping.text)
+        self.assertIn("客户报价表", quote.text)
+        self.assertIn("待确认", mapping.text)
+        self.assertIn("待补", quote.text)
+        self.assertIn('"type": "done"', quote.text)
+        model.assert_not_called()
+
     def test_f7_agent_prompt_requires_sourced_costs_and_internal_draft(self):
         with patch("workspace_router.model_config", return_value=SimpleNamespace(configured=True)), patch(
             "workspace_router.request_chat_stream", return_value=iter(["成本待补"]),
