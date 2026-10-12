@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Download } from "lucide-react";
 import costSchema from "@/lib/f7CostTemplateSchema.json";
-import { fillCostTemplate } from "@/lib/f7CostTemplateExport";
+import { addQuoteSheetToCostTemplate, fillCostTemplate } from "@/lib/f7CostTemplateExport";
 
 export type F7TemplateKind = "cost" | "quote";
 export type F7DemoScenario = {
@@ -24,7 +24,6 @@ const costSheets = costSchema.sheets as TemplateSheet[];
 // until a person confirms cost, pricing rules, currency and the matching configuration.
 const quoteHeaders = ["项目", "配置版本", "清单ID", "成本类型", "名称", "数量", "单位成本CNY", "成本合计CNY", "报价系数", "建议单价CNY", "建议合价CNY", "报价单价CNY", "报价合价CNY", "报价合价外币", "状态", "定价依据"];
 const quoteCategories = ["自产产品", "外购设备", "软件", "施工与服务", "补充费用"];
-const csvCell = (value: string) => `"${value.replaceAll('"', '""')}"`;
 
 export function f7ReviewSummary(kind: F7TemplateKind, draft?: string, generatedAt?: string, demoScenario?: F7DemoScenario | null) {
   const label = kind === "cost" ? "总成本" : "总报价";
@@ -61,20 +60,20 @@ function saveBlob(blob: Blob, name: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
-export async function downloadF7Template(kind: F7TemplateKind, projectId: string, demoScenario?: F7DemoScenario | null) {
+export async function downloadF7Template(kind: F7TemplateKind, projectId: string, demoScenario?: F7DemoScenario | null, generatedAt?: string) {
+  const response = await fetch(`${import.meta.env.BASE_URL}overseas-cost-template.xlsx`);
+  if (!response.ok) throw new Error("海外成本模板未能加载");
+  const filled = fillCostTemplate(new Uint8Array(await response.arrayBuffer()), demoScenario?.templateInputs ?? { "1:A1": `${projectId}项目-成本估算草稿` });
   if (kind === "cost") {
-    const response = await fetch(`${import.meta.env.BASE_URL}overseas-cost-template.xlsx`);
-    if (!response.ok) throw new Error("海外成本模板未能加载");
-    const filled = fillCostTemplate(new Uint8Array(await response.arrayBuffer()), demoScenario?.templateInputs ?? { "1:A1": `${projectId}项目-成本估算草稿` });
     saveBlob(new Blob([Uint8Array.from(filled)], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), `${projectId}-海外成本估算模板V6-${demoScenario ? "模拟演示" : "待补草稿"}.xlsx`);
     return;
   }
-  const rows = demoScenario ? [quoteHeaders, ...demoScenario.quoteRows.map(row => {
+  const rows = demoScenario ? demoScenario.quoteRows.map(row => {
     const cost = row.qty * row.costUnit, price = row.qty * row.quoteUnit;
-    return [demoScenario.project, "DEMO-V1", row.sku, row.kind, row.name, row.qty, row.costUnit, cost, row.quoteUnit ? Number((row.quoteUnit / row.costUnit).toFixed(4)) : "", row.quoteUnit, price, row.quoteUnit, price, "", "模拟待审核", row.basis].map(String);
-  }), [demoScenario.project, "DEMO-V1", "", "合计", "", "", "", String(demoScenario.totals.cost), "", "", "", "", String(demoScenario.totals.quote), "", "模拟待审核", "全表为虚构演示数据"]] : [quoteHeaders, ...quoteCategories.map(category => [projectId, "", "", category, "", "", "", "", "", "", "", "", "", "", "待补成本与定价依据", ""]), [projectId, "", "", "合计", "", "", "", "", "", "", "", "", "", "", "待人工审核", ""]];
-  const content = `\uFEFF${rows.map(row => row.map(csvCell).join(",")).join("\r\n")}`;
-  saveBlob(new Blob([content], { type: "text/csv;charset=utf-8" }), `${projectId}-逐项报价表-${demoScenario ? "模拟演示" : "待补草稿"}.csv`);
+    return [demoScenario.project, "DEMO-V1", row.sku, row.kind, row.name, row.qty, row.costUnit, cost, row.quoteUnit ? Number((row.quoteUnit / row.costUnit).toFixed(4)) : "", row.quoteUnit, price, row.quoteUnit, price, "", "模拟待审核", row.basis];
+  }) : quoteCategories.map(category => [projectId, "", "", category, "", "", "", "", "", "", "", "", "", "", "待补成本与定价依据", ""]);
+  const workbook = addQuoteSheetToCostTemplate(filled, { project: demoScenario?.project ?? projectId, headers: quoteHeaders, rows, demo: !!demoScenario, generatedAt });
+  saveBlob(new Blob([Uint8Array.from(workbook)], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), `${projectId}-报价单-海外成本估算模板V6-${demoScenario ? "模拟演示" : "待补草稿"}.xlsx`);
 }
 
 function columnName(index: number) {
@@ -90,8 +89,8 @@ export default function F7TableTemplate({ kind, projectId, draft, generatedAt, d
   return <section className="gsa-f7-template" aria-label={kind === "cost" ? "海外成本估算模板预览" : "逐项报价表模板预览"}>
     <F7ReviewSummary kind={kind} draft={draft} generatedAt={generatedAt} demoScenario={demoScenario}/>
     <div className="gsa-f7-template-head">
-      <div><strong>{kind === "cost" ? "海外成本估算模板 V6" : "逐项报价表"}</strong><p>{demoScenario ? `已填入 ${demoScenario.project} 的虚构 CRM 和演示计算；${kind === "cost" ? "主表关键输入已填，辅助页仍有非演示项。Excel 保留原有公式，打开时重新计算。" : "间接成本列入明细并由合同总价覆盖。"}` : kind === "cost" ? "参考模板共 7 个页签。保留原有公式、格式与填写说明；当前只带入项目编号。" : "沿用旧版逐项报价表的 16 列结构，供成本、定价与审核逐项填写。"}</p></div>
-      <button className="btn secondary" onClick={() => void downloadF7Template(kind, projectId, demoScenario).catch(error => setDownloadError(error instanceof Error ? error.message : "下载失败"))}><Download size={14}/>下载{kind === "cost" ? " Excel" : " CSV"} {demoScenario ? "演示表" : "模板"}</button>
+      <div><strong>{kind === "cost" ? "海外成本估算模板 V6" : "报价单 · 成本模板 V6"}</strong><p>{kind === "quote" ? `导出 Excel：首个页签为报价明细，后续保留 V6 成本模板全部 7 个页签和原公式。${demoScenario ? "间接成本列入明细，由合同总价覆盖。" : "数量、价格和定价依据待人工补充。"}` : demoScenario ? `已填入 ${demoScenario.project} 的虚构 CRM 和演示计算；主表关键输入已填，辅助页仍有非演示项。Excel 保留原有公式，打开时重新计算。` : "参考模板共 7 个页签。保留原有公式、格式与填写说明；当前只带入项目编号。"}</p></div>
+      <button className="btn secondary" onClick={() => void downloadF7Template(kind, projectId, demoScenario, generatedAt).catch(error => setDownloadError(error instanceof Error ? error.message : "下载失败"))}><Download size={14}/>下载 Excel {demoScenario ? "演示表" : "模板"}</button>
     </div>
     {downloadError && <p role="alert" className="gsa-error">{downloadError}</p>}
     <p className="gsa-f7-template-note">{demoScenario ? "模拟数据仅用于流程演示；CRM 价格、采购回价、税费和报价均非当前项目事实，不能直接对外使用。" : "模板中的空白与“待补”不代表已核算或已批准金额；需要人工核对来源、币种和审批结果。"}</p>

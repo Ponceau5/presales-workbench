@@ -1523,3 +1523,28 @@ test("流程引擎拒绝无依据发布、失效上游输入和错误岗位接�
   assert.equal(canReceiveInput(input, "软件产品", "accepted", "重审"), false);
   assert.equal(canReceiveInput(input, "软件产品", "returned", "重审"), true);
 });
+
+const { fillCostTemplate, addQuoteSheetToCostTemplate, readStoredZip } =
+  await import(moduleUrl("src/lib/f7CostTemplateExport.ts"));
+test("F7 成本与报价导出共用 V6 模板，报价另有首页且保留成本公式", () => {
+  const template = new Uint8Array(readFileSync("public/overseas-cost-template.xlsx"));
+  const cost = fillCostTemplate(template, { "1:B7": 300 });
+  const quote = addQuoteSheetToCostTemplate(cost, {
+    project: "演示项目",
+    headers: Array.from({ length: 16 }, (_, i) => `字段${i + 1}`),
+    rows: [
+      ["演示项目", "V1", "DEMO-1", "产品", "设备", 2, 100, 200, 1.5, 150, 300, 150, 300, "", "演示", "虚构"],
+      ["演示项目", "V1", "DEMO-2", "费用", "运费", 1, 50, 50, "", 0, 0, 0, 0, "", "演示", "总价内吸收"],
+    ],
+    demo: true,
+  });
+  const read = (bytes) => new Map(readStoredZip(bytes).map(entry => [entry.name, new TextDecoder().decode(entry.bytes)]));
+  const original = read(cost), exported = read(quote);
+  assert.equal(original.has("xl/worksheets/sheet8.xml"), false);
+  assert.ok(exported.has("xl/worksheets/sheet8.xml"));
+  assert.ok(exported.get("xl/workbook.xml").indexOf('name="报价单"') < exported.get("xl/workbook.xml").indexOf('name="1 成本费用预估"'));
+  assert.match(exported.get("xl/worksheets/sheet1.xml"), /SUM\(F14:F49\)-SUM\(F16:F17\)-SUM\(F20:F26\)/);
+  assert.match(exported.get("xl/worksheets/sheet8.xml"), /<x:c r="B2"[^>]*><x:f>M10<\/x:f><x:v>300<\/x:v><\/x:c>/);
+  assert.match(exported.get("xl/worksheets/sheet8.xml"), /<x:c r="B3"[^>]*><x:f>H10<\/x:f><x:v>250<\/x:v><\/x:c>/);
+  assert.match(exported.get("xl/worksheets/sheet8.xml"), /topLeftCell="A8"/);
+});
