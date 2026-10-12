@@ -20,6 +20,35 @@ from model_gateway import ModelError, answer_about_source  # noqa: E402
 
 
 class WorkflowApiTest(unittest.TestCase):
+    def test_f7_demo_crm_totals_and_template_inputs_reconcile(self):
+        from f7_demo import scenario
+        data = scenario()
+        total = data["totals"]
+        self.assertEqual(total["cost"], 1128602.67)
+        self.assertEqual(total["quote"], 1520550)
+        self.assertEqual(total["cost"], round(sum(total[key] for key in ("materials", "software", "labor", "operations", "tax", "financing")), 2))
+        self.assertEqual(total["quote"], sum(row["qty"] * row["quoteUnit"] for row in data["quoteRows"]))
+        self.assertEqual(total["cost"], round(sum(row["qty"] * row["costUnit"] for row in data["quoteRows"]), 2))
+        self.assertIn("演示测算", data["templateInputs"]["1:B12"])
+        self.assertEqual(data["templateInputs"]["1:B7"], total["quote"])
+        self.assertEqual(data["calculatedCells"]["1:F50"], total["cost"])
+        self.assertEqual(data["calculatedCells"]["1:F28"], data["calculatedCells"]["2:F14"] * 35000)
+        self.assertEqual(data["calculatedCells"]["1:F45"], data["calculatedCells"]["4:B28"])
+        self.assertEqual(data["calculatedCells"]["1:F19"], sum(data["templateInputs"][f"1:F{row}"] for row in range(20, 27)))
+
+    def test_f7_demo_crm_endpoint_and_price_revision(self):
+        from f7_demo import scenario
+        endpoint = "/api/projects/F7-DEMO/workspaces/F7"
+        response = self.client.get(endpoint + "/demo-scenario", headers=self.auth("sales"))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["crm"][0]["sku"], "DEMO-PMC-01")
+        self.assertEqual(self.client.get("/api/projects/F7-DEMO/workspaces/F8/demo-scenario", headers=self.auth("sales")).status_code, 404)
+        base = scenario()
+        revised = scenario("服务器采购单价改为 68000 元", "")
+        self.assertEqual(revised["calculatedCells"]["1:F20"] if "1:F20" in revised["calculatedCells"] else revised["templateInputs"]["1:F20"], 136000)
+        self.assertEqual(revised["totals"]["cost"], base["totals"]["cost"] - 14000)
+        self.assertEqual(revised["totals"]["quote"], base["totals"]["quote"])
+
     def test_f8_without_key_keeps_mapping_and_quote_unconfirmed(self):
         endpoint = "/api/projects/F8-DEMO/workspaces/F8"
         with patch("workspace_router.model_config", return_value=SimpleNamespace(configured=False)), patch(
