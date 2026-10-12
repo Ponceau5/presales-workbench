@@ -212,7 +212,7 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
           <strong>加入来源文件</strong>
           <input aria-label="文件标题" value={title} onChange={(event) => setTitle(event.target.value)} required />
           <input aria-label="文件版本" value={version} onChange={(event) => setVersion(event.target.value)} required />
-          <input aria-label="选择原始文件" type="file" accept=".pdf,.txt,.md" onChange={(event) => setFile(event.target.files?.[0] || null)} required />
+          <input aria-label="选择原始文件" type="file" accept=".pdf,.txt,.md,.docx,.xlsx" onChange={(event) => setFile(event.target.files?.[0] || null)} required />
           <button className="btn secondary" type="submit" disabled={busy || !file}>上传</button>
           </form>
         </details>

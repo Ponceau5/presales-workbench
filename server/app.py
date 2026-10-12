@@ -226,6 +226,10 @@ def model_test(account: str = Depends(actor)):
 
 
 def pages(path: Path) -> list[str]:
+    if path.suffix.lower() in {'.docx','.xlsx'}:
+        from file_formats import read_office
+        try:return read_office(path)
+        except Exception as e:raise HTTPException(422,'Word/Excel 解析失败，请使用有效的 .docx/.xlsx 文件') from e
     if path.suffix.lower() == ".pdf":
         try:
             return [page.extract_text() or "" for page in PdfReader(str(path)).pages]
@@ -262,8 +266,8 @@ async def upload_document(
 ):
     require_account(account, {"sales", "software", "pm"})
     suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in {".pdf", ".txt", ".md"} or not title.strip() or not version.strip():
-        raise HTTPException(status_code=422, detail="仅接受有标题和版本的 PDF/UTF-8 文本")
+    if suffix not in {".pdf", ".txt", ".md", ".docx", ".xlsx"} or not title.strip() or not version.strip():
+        raise HTTPException(status_code=422, detail="支持带标题和版本的 PDF、Word (.docx)、Excel (.xlsx)、Markdown/文本")
     identifier = str(uuid4())
     destination = FILES_DIR / (identifier + suffix)
     digest = hashlib.sha256()
@@ -941,3 +945,6 @@ install_gsa(app, DB_PATH, FILES_DIR, actor, require_account)
 
 from workspace_router import install as install_workspaces
 install_workspaces(app, db, actor, now, log)
+
+from role_config import install as install_role_config
+install_role_config(app, db, actor, now, FILES_DIR)

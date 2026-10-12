@@ -46,6 +46,7 @@ import Home from "@/pages/Home";
 import Portal from "@/pages/Portal";
 import Projects from "@/pages/Projects";
 import ChangeImpact from "@/pages/ChangeImpact";
+import RoleConfig from "@/pages/RoleConfig";
 import Settings from "@/pages/Settings";
 import {
   WorkbenchContext,
@@ -208,6 +209,7 @@ export default function App() {
     { to: "/tasks", label: "我的任务", icon: UsersRound },
     { to: "/projects", label: "项目", icon: FolderOpen },
     { to: "/library", label: "公共资料", icon: Files },
+    { to: "/role-config", label: "岗位配置", icon: SlidersHorizontal },
     { to: "/settings", label: "连接设置", icon: SlidersHorizontal },
     { to: "/activity", label: "操作记录", icon: Files },
   ];
@@ -215,6 +217,7 @@ export default function App() {
     "/",
     "/projects",
     "/settings",
+    "/role-config",
     "/library",
     "/methods",
     "/activity",
@@ -288,7 +291,7 @@ export default function App() {
           <div className="workspace-label">工作空间</div>
           <nav>
             {nav
-              .filter((n) => n.to !== "/settings" || state.role === "PM / PO")
+              .filter((n) => (n.to !== "/settings" || state.role === "PM / PO") && (n.to !== "/role-config" || state.accountId === "software" || state.accountId === "pm"))
               .map((n) => (
                 <NavLink
                   key={n.to}
@@ -459,7 +462,7 @@ export default function App() {
           </header>
           <div className="mobile-nav">
             {nav
-              .filter((n) => n.to !== "/settings" || state.role === "PM / PO")
+              .filter((n) => (n.to !== "/settings" || state.role === "PM / PO") && (n.to !== "/role-config" || state.accountId === "software" || state.accountId === "pm"))
               .map((n) => (
                 <NavLink
                   key={n.to}
@@ -508,6 +511,7 @@ export default function App() {
                 }
               />
               <Route path="/changes" element={<ChangeImpact />} />
+              <Route path="/role-config" element={<RoleConfig />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="*" element={<Portal key={location.search} />} />
             </Routes>

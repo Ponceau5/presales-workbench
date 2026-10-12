@@ -62,9 +62,13 @@ def request_chat(messages: list[dict[str, str]], max_tokens: int,
     payload: dict[str, object] = {"model": config.model, "messages": messages,
                                   "max_tokens": max_tokens, "stream": False}
     if config.provider in {"deepseek", "zhipu"}:
-        payload["thinking"] = {"type": "disabled"}
+        if not (config.provider == "zhipu" and config.model.startswith("glm-5.3")):
+            payload["thinking"] = {"type": "disabled"}
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+    if config.provider == "zhipu" and config.model.startswith("glm-5.3"):
+        payload["reasoning_effort"] = "low"
+        payload["max_tokens"] = max(max_tokens, 16384)
     if config.provider == "siliconflow" and json_mode:
         payload["response_format"] = {"type": "json_object"}
     request = Request(
@@ -83,9 +87,11 @@ def request_chat(messages: list[dict[str, str]], max_tokens: int,
             code = str(json.loads(error.read()).get("error", {}).get("code", ""))
         except (ValueError, AttributeError):
             pass
+        if config.provider == "zhipu" and code == "1113":
+            raise ModelError("智谱账户余额不足（HTTP 429 / 1113），请检查当前模型的 API 余额或可用资源包；重试无法解决") from error
         if config.provider == "zhipu" and code == "1305":
             raise ModelError("智谱模型当前访问量过大（HTTP 429 / 1305），请稍后重试或在服务端选择额度支持的其他模型") from error
-        raise ModelError(f"{config.provider} 接口返回 HTTP {error.code}；请检查 Key、模型和额度") from error
+        raise ModelError(f"{config.provider} 接口返回 HTTP {error.code} / {code or '未知错误码'}；请检查模型及请求参数" if error.code == 400 else f"{config.provider} 接口返回 HTTP {error.code} / {code or '未知错误码'}") from error
     except (URLError, TimeoutError) as error:
         raise ModelError(f"{config.provider} 连接失败或超时，请检查网络和接口地址") from error
     try:
@@ -103,7 +109,10 @@ def _request_chat_stream(messages, max_tokens=2400, config=None, json_mode=False
     if not config.configured:raise ModelError("服务端尚未配置模型 Key")
     if not config.base_url.startswith("https://"):raise ModelError("模型接口必须使用 HTTPS")
     payload={"model":config.model,"messages":messages,"max_tokens":max_tokens,"stream":True}
-    if config.provider in {"deepseek","zhipu"}:payload["thinking"]={"type":"disabled"}
+    if config.provider in {"deepseek","zhipu"} and not (config.provider=="zhipu" and config.model.startswith("glm-5.3")):payload["thinking"]={"type":"disabled"}
+    if config.provider=="zhipu" and config.model.startswith("glm-5.3"):
+        payload["reasoning_effort"]="low"
+        payload["max_tokens"]=max(max_tokens,16384)
     if json_mode:payload["response_format"]={"type":"json_object"}
     request=Request(config.base_url+"/chat/completions",data=json.dumps(payload,ensure_ascii=False).encode(),headers={"Authorization":"Bearer "+config.api_key,"Content-Type":"application/json"},method="POST")
     received=completed=False
@@ -118,6 +127,7 @@ def _request_chat_stream(messages, max_tokens=2400, config=None, json_mode=False
                 if value.get("error"):raise ModelError("模型流返回错误，请重试")
                 choices=value.get("choices",[])
                 if not choices:continue
+                if choices[0].get("finish_reason")=="length":raise ModelError("模型达到生成长度上限，回复未完成；请缩小任务范围后重试")
                 if choices[0].get("finish_reason"):completed=True
                 delta=choices[0].get("delta",{}).get("content")
                 if isinstance(delta,str) and delta:received=True;yield delta
@@ -127,8 +137,9 @@ def _request_chat_stream(messages, max_tokens=2400, config=None, json_mode=False
         code=""
         try:code=str(json.loads(e.read()).get("error",{}).get("code",""))
         except (ValueError,AttributeError):pass
+        if config.provider=="zhipu" and code=="1113":raise ModelError("智谱账户余额不足（HTTP 429 / 1113），请检查当前模型的 API 余额或可用资源包；重试无法解决") from e
         if config.provider=="zhipu" and code=="1305":raise ModelError("智谱访问繁忙（429 / 1305），请稍后重试") from e
-        raise ModelError(f"{config.provider} 接口返回 HTTP {e.code}，请检查额度") from e
+        raise ModelError(f"{config.provider} 接口返回 HTTP {e.code} / {code or '未知错误码'}；请检查模型及请求参数" if e.code == 400 else f"{config.provider} 接口返回 HTTP {e.code} / {code or '未知错误码'}") from e
     except (URLError,TimeoutError) as e:raise ModelError("模型连接失败或超时，请重试") from e
     except (ValueError,UnicodeError) as e:raise ModelError("模型流格式异常，请重试") from e
 

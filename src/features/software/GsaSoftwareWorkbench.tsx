@@ -1,11 +1,12 @@
 import { useEffect, useState, useRef, type ReactNode } from "react";
-import { FileText, LoaderCircle, ArrowUp, X, Download, Sparkles, ArrowRight, CheckCircle2, Bookmark, Copy, Trash2, MessageSquare } from "lucide-react";
+import { FileText, LoaderCircle, ArrowUp, X, Download, Sparkles, ArrowRight, CheckCircle2, Bookmark, Copy, Trash2, MessageSquare, Paperclip } from "lucide-react";
 import { useWorkbench } from "@/state/workbench";
 import { localApi, localApiBase, localApiReady, clearLocalApiSession } from "@/lib/localApi";
 import "./gsa-software.css";
 import { stages } from "@/lib/stages";
 import { ResourceBrowser } from "@/components/ResourceBrowser";
 import { Collaboration } from "@/components/Collaboration";
+import { FileSamples } from "./FileSamples";
 import { ProjectMaterialsPanel } from "./ProjectMaterialsPanel";
 import { MarkdownReply } from "./MarkdownReply";
 
@@ -27,7 +28,7 @@ type Storage = {points:number;samples_per_second:number;time_series_gb:number;pg
 type Calculation = {points:{low:number;high:number;mid:number;source:string};low:Storage;high:Storage;limitations:string[]};
 type Run = {selected_option?:string;source_hashes?:{id:string;sha256:string}[];equipment_revision?:number;created_at:string;stage_message?:string;draft?:{options:{name:string}[];recommended_index:number};preview?:string;id:string;status:string;revision:number;inputs:Inputs;calculation:Calculation;narrative:string|null;error:string|null;provider:string;model:string;reviewed_by:string|null;review_note:string|null};
 type Workflow = {demo_reset_at?:string;status:string;revision:number;equipment_revision:number;equipment_note:string|null;request_note:string|null;run_id:string|null;merged_file:string|null};
-type CollaborationMessage={id:string;title:string;body:string;sender:string;recipient:string;kind:string;created_at:string;is_read:number;processed?:boolean};
+type CollaborationMessage={config_id?:string;id:string;title:string;body:string;sender:string;recipient:string;kind:string;created_at:string;is_read:number;processed?:boolean};
 type ChatTurn={artifactId?:string;artifactTitle?:string;runId?:string;createdAt?:string;id:string;question:string;answer:string;steps:{label:string;state:string}[];status:"running"|"done"|"error"|"stopped"};
 type Favorite={id:string;sourceId:string;title:string;text:string;turns:ChatTurn[];runId:string|null;createdAt:string;conversationId?:string;runQuestion?:string};
 function AgentReply({text,children,onFavorite,favorited=false,canSave=true}:{text:string;children?:ReactNode;onFavorite?:()=>void;favorited?:boolean;canSave?:boolean}){
@@ -37,12 +38,14 @@ function AgentReply({text,children,onFavorite,favorited=false,canSave=true}:{tex
 type Artifact={id:string;source_id:string;title:string;content:string;revision:number;adopted_by:string;created_at:string};
 type Audit = {id:string;action:string;actor:string;detail:string;created_at:string};
 
+const softwareTasks=[{id:"survey",name:"项目资料摸排",prompt:"请按项目资料摸排任务书输出本项目的资料摸排报告"},{id:"gap",name:"需求差距分析与澄清",prompt:"请按任务书分别输出内部差距分析表和客户澄清表"},{id:"functions",name:"软件功能清单",prompt:"请按任务书制作软件功能清单，先确认产品线、国内海外口径、范围和参考旧清单"},{id:"server",name:"服务器规格方案",prompt:"请根据当前设备清单生成服务器规格方案"},{id:"cost",name:"内部成本报价单",prompt:"请按任务书制作内部成本报价单，先确认范围、数量与价格依据"}];
 const defaults:Inputs={scope:"phases",point_low:71000,point_high:83000,device_count:2390,
  sampling_seconds:60,retention_years:3,record_types:1,cache_days:1095,events_per_device_day:0,
  waveform_devices:0,waveforms_per_device_day:0,backup_copies:1,raid_usable_ratio:2/3,headroom:0.2,
  phase_ids:["p1","p2","p3"],sampling_confirmed:false,scope_confirmed:false,assumptions_confirmed:false,
  scope_note:""};
 const labels:Record<string,string>={running:"生成中",review:"待你审核",approved:"已批准",rejected:"已退回",failed:"生成失败",stale:"可采纳或继续修改"};
+function gapParts(text:string){const found=[...text.matchAll(/^#{1,3}\s*(内部差距分析表|客户澄清表)[^\n]*\n/gm)];if(new Set(found.map(m=>m[1])).size!==2)return [];return found.map((m,i)=>({title:m[1],content:text.slice(m.index,found[i+1]?.index??text.length).trim()}));}
 const json=(data:unknown)=>({method:"POST",body:JSON.stringify(data)});
 const fmt=(v:number)=>v.toLocaleString("zh-CN",{maximumFractionDigits:2});
 
@@ -52,6 +55,9 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  const stage=stages.find(s=>s.id===stageId)??(stageId==="F5"?{title:"软件技术支持"}:undefined);
  const durableBase=`/api/projects/${encodeURIComponent(projectId)}/workspaces/${stageId}`;
  const storageScope=projectId+(stageId==="F5"?"":":"+stageId);
+ const [sampleIds,setSampleIds]=useState<string[]>([]);
+ const [roleTaskId,setRoleTaskId]=useState<string|null>(null);
+ const [roleTasks,setRoleTasks]=useState<{id:string;name:string;prompt:string}[]>(softwareTasks);
  const [selectedPages,setSelectedPages]=useState<{document_id:string;page:number}[]>([]);
  const [documents,setDocuments]=useState<{id:string;title:string;version:string;page_count:number}[]>([]);
  const [pageNumbers,setPageNumbers]=useState<Record<string,string>>({});
@@ -63,7 +69,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  const [calc,setCalc]=useState<Calculation|null>(null); const [busy,setBusy]=useState(false);
  const [error,setError]=useState("");const [question,setQuestion]=useState("");
  const [note,setNote]=useState(""); const [model,setModel]=useState<{configured:boolean;provider:string;model:string}|null>(null);
- const [drawer,setDrawer]=useState<"sources"|"parameters"|"server"|"workflow"|"favorites"|null>(null);
+ const [drawer,setDrawer]=useState<"sources"|"parameters"|"server"|"workflow"|"favorites"|"files"|null>(null);
  const [flow,setFlow]=useState<Workflow|null>(null);
  const [optionIndex,setOptionIndex]=useState(0); const [clock,setClock]=useState(Date.now());
  useEffect(()=>{const timer=setInterval(()=>setClock(Date.now()),1000);return()=>clearInterval(timer);},[]);
@@ -99,7 +105,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
   void localApi<{revision:number;value:{current:ReturnType<typeof savedConversation>;favorites:Favorite[];selectedPages?:{document_id:string;page:number}[];pageNumbers?:Record<string,string>}|null}>(durableBase+"/state").then(saved=>{
    if(cancelled)return;storageRevision.current=saved.revision;
    if(saved.value){const c=saved.value.current;
-    if(c){setStarted(!!c.started);setShowServer(!!c.showServer);setChatTurns((c.turns??[]).map((t:ChatTurn)=>t.status==="running"?{...t,status:"stopped",answer:t.answer+"\n\n上次生成已中断，请继续发送请求。"}:t));setRunQuestion(c.runQuestion||"");setConversationId(c.conversationId||crypto.randomUUID());setRestoredRun(c.run??null);setInputs(c.inputs??c.run?.inputs??defaults);setPendingPrompt(c.generationPrompt||"");setPendingAt(c.pendingAt||new Date().toISOString());setNotice(c.chatNotice||"");setNoticeAt(c.noticeAt||new Date().toISOString());}
+    if(c){setSampleIds(c.sampleIds??[]);setRoleTaskId(c.roleTaskId??null);setStarted(!!c.started);setShowServer(!!c.showServer);setChatTurns((c.turns??[]).map((t:ChatTurn)=>t.status==="running"?{...t,status:"stopped",answer:t.answer+"\n\n上次生成已中断，请继续发送请求。"}:t));setRunQuestion(c.runQuestion||"");setConversationId(c.conversationId||crypto.randomUUID());setRestoredRun(c.run??null);setInputs(c.inputs??c.run?.inputs??defaults);setPendingPrompt(c.generationPrompt||"");setPendingAt(c.pendingAt||new Date().toISOString());setNotice(c.chatNotice||"");setNoticeAt(c.noticeAt||new Date().toISOString());}
     setFavorites(saved.value.favorites??[]);setSelectedPages(saved.value.selectedPages??[]);setPageNumbers(saved.value.pageNumbers??{});
    }
    migrateDialogs.current=!saved.value;setStorageReady(true);
@@ -132,7 +138,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  const [dirty,setDirty]=useState(false);
  useEffect(()=>{
   if(sessionAccount.current!==account)return;
-  const saved={started,showServer,turns:chatTurns,runQuestion,conversationId,run:showServer?current:null,generationPrompt,pendingAt,chatNotice,noticeAt};
+  const saved={sampleIds,roleTaskId,started,showServer,turns:chatTurns,runQuestion,conversationId,run:showServer?current:null,generationPrompt,pendingAt,chatNotice,noticeAt};
   try{sessionStorage.setItem(conversationKey,JSON.stringify(saved));if(started)localStorage.setItem("presales-dialogue:"+storageScope+":"+account+":"+conversationId,JSON.stringify(saved));}catch{setError("对话未保存，本机存储空间不足。");}
  },[started,showServer,chatTurns,runQuestion,conversationKey,conversationId,current,generationPrompt,pendingAt,chatNotice,noticeAt]);
 
@@ -140,7 +146,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  useEffect(()=>{const stream=streamRef.current;if(stream&&stream.scrollHeight-stream.scrollTop-stream.clientHeight<140)stream.scrollTop=stream.scrollHeight;},[current?.preview,current?.status]);
  useEffect(()=>{
   if(!storageReady)return;
-  const value={current:{inputs,started,showServer,turns:chatTurns,runQuestion,conversationId,run:showServer?current:null,generationPrompt,pendingAt,chatNotice,noticeAt},favorites,selectedPages,pageNumbers};
+  const value={current:{sampleIds,roleTaskId,inputs,started,showServer,turns:chatTurns,runQuestion,conversationId,run:showServer?current:null,generationPrompt,pendingAt,chatNotice,noticeAt},favorites,selectedPages,pageNumbers};
   const encoded=JSON.stringify(value);if(encoded===lastSaved.current)return;
   const save=()=>{
    saveQueue.current=saveQueue.current.then(async()=>{
@@ -153,11 +159,12 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
   };
   pendingSave.current=save;const timer=setTimeout(save,350);
   return()=>clearTimeout(timer);
- },[storageReady,started,showServer,chatTurns,runQuestion,conversationId,current,generationPrompt,pendingAt,chatNotice,noticeAt,favorites,selectedPages,pageNumbers,inputs]);
+ },[storageReady,started,showServer,chatTurns,runQuestion,conversationId,current,generationPrompt,pendingAt,chatNotice,noticeAt,favorites,selectedPages,pageNumbers,inputs,sampleIds,roleTaskId]);
  const change=(patch:Partial<Inputs>)=>{setInputs(v=>({...v,...patch}));setCalc(null);setDirty(true);};
  async function refresh(){
    if(!specialized){
     const [m,a]=await Promise.all([localApi<{configured:boolean;provider:string;model:string}>("/api/model/status"),localApi<Artifact[]>(base+"/artifacts")]);
+    setMessages(await localApi<CollaborationMessage[]>(durableBase+"/collaboration"));
     setModel(m);setArtifacts(a);return;
    }
    const [r,a,m,f,notifications]=await Promise.all([localApi<Run[]>(base+"/runs"),localApi<Audit[]>(base+"/audit"),
@@ -175,6 +182,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
    if(!account||!localApiReady(account)){setError("本机服务尚未登录。请重新登录或在设置中连接服务。");return;}
    try{
     await refresh();
+    if(stageId==="F5"){const cfg=await localApi<{tasks:{id:string;name:string;prompt:string}[]}|null>(`/api/projects/${encodeURIComponent(projectId)}/software-config`);setRoleTasks(cfg?.tasks??softwareTasks);}
     if(specialized){const m=await localApi<Material>(base+"/materials");setMaterials(m);}
     else setDocuments(await localApi(`/api/projects/${encodeURIComponent(projectId)}/documents`));
     setError("");
@@ -192,10 +200,10 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  }
  function outputTitle(t:ChatTurn){if(stageId!=="F5")return t.artifactTitle||stage?.title||"工作成果";return t.artifactTitle|| (/偏离/.test(t.question)?"技术应答与偏离表":/澄清/.test(t.question)?"软件澄清表":/核对/.test(t.question)?"软件需求核对":"软件支持成果");}
  async function adoptOutput(t:ChatTurn){await localApi(base+"/artifacts/adopt",json({source_id:t.artifactId?artifacts.find(a=>a.id===t.artifactId)?.source_id||t.id:t.id,title:outputTitle(t),content:t.answer,conversation_id:conversationId}));await refresh();}
- async function downloadOutput(a:Artifact){
-  const response=await fetch(localApiBase+base+"/artifacts/"+a.id+"/download",{headers:{Authorization:"Bearer "+sessionStorage.getItem("presales-local-api-token")}});
+ async function downloadOutput(a:Artifact,format="md"){
+  const response=await fetch(localApiBase+base+"/artifacts/"+a.id+"/download?format="+format,{headers:{Authorization:"Bearer "+sessionStorage.getItem("presales-local-api-token")}});
   if(!response.ok)throw new Error("下载失败");
-  const url=URL.createObjectURL(await response.blob());const link=document.createElement("a");link.href=url;link.download=`${projectId}_${a.title}_V${a.revision}.md`;link.click();URL.revokeObjectURL(url);
+  const url=URL.createObjectURL(await response.blob());const link=document.createElement("a");link.href=url;link.download=`${projectId}_${a.title}_V${a.revision}.${format}`;link.click();URL.revokeObjectURL(url);
  }
  async function openSource(id:string){
   const response=await fetch(localApiBase+base+"/sources/"+id,{headers:{Authorization:"Bearer "+sessionStorage.getItem("presales-local-api-token")}});
@@ -228,7 +236,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
   if(runId)run=await localApi<Run>(base+"/runs/"+runId);
   setFavoriteContext(JSON.stringify({title:favorite.title,selected_reply:favorite.text,conversation:selectedTurns.map(t=>({question:t.question,answer:t.answer}))}).slice(0,12000));
   if(!favorite.conversationId)persistFavorites(favorites.map(f=>f.id===favorite.id?{...f,conversationId:id}:f));
-  setConversationId(id);setRunQuestion(saved?.runQuestion||favorite.runQuestion||favorite.title);setRestoredRun(run);setChatTurns(selectedTurns);setShowServer(!!run);setStarted(true);
+  setSampleIds(saved?.sampleIds??[]);setRoleTaskId(saved?.roleTaskId??null);setConversationId(id);setRunQuestion(saved?.runQuestion||favorite.runQuestion||favorite.title);setRestoredRun(run);setChatTurns(selectedTurns);setShowServer(!!run);setStarted(true);
   setPendingPrompt(saved?.generationPrompt||"");setPendingAt(saved?.pendingAt||new Date().toISOString());setNotice(saved?.chatNotice||"");setNoticeAt(saved?.noticeAt||new Date().toISOString());
   if(!selectedTurns.length&&!run)setChatTurns([{id:favorite.id,question:favorite.title,answer:favorite.text,status:"done",steps:[],createdAt:favorite.createdAt}]);
   setQuestion("");setDrawer(null);
@@ -238,14 +246,14 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
   let timedOut=false;
   const expire=()=>{timedOut=true;controller.abort();};
   let watchdog=setTimeout(expire,100000);
-  setQuestion("");setChatTurns(turns=>[...turns,{id,question:text,artifactTitle:chatTurns.at(-1)?.artifactTitle,answer:"",steps:[],status:"running",createdAt:new Date().toISOString()}]);
+  setQuestion("");setChatTurns(turns=>[...turns,{id,question:text,artifactTitle:roleTasks.find(t=>t.id===roleTaskId)?.name||chatTurns.at(-1)?.artifactTitle,answer:"",steps:[],status:"running",createdAt:new Date().toISOString()}]);
   const update=(event:{type:string;label?:string;state?:string;text?:string;message?:string})=>{
    clearTimeout(watchdog);watchdog=setTimeout(expire,100000);
    if(event.type==="error")throw new Error(event.message||"生成失败");
    setChatTurns(turns=>turns.map(t=>t.id!==id?t:{...t,answer:t.answer+(event.type==="delta"?event.text||"":""),steps:event.type==="step"?[...t.steps.filter(s=>s.label!==event.label),{label:event.label||"",state:event.state||"done"}]:t.steps,status:event.type==="done"?"done":t.status}));
   };
   try{
-   const response=await fetch(localApiBase+base+"/ask-stream",{...json({question:text,favorite_context:favoriteContext,conversation_context:conversationContext(),turn_id:id,selected_pages:selectedPages,stage_title:stage?.title||stageId,project_name:state.projects.find(p=>p.id===projectId)?.name||projectId}),headers:{"Content-Type":"application/json",Authorization:"Bearer "+sessionStorage.getItem("presales-local-api-token")},signal:controller.signal});
+   const response=await fetch(localApiBase+base+"/ask-stream",{...json({question:text,favorite_context:favoriteContext,conversation_context:conversationContext(),turn_id:id,sample_ids:sampleIds,task_id:roleTaskId,selected_pages:selectedPages,stage_title:stage?.title||stageId,project_name:state.projects.find(p=>p.id===projectId)?.name||projectId}),headers:{"Content-Type":"application/json",Authorization:"Bearer "+sessionStorage.getItem("presales-local-api-token")},signal:controller.signal});
    if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(body.detail||"生成请求失败");}
    if(!response.body)throw new Error("浏览器无法读取内容流");
    const reader=response.body.getReader();const decoder=new TextDecoder();let buffer="";let done=false;
@@ -257,8 +265,8 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
    setChatTurns(turns=>turns.map(t=>t.id===id?{...t,status:stopped?"stopped":"error",answer:t.answer+(stopped?"": "\n\n"+message),steps:t.steps.map(step=>step.state==="running"?{...step,state:"error",label:stopped?"已停止":message}:step)}:t));if(!stopped){setQuestion(q=>q||text);throw new Error(message);}}
   finally{clearTimeout(watchdog);streamController.current=null;}
  }
- async function deleteCollaboration(message:CollaborationMessage){await localApi(base+"/collaboration/"+message.id,{method:"DELETE"});await refresh();}
- async function readCollaboration(message:CollaborationMessage){await localApi(base+"/collaboration/"+message.id+"/read",{method:"POST"});await refresh();}
+ async function deleteCollaboration(message:CollaborationMessage){await localApi((!specialized||message.config_id?durableBase:base)+"/collaboration/"+message.id,{method:"DELETE"});await refresh();}
+ async function readCollaboration(message:CollaborationMessage){await localApi((!specialized||message.config_id?durableBase:base)+"/collaboration/"+message.id+"/read",{method:"POST"});await refresh();}
  async function openHistorical(runId:string){
   const selected=await localApi<Run>(base+"/runs/"+runId);
   if(current)setChatTurns(turns=>turns.some(t=>t.id===current.id)?turns:[...turns,{id:current.id,runId:current.id,createdAt:current.created_at,question:runQuestion||"服务器规格方案",answer:current.narrative||current.preview||current.error||"",steps:[],status:current.status==="failed"?"error":"done"}]);
@@ -280,7 +288,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
   const extra=generationPrompt.match(/(?:再?加|增加|新增|还有(?:大概|约)?|另有(?:大概|约)?)\s*(\d+(?:\.\d+)?)\s*(万|w)?\s*(?:个|的)?\s*测点/i);
   const baseline=current?.calculation.points??{low:source.point_low,high:source.point_high};
   const addition=extra?Number(extra[1])*(extra[2]?10000:1):0;
-  const payload={...source,...(addition?{scope:"custom" as const,point_low:baseline.low+addition,point_high:baseline.high+addition}:{}),sampling_seconds:sampling?Number(sampling[1]):source.sampling_seconds,sampling_confirmed:true,scope_confirmed:true,assumptions_confirmed:true,
+  const payload={...source,sample_ids:sampleIds,...(addition?{scope:"custom" as const,point_low:baseline.low+addition,point_high:baseline.high+addition}:{}),sampling_seconds:sampling?Number(sampling[1]):source.sampling_seconds,sampling_confirmed:true,scope_confirmed:true,assumptions_confirmed:true,
    scope_note:addition?`在原范围 ${baseline.low}–${baseline.high} 点上增加 ${addition} 点；新增设备数量待确认` :source.scope_note||"按现有三期机房及配套系统全量估算；DCOM 上送子集待确认；事件、波形暂未计入",change_note:generationPrompt,favorite_context:favoriteContext,conversation_context:conversationContext()};
   const created=await localApi<{id:string}>(base+"/runs",json(payload));
   if(showServer&&current)setChatTurns(turns=>turns.some(t=>t.id===current.id)?turns:[...turns,{id:current.id,runId:current.id,question:runQuestion||"生成服务器规格方案",answer:current.narrative||current.preview||current.error||"",steps:[],status:current.status==="failed"?"error":"done",createdAt:current.created_at}]);
@@ -329,6 +337,11 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
   if(/合并.*清单|更新.*清单|合入.*清单/.test(text)){await act(mergeFromChat);return;}
   await act(()=>streamReply(text));
  }
+ async function downloadScheme(format:string){
+  if(!current)return;const response=await fetch(localApiBase+base+"/runs/"+current.id+"/export?format="+format,{headers:{Authorization:"Bearer "+sessionStorage.getItem("presales-local-api-token")}});
+  if(!response.ok)throw new Error("方案导出失败，请确认已采纳此版本");
+  const url=URL.createObjectURL(await response.blob()),a=document.createElement("a");a.href=url;a.download=`${projectId}_服务器规格_V${current.revision}.${format}`;a.click();URL.revokeObjectURL(url);
+ }
  async function downloadMerged(){
   const response=await fetch(localApiBase+base+"/workflow/merged-file",{headers:{Authorization:"Bearer "+sessionStorage.getItem("presales-local-api-token")}});
   if(!response.ok)throw new Error("清单下载失败");
@@ -341,13 +354,13 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  ...(chatNotice?[{id:"notice",kind:"notice" as const,at:chatNotice.startsWith("收到。我会")&&current?new Date(Date.parse(current.created_at)-1).toISOString():noticeAt}]:[])].sort((a,b)=>Date.parse(a.at)-Date.parse(b.at));
  return <section className={"gsa-chat "+(!started?"gsa-home":"")}>
   <header className="gsa-chat-header"><div className="gsa-agent-title"><i><Sparkles size={18}/></i><div><strong>{specialized?(canMerge?"解决方案 Agent":"软件 Agent"):(stageId==="F5"?"软件 Agent":(stage?.title||stageId)+" Agent")}</strong><span>{canMerge?"解决方案":"软件支持"} · {projectId}</span></div></div>
-   <nav>{started&&<button disabled={busy} onClick={()=>{setConversationId(crypto.randomUUID());setStarted(false);setFavoriteContext("");setChatTurns([]);setRunQuestion("");setShowServer(false);setRestoredRun(null);setGenerationPrompt("");setChatNotice("");setQuestion("");baselineAudit.current=new Set(audit.map(a=>a.id));}}>新对话</button>}<button onClick={()=>setDrawer("favorites")}><Bookmark size={13}/> 收藏对话{favorites.length>0?" · "+favorites.length:""}</button><button onClick={()=>setDrawer("sources")}>资料</button><button className="gsa-collaboration-button" aria-label={messages.some(m=>!m.is_read&&m.recipient===account)?"协作，有新交接":"协作"} onClick={()=>{setDrawer("workflow");}}>协作{messages.some(m=>!m.is_read&&m.recipient===account)&&<i className="gsa-notification-dot"/>}</button></nav>
+   <nav>{started&&<button disabled={busy} onClick={()=>{setSampleIds([]);setRoleTaskId(null);setConversationId(crypto.randomUUID());setStarted(false);setFavoriteContext("");setChatTurns([]);setRunQuestion("");setShowServer(false);setRestoredRun(null);setGenerationPrompt("");setChatNotice("");setQuestion("");baselineAudit.current=new Set(audit.map(a=>a.id));}}>新对话</button>}<button onClick={()=>setDrawer("favorites")}><Bookmark size={13}/> 收藏对话{favorites.length>0?" · "+favorites.length:""}</button><button onClick={()=>setDrawer("sources")}>资料</button><button className="gsa-collaboration-button" aria-label={messages.some(m=>!m.is_read&&m.recipient===account)?"协作，有新交接":"协作"} onClick={()=>{setDrawer("workflow");}}>协作{messages.some(m=>!m.is_read&&m.recipient===account)&&<i className="gsa-notification-dot"/>}</button></nav>
   </header>
   {error&&<div className="gsa-chat-error" role="alert">{error}{(error.includes("请先登录")||error.includes("未登录"))&&<button onClick={()=>{dispatch({type:"logout"});window.location.assign("/login");}}>重新登录</button>}<button onClick={()=>setError("")} aria-label="关闭错误"><X size={14}/></button></div>}
   <div className="gsa-transcript" ref={streamRef}>
    {!started&&<div className="gsa-welcome"><i><Sparkles size={25}/></i><h2>今天要做些什么？</h2><p>核对需求、整理澄清、起草应答，或一起处理软件方案。</p></div>}
-   {timeline.map(item=><div key={item.id}>
-    {item.kind==="turn"&&item.turn&&<><div className="gsa-user-message">{item.turn.question}</div>{item.turn.steps.length>0&&<details className="gsa-execution" open={item.turn.status==="running"}><summary>{item.turn.status==="running"?"正在处理":"执行过程"}</summary>{item.turn.steps.map(step=><div key={step.label}>{step.state==="done"?<CheckCircle2 size={13}/>:step.state==="error"?<X size={13}/>:<LoaderCircle size={13} className="spin"/>}{step.label}</div>)}</details>}<AgentReply text={item.turn.answer} canSave={item.turn.status==="done"} onFavorite={()=>favoriteReply(item.id,item.turn!.answer,item.turn!.question)}><MarkdownReply text={item.turn.answer}/>{(item.turn.runId||runs.some(r=>r.id===item.id))&&<button className="gsa-history-action" onClick={()=>void act(()=>openHistorical(item.turn!.runId||item.id))}>查看方案 · 可采纳或修改<ArrowRight size={14}/></button>}{item.turn.status==="done"&&item.turn.answer&&!item.turn.runId&&<div className="gsa-output-adoption">{(()=>{const adopted=artifacts.find(a=>(a.source_id===item.turn!.id||a.id===item.turn!.artifactId)&&a.content===item.turn!.answer);return adopted?<><span>已采纳 · V{adopted.revision}</span><button onClick={()=>void act(()=>downloadOutput(adopted))}><Download size={14}/>下载</button></>:canReview?<button disabled={busy} onClick={()=>void act(()=>adoptOutput(item.turn!))}><CheckCircle2 size={14}/>采纳成果</button>:null;})()}</div>}{item.turn.status==="running"&&<span className="gsa-stream-cursor"/>}</AgentReply></>}
+   {timeline.map(item=><div className="gsa-conversation-turn" key={item.id}>
+    {item.kind==="turn"&&item.turn&&<><div className="gsa-user-message">{item.turn.question}</div>{item.turn.steps.length>0&&<details className="gsa-execution" open={item.turn.status==="running"}><summary>{item.turn.status==="running"?"正在处理":"执行过程"}</summary>{item.turn.steps.map(step=><div key={step.label}>{step.state==="done"?<CheckCircle2 size={13}/>:step.state==="error"?<X size={13}/>:<LoaderCircle size={13} className="spin"/>}{step.label}</div>)}</details>}<AgentReply text={item.turn.answer} canSave={item.turn.status==="done"} onFavorite={()=>favoriteReply(item.id,item.turn!.answer,item.turn!.question)}><MarkdownReply text={item.turn.answer}/>{(item.turn.runId||runs.some(r=>r.id===item.id))&&<button className="gsa-history-action" onClick={()=>void act(()=>openHistorical(item.turn!.runId||item.id))}>查看方案 · 可采纳或修改<ArrowRight size={14}/></button>}{item.turn.status==="done"&&item.turn.answer&&!item.turn.runId&&gapParts(item.turn.answer).length===0&&<div className="gsa-output-adoption">{(()=>{const adopted=artifacts.find(a=>(a.source_id===item.turn!.id||a.id===item.turn!.artifactId)&&a.content===item.turn!.answer);return adopted?<><span>已采纳 · V{adopted.revision}</span><button onClick={()=>void act(()=>downloadOutput(adopted))}><Download size={14}/>下载</button><button onClick={()=>void act(()=>downloadOutput(adopted,"docx"))}>Word</button><button onClick={()=>void act(()=>downloadOutput(adopted,"xlsx"))}>Excel</button></>:canReview?<button disabled={busy} onClick={()=>void act(()=>adoptOutput(item.turn!))}><CheckCircle2 size={14}/>采纳成果</button>:null;})()}</div>}{item.turn.status==="done"&&gapParts(item.turn.answer).map(part=>{const adopted=artifacts.find(a=>a.content===part.content&&a.title===part.title);return <div className="gsa-output-adoption" key={part.title}><strong>{part.title}</strong>{adopted?<><span>已采纳 · V{adopted.revision}</span><button onClick={()=>void act(()=>downloadOutput(adopted,"docx"))}>Word</button><button onClick={()=>void act(()=>downloadOutput(adopted,"xlsx"))}>Excel</button></>:canReview&&<button disabled={busy} onClick={()=>void act(()=>adoptOutput({...item.turn!,answer:part.content,artifactTitle:part.title}))}>采纳此成果</button>}</div>;})}{item.turn.status==="running"&&<span className="gsa-stream-cursor"/>}</AgentReply></>}
     {item.kind==="notice"&&<AgentReply text={chatNotice}/>}
     {item.kind==="scheme"&&runQuestion&&<div className="gsa-user-message">{runQuestion}</div>}
    {item.kind==="pending"&&<><div className="gsa-user-message">{generationPrompt}</div><AgentReply text=""><p>收到，使用设备清单 V{flow?.equipment_revision}。采样周期{generationPrompt.match(/(\d+)\s*秒/)?.[1]||(showServer?current?.inputs.sampling_seconds:inputs.sampling_seconds)||inputs.sampling_seconds} 秒、历史保留 {showServer?current?.inputs.retention_years||inputs.retention_years:inputs.retention_years} 年。接入范围按三期机房与配套系统全量估算，事件和波形暂未计入。</p>{(()=>{const match=generationPrompt.match(/(?:再?加|增加|新增|还有(?:大概|约)?|另有(?:大概|约)?)\s*(\d+(?:\.\d+)?)\s*(万|w)?\s*(?:个|的)?\s*测点/i);if(!match)return null;const added=Number(match[1])*(match[2]?10000:1);const points=current?.calculation.points??{low:inputs.point_low,high:inputs.point_high};return <p>新增 {fmt(added)} 测点，计算范围改为 {fmt(points.low+added)}–{fmt(points.high+added)} 点；设备数量保持原假设，需另行确认。</p>;})()}<div className="gsa-actions"><button className="btn primary" disabled={busy||running} onClick={()=>void act(generateFromChat)}>确认，{showServer?"重新生成":"生成方案"}</button><button className="btn secondary" onClick={()=>setDrawer("parameters")}>调整范围与参数</button></div></AgentReply></>}
@@ -362,18 +375,20 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
    </div>}
    {item.kind==="scheme"&&running&&<div><div className="gsa-execution"><details open><summary>正在生成服务器规格</summary><div><CheckCircle2 size={13}/>已读取清单与规格书</div><div><CheckCircle2 size={13}/>已计算测点与存储</div><div><LoaderCircle size={13} className="spin"/>{current.stage_message||"正在等待模型输出"} · 已等待 {Math.max(0,Math.floor((clock-Date.parse(current.created_at))/1000))} 秒</div></details></div></div>}
    </div>)}
+   {started&&showServer&&current?.status==="approved"&&<div className="gsa-output-adoption"><span>服务器规格已采纳 · V{current.revision}</span><button onClick={()=>void act(()=>downloadScheme("docx"))}>下载 Word</button><button onClick={()=>void act(()=>downloadScheme("xlsx"))}>下载 Excel</button></div>}
    {started&&flow?.status==="merged"&&<div className="gsa-chat-card"><strong>完整设备清单</strong><button onClick={()=>void act(downloadMerged)}><Download size={14}/>下载</button></div>}
   </div>
   <footer className="gsa-composer">
-   {!started&&stageId==="F5"&&<div className="gsa-quick"><button onClick={()=>setQuestion("请帮我核对软件技术规格书中的需求")}>核对软件需求</button><button onClick={()=>setQuestion("请整理软件需求中需要澄清的问题")}>整理澄清问题</button><button onClick={()=>setQuestion("请根据软件规格书起草技术应答与偏离项，标明待确认内容")}>起草应答与偏离表</button></div>}
+   {!started&&stageId==="F5"&&roleTasks.length>0&&<div className="gsa-quick">{roleTasks.map(t=><button key={t.id} onClick={()=>{setRoleTaskId(t.id);setSampleIds([]);setQuestion(t.prompt);}}>{t.name}</button>)}</div>}
    {!started&&stageId!=="F5"&&<div className="gsa-quick">{["核对输入资料","整理待确认问题","起草"+(stage?.title||"工作成果")].map(q=><button key={q} onClick={()=>setQuestion(q)}>{q}</button>)}</div>}
    <form onSubmit={e=>{e.preventDefault();void send();}}><textarea aria-label={stageId==="F5"?"与软件 Agent 对话":"与"+(stage?.title||stageId)+" Agent 对话"} placeholder="告诉我你要做什么…" onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();if(storageReady&&!busy&&!running&&(!specialized||materials))void send();}}} value={question} onChange={e=>setQuestion(e.target.value)} maxLength={1000}/><button type={streamController.current?"button":"submit"} aria-label={streamController.current?"停止生成":"发送"} onClick={()=>{if(streamController.current)streamController.current.abort();}} disabled={!streamController.current&&(!storageReady||busy||running||(specialized&&!materials)||!question.trim())}>{streamController.current?<X size={18}/>:<ArrowUp size={18}/>}</button>
-   <div className="gsa-composer-meta"><select aria-label="当前模型" value={model?.model||"unconfigured"} disabled={busy||running}><option value={model?.model||"unconfigured"}>{model?.configured?(model.provider==="zhipu"?"智谱 · ":model.provider+" · ")+model.model:"模型未配置"}</option></select>{busy&&<span>正在处理…</span>}</div></form>
+   <div className="gsa-composer-meta"><button type="button" className="gsa-attach" aria-label="导入文件样本" onClick={()=>setDrawer("files")}><Paperclip size={15}/></button><select aria-label="当前模型" value={model?.model||"unconfigured"} disabled={busy||running}><option value={model?.model||"unconfigured"}>{model?.configured?(model.provider==="zhipu"?"智谱 · ":model.provider+" · ")+model.model:"模型未配置"}</option></select>{busy&&<span>正在处理…</span>}</div></form>
   </footer>
   {!started&&favorites.length>0&&<div className="gsa-home-favorites">{favorites.slice(0,6).map(f=><div className="gsa-home-favorite" key={f.id}><button title={f.title} onClick={()=>void act(()=>restoreFavorite(f))}><i><MessageSquare size={19}/></i><span>{f.title}</span></button><button className="gsa-favorite-delete" aria-label={"删除收藏 "+f.title} onClick={()=>persistFavorites(favorites.filter(item=>item.id!==f.id))}><X size={13}/></button></div>)}</div>}
   {drawer&&<div className="gsa-drawer-backdrop" onClick={()=>setDrawer(null)}><aside className={"gsa-drawer"+(drawer==="sources"?" gsa-materials-drawer":"")} onClick={e=>e.stopPropagation()} aria-label="软件工作侧栏">
-   <header><h3>{{sources:"项目资料",parameters:"方案参数",server:"方案生成依据",workflow:"协作消息",favorites:"收藏对话"}[drawer]}</h3><button aria-label="关闭侧栏" onClick={()=>setDrawer(null)}><X size={18}/></button></header>
+   <header><h3>{{files:"文件样本",sources:"项目资料",parameters:"方案参数",server:"方案生成依据",workflow:"协作消息",favorites:"收藏对话"}[drawer]}</h3><button aria-label="关闭侧栏" onClick={()=>setDrawer(null)}><X size={18}/></button></header>
    <div className="gsa-drawer-body">
+    {drawer==="files"&&<><label>工作入口<select value={roleTaskId||"survey"} onChange={e=>{setRoleTaskId(e.target.value);setSampleIds([]);}}>{roleTasks.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></label><FileSamples projectId={projectId} taskId={roleTaskId||"survey"} selected={sampleIds} onChange={setSampleIds}/></>}
     {drawer==="favorites"&&<>{favorites.length===0?<p className="gsa-muted">收藏的对话会显示在这里。</p>:favorites.map(f=><article className="gsa-favorite-row" key={f.id}><button onClick={()=>void act(()=>restoreFavorite(f))}><MessageSquare size={17}/><div><strong>{f.title}</strong><span>{f.text.slice(0,100)}</span></div><ArrowRight size={15}/></button><button aria-label={"删除收藏 "+f.title} title="取消收藏" onClick={()=>persistFavorites(favorites.filter(item=>item.id!==f.id))}><Trash2 size={15}/></button></article>)}</>}
     {drawer==="sources"&&!specialized&&<>
      <ResourceBrowser projectId={projectId} compact/>
@@ -417,7 +432,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
      {!canReview&&current?.status==="review"&&<p className="gsa-review-owner"><CheckCircle2 size={16}/>由软件产品审核采纳后，系统自动通知解决方案。</p>}
 
     </>}
-    {drawer==="workflow"&&!specialized&&<Collaboration projectId={projectId}/>}{drawer==="workflow"&&specialized&&<div className="gsa-message-list">{messages.length===0&&<p className="gsa-muted">暂无协作消息</p>}{messages.map(message=><article className={"gsa-message "+(!message.is_read?"unread":"")} key={message.id}><button className="gsa-message-delete" aria-label="删除协作消息" title="删除消息" disabled={busy} onClick={()=>void act(()=>deleteCollaboration(message))}><X size={14}/></button><header><span>{{system:"系统",agent:"Agent",solution:"解决方案",software:"软件产品",pm:"项目负责人"}[message.sender]||message.sender}</span><time>{new Date(message.created_at).toLocaleString("zh-CN")}</time></header><strong>{message.title}</strong>{message.kind==="equipment"&&<span className={"gsa-processing-status "+(message.processed?"processed":"")}>{message.processed?"已处理":"未处理"}</span>}<p>{message.body}</p><button className="btn primary" disabled={busy} onClick={()=>void act(async()=>{await readCollaboration(message);setQuestion(message.kind==="equipment"?"解决方案的清单已经做好，请生成服务器规格方案":canMerge&&message.kind==="deliverable"?"请将已采纳的服务器规格合入设备清单":"请帮我处理这条协作事项："+message.title+"。"+message.body);setDrawer(null);})}>处理</button></article>)}</div>}
+    {drawer==="workflow"&&!specialized&&<Collaboration projectId={projectId}/>}{drawer==="workflow"&&<div className="gsa-message-list">{messages.length===0&&<p className="gsa-muted">暂无协作消息</p>}{messages.map(message=><article className={"gsa-message "+(!message.is_read?"unread":"")} key={message.id}><button className="gsa-message-delete" aria-label="删除协作消息" title="删除消息" disabled={busy} onClick={()=>void act(()=>deleteCollaboration(message))}><X size={14}/></button><header><span>{{system:"系统",agent:"Agent",solution:"解决方案",software:"软件产品",pm:"项目负责人"}[message.sender]||message.sender}</span><time>{new Date(message.created_at).toLocaleString("zh-CN")}</time></header><strong>{message.title}</strong>{message.kind==="equipment"&&<span className={"gsa-processing-status "+(message.processed?"processed":"")}>{message.processed?"已处理":"未处理"}</span>}<p>{message.body}</p><button className="btn primary" disabled={busy} onClick={()=>void act(async()=>{await readCollaboration(message);setQuestion(message.kind==="equipment"?"解决方案的清单已经做好，请生成服务器规格方案":canMerge&&message.kind==="deliverable"?"请将已采纳的服务器规格合入设备清单":"请帮我处理这条协作事项："+message.title+"。"+message.body);setDrawer(null);})}>处理</button></article>)}</div>}
 
    </div>
   </aside></div>}
