@@ -1,3 +1,4 @@
+import { randomId } from "@/lib/id";
 export interface ReferenceItem {
   id: string;
   title: string;
@@ -406,7 +407,7 @@ export function referenceAction(
     rows,
     audit: [
       {
-        id: crypto.randomUUID(),
+        id: randomId(),
         at: new Date().toISOString(),
         target: id,
         actor: accountId ? accountId + " · " + actor : actor,

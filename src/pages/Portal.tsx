@@ -36,12 +36,13 @@ export default function Portal() {
     const timer = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
+  const allowed=new Set(state.projects.map(p=>p.id));
   const files = [
     ...state.resources,
     ...projectFileCatalog.filter(
       (r) => !state.resources.some((s) => s.path === r.path),
     ),
-  ];
+  ].filter(r=>allowed.has(r.projectId));
   const projects = state.projects.map((p) => {
     const snapshot = p.id === state.currentProjectId ? state : p.snapshot;
     const review = readProjectReview(p.id, state);
@@ -90,9 +91,9 @@ export default function Portal() {
     ).values(),
   ];
   const owners = [...new Set(pending.map((i) => i.owner))];
-  const events = state.activity.slice(0, 8);
+  const events = state.activity.filter(e=>allowed.has(e.projectId)).slice(0, 8);
   const issues = [
-    ...rackIssues.map((i) => ({
+    ...(allowed.has("RCJM1")?rackIssues:[]).map((i) => ({
       ...i,
       owner: /点表/.test(i.title)
         ? "解决方案"
@@ -121,7 +122,7 @@ export default function Portal() {
         stage: "F5",
         projectId: f.projectId,
       })),
-  ];
+  ].filter(i=>allowed.has(i.projectId));
   const totals = [
     { title: "监控项目", value: projects.length, unit: "个" },
     { title: "待办工件", value: pending.length, unit: "项" },
@@ -490,7 +491,7 @@ export default function Portal() {
           <header>
             <h2>交付节点</h2>
           </header>
-          <Link to="/projects/RCJM1?view=milestones">
+          {allowed.has("RCJM1")&&<><Link to="/projects/RCJM1?view=milestones">
             <span>RCJM1 · Phase 1 RFS</span>
             <strong>2026-11-06</strong>
             <small>日期待核实</small>
@@ -499,7 +500,8 @@ export default function Portal() {
             <span>RCJM1 · 暂定竣工</span>
             <strong>2027-08-06</strong>
             <small>项目档案登记</small>
-          </Link>
+          </Link></>}
+          {!allowed.has("RCJM1")&&<p>暂无交付节点</p>}
         </section>
       </div>
     </div>

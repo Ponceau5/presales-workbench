@@ -1,5 +1,7 @@
 """GSA02 软件岗位：固定任务路由、真实计算、模型草稿与方案审核。"""
+from access_control import role_of
 import json
+import object_storage
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -107,9 +109,11 @@ def install(app, db_path: Path, files_dir: Path, actor, require_account):
         from fastapi.responses import FileResponse
         entry=next((s for s in materials()["manifest"] if s["id"]==source_id),None)
         if not entry: raise HTTPException(404,"资料不存在")
-        return FileResponse(files_dir/"GSA02"/entry["snapshot_name"],filename=entry["title"])
+        return object_storage.legacy_download(files_dir/"GSA02"/entry["snapshot_name"],entry["title"])
 
     class Question(BaseModel):
+        selected_pages:list[dict]=Field(default_factory=list,max_length=30)
+        upstream_ids:list[str]=Field(default_factory=list,max_length=20)
         sample_ids:list[str]=Field(default_factory=list,max_length=10)
         task_id: str|None=Field(default=None,max_length=60)
         question: str=Field(min_length=1,max_length=1000)
@@ -145,6 +149,22 @@ def install(app, db_path: Path, files_dir: Path, actor, require_account):
         with db() as c:active_configuration=runtime_config(c,"GSA02")
         with db() as c:selected_samples=load_samples(c,payload.sample_ids,"GSA02",payload.task_id)
         context+="\n已选文件样本："+json.dumps(selected_samples,ensure_ascii=False)
+        with db() as c:
+            selected_sources=[]
+            for page in payload.selected_pages:
+                row=c.execute('SELECT d.id,d.title,p.text FROM documents d JOIN document_pages p ON p.document_id=d.id WHERE d.id=? AND d.project_id=? AND p.page=?',(page.get('document_id'),'GSA02',page.get('page'))).fetchone()
+                if not row:raise HTTPException(400,'所选资料页不属于当前项目')
+                value=dict(row)
+                if c.execute("SELECT 1 FROM sqlite_master WHERE name='workspace_material_tags'").fetchone():
+                    tag=c.execute('SELECT category FROM workspace_material_tags WHERE document_id=?',(row['id'],)).fetchone()
+                    if tag and tag[0]=='template':value['usage']='仅作为输出格式参考，示例金额不是项目事实'
+                selected_sources.append(value)
+            for identifier in payload.upstream_ids:
+                row=c.execute('SELECT id,title,content text FROM workspace_artifacts WHERE id=? AND project_id=? AND stage_id<>?',(identifier,'GSA02','F5')).fetchone()
+                if not row:raise HTTPException(400,'上游成果不属于当前项目')
+                selected_sources.append(dict(row))
+        if sum(len(s['text']) for s in selected_sources)>40000:raise HTTPException(413,'所选资料过多，请缩小范围')
+        context+='\n当前已选资料：'+json.dumps(selected_sources,ensure_ascii=False)
         instruction=task_instructions(active_configuration,payload.question,payload.task_id)
         def event(kind,**data):return "data: "+json.dumps({"type":kind,**data},ensure_ascii=False)+"\n\n"
         def stream():
@@ -226,17 +246,17 @@ def install(app, db_path: Path, files_dir: Path, actor, require_account):
             for row in c.execute("SELECT * FROM sizing_audit WHERE action IN ('equipment_handover','software_handover','equipment_return','merge')").fetchall():
                 title,recipient,kind={"equipment_handover":("设备清单已就绪","software","equipment"),"software_handover":("软件服务器规格已交付","solution","deliverable"),"equipment_return":("请补充设备清单","solution","request"),"merge":("新版完整设备清单已完成","software","deliverable")}[row["action"]]
                 c.execute("INSERT OR IGNORE INTO collaboration_messages VALUES (?,?,?,?,?,?,?)",(row["id"],title,row["detail"],"system",recipient,kind,row["created_at"]))
-            rows=c.execute("SELECT m.*, EXISTS(SELECT 1 FROM collaboration_reads r WHERE r.message_id=m.id AND r.account=?) AS is_read FROM collaboration_messages m WHERE (recipient=? OR sender=?) AND NOT EXISTS (SELECT 1 FROM collaboration_hidden h WHERE h.message_id=m.id AND h.account=?) ORDER BY created_at DESC LIMIT 100",(account,account,account,account)).fetchall()
-            flow=c.execute("SELECT equipment_revision FROM sizing_workflow WHERE project_id='GSA02'").fetchone()
-            matched=bool(flow and c.execute("SELECT 1 FROM sizing_runs WHERE equipment_revision=? AND draft_json IS NOT NULL AND status IN ('review','approved','stale','rejected') LIMIT 1",(str(flow[0]),)).fetchone())
+            rows=c.execute("SELECT m.*, EXISTS(SELECT 1 FROM collaboration_reads r WHERE r.message_id=m.id AND r.account=?) AS is_read FROM collaboration_messages m WHERE (recipient=? OR sender=?) AND NOT EXISTS (SELECT 1 FROM collaboration_hidden h WHERE h.message_id=m.id AND h.account=?) ORDER BY created_at DESC LIMIT 100",(account,role_of(account),role_of(account),account)).fetchall()
+            flow=c.execute("SELECT equipment_revision,demo_reset_at FROM sizing_workflow WHERE project_id='GSA02'").fetchone()
+            matched=bool(flow and c.execute("SELECT 1 FROM sizing_runs WHERE equipment_revision=? AND draft_json IS NOT NULL AND status IN ('review','approved','stale','rejected') AND created_at>=? LIMIT 1",(str(flow[0]),flow[1] or '',)).fetchone())
             if c.execute("SELECT 1 FROM sqlite_master WHERE name='role_config_handoffs'").fetchone():
-                extras=c.execute("SELECT h.*,COALESCE(s.is_read,0) AS is_read FROM role_config_handoffs h LEFT JOIN role_config_message_state s ON s.message_id=h.id AND s.actor=? WHERE h.project_id='GSA02' AND (h.recipient=? OR h.sender=?) AND COALESCE(s.hidden,0)=0",(account,account,account)).fetchall()
+                extras=c.execute("SELECT h.*,COALESCE(s.is_read,0) AS is_read FROM role_config_handoffs h LEFT JOIN role_config_message_state s ON s.message_id=h.id AND s.actor=? WHERE h.project_id='GSA02' AND (h.recipient=? OR h.sender=?) AND COALESCE(s.hidden,0)=0",(account,role_of(account),role_of(account))).fetchall()
                 rows=[*rows,*[{**dict(r),"kind":"deliverable"} for r in extras]]
             return [{**dict(row),"processed":matched if row["kind"]=="equipment" else False} for row in rows]
     @router.delete("/collaboration/{identifier}")
     def hide_collaboration(identifier:str,account:str=Depends(actor)):
         with db() as c:
-            row=c.execute("SELECT id FROM collaboration_messages WHERE id=? AND (recipient=? OR sender=?)",(identifier,account,account)).fetchone()
+            row=c.execute("SELECT id FROM collaboration_messages WHERE id=? AND (recipient=? OR sender=?)",(identifier,role_of(account),role_of(account))).fetchone()
             if not row:raise HTTPException(404,"协作消息不存在")
             c.execute("INSERT OR IGNORE INTO collaboration_hidden VALUES (?,?,?)",(identifier,account,now()))
             audit(c,identifier,account,"collaboration_hide","删除当前账号的协作消息")
@@ -244,7 +264,7 @@ def install(app, db_path: Path, files_dir: Path, actor, require_account):
     @router.post("/collaboration/{identifier}/read")
     def read_message(identifier:str,account:str=Depends(actor)):
         with db() as c:
-            row=c.execute("SELECT id FROM collaboration_messages WHERE id=? AND (recipient=? OR sender=?)",(identifier,account,account)).fetchone()
+            row=c.execute("SELECT id FROM collaboration_messages WHERE id=? AND (recipient=? OR sender=?)",(identifier,role_of(account),role_of(account))).fetchone()
             if not row:raise HTTPException(404,"协作消息不存在")
             c.execute("INSERT OR IGNORE INTO collaboration_reads VALUES (?,?)",(identifier,account))
         return {"read":True}
@@ -326,6 +346,7 @@ def install(app, db_path: Path, files_dir: Path, actor, require_account):
         with db() as c:
             rows=c.execute("SELECT * FROM sizing_runs WHERE equipment_revision=? AND draft_json IS NOT NULL AND status IN ('review','approved','stale','rejected') ORDER BY created_at DESC",(str(current["equipment_revision"]),)).fetchall()
             for row in rows:
+                if current.get("demo_reset_at") and row["created_at"]<current["demo_reset_at"]:continue
                 if all(hashes.get(item["id"])==item["sha256"] for item in json.loads(row["source_hashes"])):
                     value=public(row)
                     approved=json.loads(row["approved_items"] or "[]")
@@ -550,7 +571,7 @@ def install(app, db_path: Path, files_dir: Path, actor, require_account):
         if not approved:raise HTTPException(409,"方案尚未采纳具体候选，请重新审核")
         if payload.items and [i.model_dump() for i in payload.items]!=approved:raise HTTPException(422,"只能合入软件产品已采纳的规格")
         payload.items=[ServerItem.model_validate(i) for i in approved]
-        workbook=load_workbook(files_dir/"GSA02"/value["equipment_file"])
+        workbook=load_workbook(object_storage.resolve_file(files_dir/"GSA02"/value["equipment_file"]))
         sheet=workbook.create_sheet("软件服务器规格")
         sheet.append(["角色","台数","CPU","内存","存储","方案任务","设备清单版本","审核说明"])
         for item in payload.items:
@@ -572,6 +593,6 @@ def install(app, db_path: Path, files_dir: Path, actor, require_account):
         from fastapi.responses import FileResponse
         value=workflow()
         if value["status"]!="merged" or not value["merged_file"]:raise HTTPException(409,"尚未合并清单")
-        return FileResponse(files_dir/"GSA02"/value["merged_file"],filename=value["merged_file"])
+        return object_storage.legacy_download(files_dir/"GSA02"/value["merged_file"],value["merged_file"])
 
     app.include_router(router)

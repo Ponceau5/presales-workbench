@@ -119,8 +119,10 @@ class RoleConfigTests(unittest.TestCase):
         r=self.client.post(self.base+'/samples',data={'project_id':'GSA02','task_id':'gap','purpose':'template'},files={'file':('clarification.docx',data,'application/vnd.openxmlformats-officedocument.wordprocessingml.document')})
         self.assertEqual(r.status_code,200,r.text)
         with self.db() as c:
-            chosen=role_config.load_samples(c,[r.json()['id']],'OTHER','gap')
+            chosen=role_config.load_samples(c,[r.json()['id']],'GSA02','gap')
             self.assertIn('仅参考结构',chosen[0]['usage'])
+            from fastapi import HTTPException
+            with self.assertRaises(HTTPException):role_config.load_samples(c,[r.json()['id']],'OTHER','gap')
         cost='| 产品 | 数量 | 单价 | 总价 |\n| --- | --- | --- | --- |\n| 软件 | 2 | 100 | 200 |\n| 硬件 | 未知 | 未知 | 未知 |'
         data,_=export_content(cost,'xlsx','成本单')
         book=load_workbook(BytesIO(data));sheet=book.active

@@ -1,4 +1,5 @@
 """Versioned software-role configuration and isolated, real-model validation."""
+from access_control import role_of, check_project
 import json, os, time, subprocess, shutil
 from pathlib import Path
 from uuid import uuid4
@@ -9,7 +10,7 @@ from pydantic import BaseModel, Field
 from model_gateway import ModelConfig, ModelError, _request_chat_stream
 from sizing_tools import SizingInputs, calculate_server_sizing
 
-VAULT=Path("/Users/a48750/Desktop/胡珊珊/CET/CET-Vault")
+VAULT=Path(os.environ.get("PRESALES_VAULT_DIR","/Users/a48750/Desktop/胡珊珊/CET/CET-Vault"))
 TASKS=[("survey","项目资料摸排","60-个人知识/Agent任务书/Agent任务书-项目资料摸排-v2.md"),
        ("functions","软件功能清单","60-个人知识/SOP流程/SOP-06-新项目软件需求摸底与功能清单.md"),
        ("gap","需求差距分析与澄清","60-个人知识/SOP流程/SOP-02-需求差距分析与澄清表.md"),
@@ -136,7 +137,7 @@ def install(app,db,actor,now,files_dir):
         c.execute("CREATE TABLE IF NOT EXISTS role_file_samples(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,task_id TEXT NOT NULL,purpose TEXT NOT NULL,title TEXT NOT NULL,path TEXT NOT NULL,sha256 TEXT NOT NULL,text TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL)")
     router=APIRouter(prefix="/api/role-config/software")
     def owner(account):
-        if account not in {"software","pm"}:raise HTTPException(403,"请由软件产品或项目负责人维护软件岗位配置")
+        if role_of(account) not in {"software","pm"}:raise HTTPException(403,"请由软件产品或项目负责人维护软件岗位配置")
     def config(c,identifier):
         row=c.execute("SELECT * FROM role_config_versions WHERE id=? AND role='software'",(identifier,)).fetchone()
         if not row:raise HTTPException(404,"配置版本不存在")
@@ -172,6 +173,8 @@ def install(app,db,actor,now,files_dir):
     @router.post("/trials")
     def trial(payload:Trial,account:str=Depends(actor)):
         owner(account)
+        check_project(account,payload.project_id)
+        if payload.use_gsa_excerpt:check_project(account,"GSA02")
         with db() as c:
             cfg=config(c,payload.config_id);task=next((t for t in cfg["tasks"] if t["id"]==payload.task_id),None)
             if not task:raise HTTPException(422,"任务不在该配置版本中")
@@ -291,7 +294,7 @@ def install(app,db,actor,now,files_dir):
     @router.get("/samples")
     def samples(project_id:str,task_id:str,account:str=Depends(actor)):
         owner(account)
-        with db() as c:return [dict(r) for r in c.execute("SELECT id,task_id,purpose,title,sha256,created_at FROM role_file_samples WHERE (project_id=? OR purpose='template') AND task_id=? ORDER BY created_at DESC",(project_id,task_id))]
+        with db() as c:return [dict(r) for r in c.execute("SELECT id,task_id,purpose,title,sha256,created_at FROM role_file_samples WHERE project_id=? AND task_id=? ORDER BY created_at DESC",(project_id,task_id))]
 
     @router.get("/samples/{identifier}/download")
     def download_sample(identifier:str,account:str=Depends(actor)):
@@ -299,11 +302,13 @@ def install(app,db,actor,now,files_dir):
         with db() as c:row=c.execute('SELECT * FROM role_file_samples WHERE id=?',(identifier,)).fetchone()
         if not row:raise HTTPException(404,'样本不存在')
         from fastapi.responses import FileResponse
-        return FileResponse(row['path'],filename=row['title'])
+        from object_storage import download
+        return download(row['path'],row['title'])
 
     @router.post("/samples")
     async def upload_sample(project_id:str=Form(...),task_id:str=Form(...),purpose:str=Form(...),file:UploadFile=File(...),account:str=Depends(actor)):
         owner(account)
+        check_project(account,project_id)
         if purpose not in {'input','template'}:raise HTTPException(422,'请选择输入资料或输出格式样本')
         suffix=Path(file.filename or '').suffix.lower()
         if suffix not in {'.docx','.xlsx','.pdf','.md','.txt'}:raise HTTPException(422,'支持 Word .docx、Excel .xlsx、PDF、Markdown 和文本')
@@ -323,7 +328,10 @@ def install(app,db,actor,now,files_dir):
             if len(text)>60000:raise ValueError('解析内容过多，请上传本次需要的样本部分')
         except Exception as e:
             path.unlink(missing_ok=True);raise HTTPException(422,'文件解析失败或内容过多，请使用有效的小型样本') from e
-        with db() as c:c.execute("INSERT INTO role_file_samples VALUES (?,?,?,?,?,?,?,?,?,?)",(identifier,project_id,task_id,purpose,Path(file.filename).name,str(path),hashlib.sha256(data).hexdigest(),text,account,now()))
+        from object_storage import save, enabled, key_for
+        location=save(path,key_for(project_id,identifier,suffix))
+        with db() as c:c.execute("INSERT INTO role_file_samples VALUES (?,?,?,?,?,?,?,?,?,?)",(identifier,project_id,task_id,purpose,Path(file.filename).name,location,hashlib.sha256(data).hexdigest(),text,account,now()))
+        if enabled(): path.unlink(missing_ok=True)
         return {'id':identifier,'title':Path(file.filename).name,'purpose':purpose}
 
     @router.get("/versions/{identifier}/export")
@@ -422,7 +430,7 @@ def quote_workbook(rows,path):
 def load_samples(c,identifiers,project_id,task_id):
     result=[]
     for identifier in identifiers:
-        row=c.execute("SELECT * FROM role_file_samples WHERE id=? AND (project_id=? OR purpose='template')",(identifier,project_id)).fetchone()
+        row=c.execute("SELECT * FROM role_file_samples WHERE id=? AND project_id=?",(identifier,project_id)).fetchone()
         if not row:raise HTTPException(422,'样本不属于当前项目')
         if task_id and row['task_id']!=task_id:raise HTTPException(422,'样本不属于当前工作入口')
         result.append({'id':row['id'],'title':row['title'],'purpose':row['purpose'],'sha256':row['sha256'],'content':row['text'],'usage':'仅参考结构、列名和表达方式；样本数值不是本项目事实' if row['purpose']=='template' else '本次选择的输入资料'})

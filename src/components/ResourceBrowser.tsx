@@ -1,3 +1,4 @@
+import { randomId } from "@/lib/id";
 import { projectFileCatalog } from "@/lib/projectFileCatalog";
 import { PointReader, DocumentReader } from "@/components/SourceReader";
 import { useState } from "react";
@@ -42,7 +43,7 @@ export function ResourceBrowser({
   const isInFolder = (r: ProjectResource, f: string) =>
     f === "全部" || folderRoot(r) === f || folderRoot(r).startsWith(f + "/");
   const projectFiles = allResources.filter(
-    (r) => !projectId || r.projectId === projectId,
+    (r) => state.projects.some(p=>p.id===r.projectId) && (!projectId || r.projectId === projectId),
   );
   const classify = (r: ProjectResource) => {
     if (r.kind === "项目笔记") return "项目档案";
@@ -520,7 +521,7 @@ export function ResourceBrowser({
               dispatch({
                 type: "resource",
                 item: {
-                  id: crypto.randomUUID(),
+                  id: randomId(),
                   projectId: project,
                   title: title.trim(),
                   kind,

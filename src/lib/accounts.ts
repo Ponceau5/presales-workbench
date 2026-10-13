@@ -17,8 +17,8 @@ export const accounts = roles.map((role, index) => ({
   name: role + "演示账号",
   role,
 }));
-export function authenticate(username: string, password: string) {
-  return password === demoPassword
+export function authenticate(username: string, password: string, serverVerified = false) {
+  return serverVerified || password === demoPassword
     ? accounts.find((a) => a.id === username.trim())
     : undefined;
 }
@@ -71,3 +71,10 @@ export function canManageConnection(role: Role) {
 export function canPublishSoftware(role: Role) {
   return role === "软件产品" || role === "PM / PO";
 }
+
+export function registerAccount(person: {id:string;display_name:string;role_name:Role}) {
+  const found=accounts.find(a=>a.id===person.id);
+  if(found){found.name=person.display_name;found.role=person.role_name;}
+  else accounts.push({id:person.id,name:person.display_name,role:person.role_name});
+}
+try {if(typeof sessionStorage!=="undefined") {const p=JSON.parse(sessionStorage.getItem("presales-person")||"null");if(p)registerAccount(p);}}catch {/* No authenticated identity yet. */}

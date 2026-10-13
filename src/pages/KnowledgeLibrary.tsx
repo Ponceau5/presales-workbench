@@ -1,3 +1,4 @@
+import { randomId } from "@/lib/id";
 import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import {
@@ -60,7 +61,7 @@ export default function Portal() {
     dispatch({
       type: "knowledge",
       item: {
-        id: crypto.randomUUID(),
+        id: randomId(),
         title,
         summary,
         content,

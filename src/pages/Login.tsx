@@ -3,7 +3,6 @@ import { useNavigate } from "react-router";
 import { ArrowRight, Eye, EyeOff, LoaderCircle } from "lucide-react";
 import { BrandMark } from "@/components/BrandMark";
 import { useWorkbench } from "@/state/workbench";
-import { authenticate } from "@/lib/accounts";
 import { connectLocalApi, clearLocalApiSession } from "@/lib/localApi";
 export default function Login() {
   const { state, dispatch } = useWorkbench();
@@ -12,6 +11,7 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [visible,setVisible]=useState(false);
   const [submitting,setSubmitting]=useState(false);
+  const [error,setError]=useState("");
   return (
     <main className="signin">
       <div className="signin-logo">
@@ -23,20 +23,16 @@ export default function Login() {
         <form
           onSubmit={async (e) => {
             e.preventDefault();
-            if (!authenticate(username, password)) {
-              dispatch({ type: "login", username, password });
-              return;
-            }
-            setSubmitting(true);
+            setSubmitting(true);setError("");
             try {
               await connectLocalApi(username.trim(), password);
-            } catch {
-              // The browser-only mock stays usable without the optional local API.
+              dispatch({ type: "login", username, password, serverVerified: true });
+              navigate("/");
+            } catch (e) {
               clearLocalApiSession();
-            }
-            setSubmitting(false);
-            dispatch({ type: "login", username, password });
-            navigate("/");
+              setError(e instanceof Error ? e.message : "登录失败，请重试");
+            } finally {setSubmitting(false);}
+
           }}
         >
           <label>
@@ -61,6 +57,7 @@ export default function Login() {
               onChange={(e) => setPassword(e.target.value)}
             /><button type="button" aria-label={visible?"隐藏密码":"显示密码"} onClick={()=>setVisible(!visible)}>{visible?<EyeOff size={17}/>:<Eye size={17}/>}</button></div>
           </label>
+          {error&&<p role="alert">{error}</p>}
           {state.permissionNotice && (
             <p role="alert">{state.permissionNotice}</p>
           )}

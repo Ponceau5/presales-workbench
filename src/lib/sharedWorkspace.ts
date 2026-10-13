@@ -36,7 +36,7 @@ export function mergeShared(s: State, shared?: SharedWorkspace | null): State {
   )?.snapshot;
   return {
     ...s,
-    projects: shared.projects.some(p => p.id === "GSA02") ? shared.projects : [...shared.projects, { id: "GSA02", name: "泰国 GSA02", owner: "软件产品", updated: "2026-10-10" }],
+    projects: shared.projects,
     activity: shared.activity || [],
     followups: shared.followups || [],
     resources: shared.resources || s.resources,

@@ -1,0 +1,13 @@
+[Unit]
+Description=Presales Workbench API
+After=network-online.target
+Wants=network-online.target
+[Service]
+WorkingDirectory=/opt/salesworkbench
+EnvironmentFile=/opt/salesworkbench/cloud.env
+ExecStart=/opt/salesworkbench/venv/bin/uvicorn app:app --app-dir server --host 127.0.0.1 --port 8000 --no-access-log
+Restart=always
+RestartSec=3
+UMask=0077
+[Install]
+WantedBy=multi-user.target

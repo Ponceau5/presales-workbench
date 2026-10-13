@@ -1,3 +1,4 @@
+import { randomId } from "@/lib/id";
 import {
   executeAgentTask,
   inferTask,
@@ -146,9 +147,9 @@ export function ProjectAssistant() {
       reply = `${p.name} 可按项目流程查看资料、专业协作、报价与合同环节。F5 的 F3S 工作区提供本轮软件评审演示。`;
     setMessages((prev) => [
       ...prev,
-      { id: crypto.randomUUID(), role: "user", text: value },
+      { id: randomId(), role: "user", text: value },
       {
-        id: crypto.randomUUID(),
+        id: randomId(),
         role: "assistant",
         text: reply,
         ...(change

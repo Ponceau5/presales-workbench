@@ -11,6 +11,7 @@ function moduleUrl(file, imports = {}) {
       target: ts.ScriptTarget.ES2022,
     },
   }).outputText;
+  if (file !== "src/lib/id.ts") imports = {"@/lib/id": moduleUrl("src/lib/id.ts"), ...imports};
   for (const [name, url] of Object.entries(imports))
     code = code
       .replaceAll(`'${name}'`, JSON.stringify(url))

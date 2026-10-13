@@ -1,3 +1,4 @@
+import { randomId } from "@/lib/id";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
@@ -139,7 +140,7 @@ export function SoftwareConversation({ projectId }: { projectId: string }) {
   const post = (role: "agent" | "you", text: string, artifacts?: ArtifactId[]) =>
     setMsgs((m) => [
       ...m,
-      { id: crypto.randomUUID(), role, text, artifacts },
+      { id: randomId(), role, text, artifacts },
     ]);
 
   function persist(
@@ -729,7 +730,7 @@ export function SoftwareConversation({ projectId }: { projectId: string }) {
                               onClick={() =>
                                 persist(item, "verify", {
                                   extraction: {
-                                    runId: crypto.randomUUID(),
+                                    runId: randomId(),
                                     at: new Date().toISOString(),
                                     source: item.source,
                                     requirement:

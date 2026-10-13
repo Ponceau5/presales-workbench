@@ -4,7 +4,7 @@ export default function Activity() {
   const { state } = useWorkbench();
   const [mine, setMine] = useState(false);
   const rows = state.activity.filter(
-    (a) => !mine || a.accountId === state.accountId,
+    (a) => state.projects.some(p=>p.id===a.projectId) && (!mine || a.accountId === state.accountId),
   );
   return (
     <section className="activity-page">

@@ -1,0 +1,11 @@
+node_modules
+dist
+.git
+.env
+.env.*
+server/.local
+data
+public/project-data
+public/shared
+__pycache__
+*.pyc

@@ -5,8 +5,9 @@ import { addQuoteSheetToCostTemplate, fillCostTemplate } from "@/lib/f7CostTempl
 
 export type F7TemplateKind = "cost" | "quote";
 export type F7DemoScenario = {
+  demo_kind?:string;
   project: string;
-  crm: { sku: string; name: string; qty: number; listUnit: number; costUnit: number; quoteUnit: number; kind: string; basis: string }[];
+  crm: { model?:string;source?:string;sku: string; name: string; qty: number; listUnit: number; costUnit: number; quoteUnit: number; kind: string; basis: string }[];
   quoteRows: { sku: string; name: string; kind: string; qty: number; costUnit: number; quoteUnit: number; basis: string }[];
   assumptions: string[];
   templateInputs: Record<string, string | number>;
@@ -82,22 +83,22 @@ function columnName(index: number) {
   return name;
 }
 
-export default function F7TableTemplate({ kind, projectId, draft, generatedAt, demoScenario }: { kind: F7TemplateKind; projectId: string; draft?: string; generatedAt?: string; demoScenario?: F7DemoScenario | null }) {
+export default function F7TableTemplate({ kind, projectId, draft, generatedAt, demoScenario,onCellEdit,onDownload }: {onCellEdit?:(key:string,value:string|number)=>void;onDownload?:()=>void; kind: F7TemplateKind; projectId: string; draft?: string; generatedAt?: string; demoScenario?: F7DemoScenario | null }) {
   const [active, setActive] = useState(0);
   const [downloadError, setDownloadError] = useState("");
   const sheet = costSheets[active];
   return <section className="gsa-f7-template" aria-label={kind === "cost" ? "海外成本估算模板预览" : "逐项报价表模板预览"}>
     <F7ReviewSummary kind={kind} draft={draft} generatedAt={generatedAt} demoScenario={demoScenario}/>
     <div className="gsa-f7-template-head">
-      <div><strong>{kind === "cost" ? "海外成本估算模板 V6" : "报价单 · 成本模板 V6"}</strong><p>{kind === "quote" ? `导出 Excel：首个页签为报价明细，后续保留 V6 成本模板全部 7 个页签和原公式。${demoScenario ? "间接成本列入明细，由合同总价覆盖。" : "数量、价格和定价依据待人工补充。"}` : demoScenario ? `已填入 ${demoScenario.project} 的虚构 CRM 和演示计算；主表关键输入已填，辅助页仍有非演示项。Excel 保留原有公式，打开时重新计算。` : "参考模板共 7 个页签。保留原有公式、格式与填写说明；当前只带入项目编号。"}</p></div>
-      <button className="btn secondary" onClick={() => void downloadF7Template(kind, projectId, demoScenario, generatedAt).catch(error => setDownloadError(error instanceof Error ? error.message : "下载失败"))}><Download size={14}/>下载 Excel {demoScenario ? "演示表" : "模板"}</button>
+      <div><strong>{kind === "cost" ? "海外成本估算模板 V6" : "报价单 · 成本模板 V6"}</strong></div>
+      <button className="btn secondary" onClick={() => onDownload?onDownload():void downloadF7Template(kind, projectId, demoScenario, generatedAt).catch(error => setDownloadError(error instanceof Error ? error.message : "下载失败"))}><Download size={14}/>下载 Excel</button>
     </div>
     {downloadError && <p role="alert" className="gsa-error">{downloadError}</p>}
-    <p className="gsa-f7-template-note">{demoScenario ? "模拟数据仅用于流程演示；CRM 价格、采购回价、税费和报价均非当前项目事实，不能直接对外使用。" : "模板中的空白与“待补”不代表已核算或已批准金额；需要人工核对来源、币种和审批结果。"}</p>
+
     {kind === "cost" ? <>
       <div className="gsa-f7-template-tabs" role="tablist" aria-label="成本模板页签">{costSheets.map((item, index) => <button key={item.name} role="tab" aria-selected={active === index} className={active === index ? "active" : ""} onClick={() => setActive(index)}>{item.name}</button>)}</div>
-      <p className="gsa-f7-template-sheet-title">{sheet.title}{sheet.guide ? ` · ${sheet.guide}` : ""}</p>
-      <div className="gsa-f7-template-scroll gsa-f7-cost-grid" role="region" aria-label={`${sheet.name}表格预览`} tabIndex={0}><table style={{ minWidth: Math.max(680, sheet.columns * 105) }}><thead><tr><th>行</th>{Array.from({ length: sheet.columns }, (_, index) => <th key={index}>{columnName(index + 1)}</th>)}</tr></thead><tbody>{sheet.rows.map(row => { const cells = new Map(row.cells.map(cell => [cell.column, cell])); return <tr key={row.number} className={active===0&&(row.number===13||row.number===54)?"gsa-f7-business-header":undefined}><th scope="row">{row.number}</th>{Array.from({ length: sheet.columns }, (_, index) => { const cell = cells.get(index + 1); const key = `${active + 1}:${columnName(index + 1)}${row.number}`; const demoValue = demoScenario?.templateInputs[key] ?? demoScenario?.calculatedCells[key]; const text = demoValue !== undefined ? typeof demoValue === "number" ? demoValue.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) : demoValue : cell?.ref === "A1" && active === 0 ? `${projectId}项目-成本估算草稿` : cell?.value !== null && cell?.value !== undefined && cell?.value !== "" ? String(cell.value) : cell?.formula ? "Excel 公式" : cell?.input ? "待补" : ""; return <td key={index} className={demoValue === undefined && cell?.input && !cell.value ? "pending" : cell?.formula ? "formula" : ""} title={cell?.ref}>{text}</td>; })}</tr>; })}</tbody></table></div>
+      <p className="gsa-f7-template-sheet-title">{sheet.title}</p>
+      <div className="gsa-f7-template-scroll gsa-f7-cost-grid" role="region" aria-label={`${sheet.name}表格预览`} tabIndex={0}><table style={{ minWidth: Math.max(680, sheet.columns * 105) }}><thead><tr><th>行</th>{Array.from({ length: sheet.columns }, (_, index) => <th key={index}>{columnName(index + 1)}</th>)}</tr></thead><tbody>{sheet.rows.map(row => { const cells = new Map(row.cells.map(cell => [cell.column, cell])); return <tr key={row.number} className={active===0&&(row.number===13||row.number===54)?"gsa-f7-business-header":undefined}><th scope="row">{row.number}</th>{Array.from({ length: sheet.columns }, (_, index) => { const cell = cells.get(index + 1); const key = `${active + 1}:${columnName(index + 1)}${row.number}`; const demoValue = demoScenario?.templateInputs[key] ?? demoScenario?.calculatedCells[key]; const text = demoValue !== undefined ? typeof demoValue === "number" ? demoValue.toLocaleString("zh-CN", { maximumFractionDigits: 2 }) : demoValue : cell?.ref === "A1" && active === 0 ? `${projectId}项目-成本估算草稿` : cell?.value !== null && cell?.value !== undefined && cell?.value !== "" ? String(cell.value) : cell?.formula ? "Excel 公式" : cell?.input ? "待补" : ""; return <td key={index} className={demoValue === undefined && cell?.input && !cell.value ? "pending" : cell?.formula ? "formula" : ""} title={cell?.ref}>{onCellEdit&&cell?.input&&!cell.formula?<input aria-label={`${sheet.name} ${cell.ref}`} type={cell.input==="number"?"number":"text"} step="any" value={demoValue??cell.value??""} onChange={e=>onCellEdit(key,cell.input==="number"&&e.target.value!==""?Number(e.target.value):e.target.value)}/>:text}</td>; })}</tr>; })}</tbody></table></div>
     </> : <div className="gsa-f7-template-scroll" role="region" aria-label="报价表格预览" tabIndex={0}><table style={{ minWidth: quoteHeaders.length * 118 }}><thead><tr>{quoteHeaders.map(header => <th key={header}>{header}</th>)}</tr></thead><tbody>{demoScenario ? <>{demoScenario.quoteRows.map(row => { const cost = row.qty * row.costUnit, price = row.qty * row.quoteUnit; return <tr key={row.sku}><td>{demoScenario.project}</td><td>DEMO-V1</td><td>{row.sku}</td><td>{row.kind}</td><td>{row.name}</td><td>{row.qty}</td><td>{row.costUnit.toLocaleString("zh-CN")}</td><td>{cost.toLocaleString("zh-CN")}</td><td>{row.quoteUnit ? (row.quoteUnit / row.costUnit).toFixed(2) : "—"}</td><td>{row.quoteUnit.toLocaleString("zh-CN")}</td><td>{price.toLocaleString("zh-CN")}</td><td>{row.quoteUnit.toLocaleString("zh-CN")}</td><td>{price.toLocaleString("zh-CN")}</td><td>—</td><td>模拟待审核</td><td>{row.basis}</td></tr>; })}<tr className="gsa-f7-business-header"><td>{demoScenario.project}</td><td>DEMO-V1</td><td/><td>合计</td><td/><td/><td/><td/><td/><td/><td/><td/><td>{demoScenario.totals.quote.toLocaleString("zh-CN")}</td><td/><td>模拟待审核</td><td>全表为虚构演示数据</td></tr></> : quoteCategories.map(category => <tr key={category}><td>{projectId}</td><td/><td/><td>{category}</td>{Array.from({ length: 10 }, (_, index) => <td key={index} className="pending">待补</td>)}<td>待补成本与定价依据</td><td/></tr>)}</tbody></table></div>}
   </section>;
 }

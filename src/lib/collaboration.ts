@@ -1,3 +1,4 @@
+import { randomId } from "@/lib/id";
 import type { State } from "@/state/workbench";
 import type { Role } from "./workspace";
 import { routeTargets, routeRecipients, workflowRoutes } from "./workflowEngine";
@@ -62,7 +63,7 @@ export function publishDelivery(
       deliveries = [
         {
           ...input,
-          id: crypto.randomUUID(),
+          id: randomId(),
           projectId: s.currentProjectId,
           toStage,
           owner,

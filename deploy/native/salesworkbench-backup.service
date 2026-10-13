@@ -1,0 +1,8 @@
+[Unit]
+Description=Presales database backup
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/salesworkbench
+EnvironmentFile=/opt/salesworkbench/cloud.env
+ExecStart=/opt/salesworkbench/venv/bin/python /opt/salesworkbench/server/backup_state.py
+UMask=0077

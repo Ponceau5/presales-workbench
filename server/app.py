@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import object_storage
+import access_control
 import csv
 import json
 import os
@@ -14,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Request, Cookie, Response, Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
@@ -60,6 +62,8 @@ ROLE_BY_ACCOUNT = {
     "pm": "PM / PO",
 }
 DEMO_PASSWORD = os.environ.get("PRESALES_DEMO_PASSWORD", "demo2026")
+if object_storage.enabled() and (DEMO_PASSWORD == "demo2026" or DEMO_PASSWORD == "CHANGE_TO_A_LONG_PASSWORD" or len(DEMO_PASSWORD) < 16):
+    raise RuntimeError("云部署必须设置至少 16 位的 PRESALES_DEMO_PASSWORD")
 SESSIONS: dict[str, str] = {}
 app = FastAPI(title="售前工作台 · 本机测试 API", version="0.1.0")
 app.add_middleware(
@@ -160,18 +164,19 @@ def init_db() -> None:
 
 
 init_db()
+access_control.init(db,DEMO_PASSWORD)
 
 
-def actor(authorization: str = Header(default="")) -> str:
+def actor(request: Request, authorization: str = Header(default="")) -> str:
     token = authorization.removeprefix("Bearer ")
-    account = SESSIONS.get(token)
-    if not account:
-        raise HTTPException(status_code=401, detail="请先登录")
+    account = access_control.session(token)
+    access_control.authorize(account,request)
     return account
 
 
+
 def require_account(account: str, allowed: set[str]) -> None:
-    if account not in allowed:
+    if access_control.role_of(account) not in allowed:
         raise HTTPException(status_code=403, detail="当前岗位无权操作")
 
 
@@ -198,15 +203,14 @@ class Login(BaseModel):
 
 
 @app.post("/api/session")
-def login(payload: Login):
-    if payload.username not in ROLE_BY_ACCOUNT or not secrets.compare_digest(
-        payload.password, DEMO_PASSWORD
-    ):
-        raise HTTPException(status_code=401, detail="账号或密码不正确")
-    token = secrets.token_urlsafe(32)
+def login(payload: Login, response: Response):
+    token,person=access_control.login(payload.username,payload.password)
     SESSIONS[token] = payload.username
-    return {"token": token, "account": payload.username,
-            "role": ROLE_BY_ACCOUNT[payload.username]}
+    response.set_cookie("presales_source_session",token,httponly=True,samesite="lax",secure=os.getenv("PRESALES_HTTPS")=="1",path="/",max_age=28800)
+    return {"token":token,"account":person["id"],"role":person["role_name"],"person":person}
+
+access_control.install(app,actor)
+
 
 
 @app.get("/api/model/status")
@@ -281,7 +285,8 @@ def stored_pages(connection: sqlite3.Connection, document: sqlite3.Row) -> list[
     ).fetchall()
     if cached:
         return [row["text"] for row in cached]
-    parsed = pages(Path(document["path"]))
+    with object_storage.materialize(document["path"]) as original:
+        parsed = pages(original)
     connection.executemany(
         "INSERT OR REPLACE INTO document_pages VALUES (?,?,?)",
         [(document["id"], number, text) for number, text in enumerate(parsed, 1)],
@@ -297,7 +302,7 @@ async def upload_document(
     file: UploadFile = File(...),
     account: str = Depends(actor),
 ):
-    require_account(account, {"sales", "software", "pm"})
+    require_account(account, set(access_control.ROLES))
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in {".pdf", ".txt", ".md", ".docx", ".xlsx"} or not title.strip() or not version.strip():
         raise HTTPException(status_code=422, detail="支持带标题和版本的 PDF、Word (.docx)、Excel (.xlsx)、Markdown/文本")
@@ -316,6 +321,7 @@ async def upload_document(
         if not size:
             raise HTTPException(status_code=422, detail="空文件")
         parsed_pages = pages(destination)
+        stored_location = object_storage.save(destination, object_storage.key_for(project_id, identifier, suffix))
         new_text = " ".join("\n".join(parsed_pages).split())
         with db() as connection:
             previous = connection.execute(
@@ -325,7 +331,7 @@ async def upload_document(
             connection.execute(
                 "INSERT INTO documents VALUES (?,?,?,?,?,?,?,?,?)",
                 (identifier, project_id, title.strip(), version.strip(),
-                 Path(file.filename or "source").name, str(destination),
+                 Path(file.filename or "source").name, stored_location,
                  digest.hexdigest(), account, now()),
             )
             connection.executemany(
@@ -356,6 +362,7 @@ async def upload_document(
                         stale += 1
             log(connection, project_id, account, "document_uploaded", identifier,
                 f"{title.strip()} {version.strip()}; 失效要求 {stale} 条")
+        if object_storage.enabled(): destination.unlink(missing_ok=True)
         return {"id": identifier, "version": version.strip(),
                 "sha256": digest.hexdigest(), "invalidated": stale}
     except Exception:
@@ -363,11 +370,94 @@ async def upload_document(
         raise
 
 
+class DirectUpload(BaseModel):
+    filename: str = Field(min_length=1, max_length=240)
+    title: str = Field(min_length=1, max_length=240)
+    version: str = Field(min_length=1, max_length=80)
+    size: int = Field(gt=0, le=100*1024*1024)
+
+@app.get("/api/storage/status")
+def storage_status(account: str = Depends(actor)):
+    return {"direct_upload": object_storage.enabled()}
+
+@app.post("/api/projects/{project_id}/uploads/prepare")
+def prepare_upload(project_id: str, payload: DirectUpload, account: str = Depends(actor)):
+    require_account(account, {"sales", "software", "pm"})
+    if not object_storage.enabled(): raise HTTPException(409, "未启用对象存储")
+    suffix=Path(payload.filename).suffix.lower()
+    if suffix not in {".pdf", ".txt", ".md", ".docx", ".xlsx"}: raise HTTPException(422, "不支持此文件格式")
+    identifier=str(uuid4()); key="pending/"+identifier+suffix
+    import time
+    with db() as c:
+        c.execute("CREATE TABLE IF NOT EXISTS object_uploads (id TEXT PRIMARY KEY, project_id TEXT, account TEXT, payload TEXT, object_key TEXT, expires REAL, document_id TEXT)")
+        c.execute("INSERT INTO object_uploads VALUES (?,?,?,?,?,?,NULL)",(identifier,project_id,account,payload.model_dump_json(),key,time.time()+900))
+    headers={"Content-Type":"application/octet-stream"}
+    return {"id":identifier,"url":object_storage.bucket(True).sign_url("PUT",key,900,headers=headers,slash_safe=True),"headers":headers}
+
+@app.post("/api/projects/{project_id}/uploads/{identifier}/complete")
+async def complete_upload(project_id: str, identifier: str, account: str = Depends(actor)):
+    import time
+    with db() as c:
+        row=c.execute("SELECT * FROM object_uploads WHERE id=? AND project_id=? AND account=?",(identifier,project_id,account)).fetchone()
+    if not row: raise HTTPException(404,"上传记录不存在")
+    if row["document_id"]: return {"id":row["document_id"]}
+    if row["expires"]<time.time(): raise HTTPException(410,"上传授权已过期，请重新导入")
+    payload=json.loads(row["payload"]); client=object_storage.bucket()
+    if client.head_object(row["object_key"]).content_length != payload["size"]: raise HTTPException(422,"文件大小与上传声明不一致")
+    with object_storage.materialize("oss://"+row["object_key"]) as original:
+        with original.open("rb") as handle:
+            result=await upload_document(project_id,payload["title"],payload["version"],UploadFile(file=handle,filename=payload["filename"]),account)
+    with db() as c: c.execute("UPDATE object_uploads SET document_id=? WHERE id=?",(result["id"],identifier))
+    client.delete_object(row["object_key"])
+    return result
+
+@app.get("/api/documents/{identifier}/download")
+def download_document(identifier: str, account: str = Depends(actor)):
+    with db() as c: row=c.execute("SELECT * FROM documents WHERE id=?",(identifier,)).fetchone()
+    if not row: raise HTTPException(404,"资料不存在")
+    return object_storage.download(row["path"], row["filename"])
+
+
+def sync_project_sources():
+    manifest_path = FILES_DIR / "GSA02/materials.json"
+    if not manifest_path.exists(): return
+    manifest = json.loads(manifest_path.read_text()).get("manifest", [])
+    for entry in manifest:
+        if entry["id"] in {"skill", "model"}: continue
+        identifier = "gsa-source-" + entry["id"] + "-" + entry["sha256"][:12]
+        with db() as c:
+            if c.execute("SELECT 1 FROM documents WHERE id=?", (identifier,)).fetchone(): continue
+        original = FILES_DIR / "GSA02" / entry["snapshot_name"]
+        if not original.exists(): continue
+        parsed = [] if original.suffix.lower() in {".png", ".jpg"} else pages(original)
+        with db() as c:
+            c.execute("INSERT OR IGNORE INTO documents VALUES (?,?,?,?,?,?,?,?,?)", (identifier,"GSA02",entry["title"],"SHA-"+entry["sha256"][:8],entry["title"],str(original),entry["sha256"],"system",now()))
+            c.executemany("INSERT OR IGNORE INTO document_pages VALUES (?,?,?)", [(identifier,i+1,text) for i,text in enumerate(parsed)])
+
+    # Register the exact solution handover/merged file as a project document too.
+    with db() as c:
+        try:flow=c.execute("SELECT * FROM sizing_workflow WHERE project_id='GSA02'").fetchone()
+        except sqlite3.OperationalError:flow=None
+    if flow:
+        for field,label in [("equipment_file","解决方案配置清单"),("merged_file","解决方案完整配置清单")]:
+            if not flow[field]:continue
+            path=FILES_DIR/"GSA02"/flow[field]
+            if not path.exists():continue
+            digest=hashlib.sha256(path.read_bytes()).hexdigest();identifier="gsa-handover-"+field+"-"+str(flow["equipment_revision"])+"-"+digest[:12]
+            with db() as c:
+                if c.execute("SELECT 1 FROM documents WHERE id=?",(identifier,)).fetchone():continue
+                # Reuse registered snapshot; don't duplicate the original file.
+                content=pages(path)
+                c.execute("INSERT INTO documents VALUES (?,?,?,?,?,?,?,?,?)",(identifier,"GSA02",label,"清单 V"+str(flow['equipment_revision']),path.name,str(path),digest,"solution",now()))
+                c.executemany("INSERT INTO document_pages VALUES (?,?,?)",[(identifier,i+1,text) for i,text in enumerate(content)])
+
+
 @app.get("/api/projects/{project_id}/documents")
 def list_documents(project_id: str, account: str = Depends(actor)):
+    if project_id == "GSA02": sync_project_sources()
     with db() as connection:
         return [dict(row) for row in connection.execute(
-            "SELECT d.id, d.title, d.version, d.filename, d.sha256, d.actor, d.created_at, "
+            "SELECT d.id, d.title, d.version, d.filename, d.sha256, d.actor, d.created_at, CASE WHEN d.id LIKE 'gsa-f7-reference-%' THEN 'F7' ELSE NULL END AS stage_id, "
             "(SELECT COUNT(*) FROM document_pages p WHERE p.document_id=d.id) AS page_count "
             "FROM documents d WHERE d.project_id=? ORDER BY d.created_at DESC", (project_id,),
         )]
@@ -738,8 +828,8 @@ def create_handoff(requirement_id: str, payload: HandoffRequest,
 def inbox(account: str = Depends(actor)):
     with db() as connection:
         return [dict(row) for row in connection.execute(
-            "SELECT * FROM handoffs WHERE owner=? ORDER BY created_at DESC", (account,),
-        )]
+            "SELECT * FROM handoffs WHERE owner=? ORDER BY created_at DESC", (access_control.role_of(account),),
+        ) if row["project_id"] in access_control.allowed_projects(account)]
 
 
 @app.get("/api/projects/{project_id}/handoffs")
@@ -759,7 +849,7 @@ class Reply(BaseModel):
 def reply(handoff_id: str, payload: Reply, account: str = Depends(actor)):
     with db() as connection:
         handoff = row_or_404(connection, "handoffs", handoff_id)
-        if handoff["owner"] != account:
+        if handoff["owner"] != access_control.role_of(account):
             raise HTTPException(status_code=403, detail="仅接收岗位可答复")
         if handoff["status"] != "pending" or handoff["outdated"]:
             raise HTTPException(status_code=409, detail="交接已处理或来源失效")
@@ -932,20 +1022,20 @@ def project_progress(project_id: str, account: str = Depends(actor)):
 def tasks(account: str = Depends(actor)):
     result = []
     with db() as connection:
-        if account in {"sales", "dev", "solution"}:
+        if access_control.role_of(account) in {"sales", "dev", "solution"}:
             for row in connection.execute(
                 "SELECT h.*, r.quote, d.version AS source_version "
                 "FROM handoffs h JOIN requirements r ON r.id=h.requirement_id "
                 "JOIN documents d ON d.id=r.document_id "
                 "WHERE h.owner=? AND h.status='pending' AND h.outdated=0 "
-                "ORDER BY h.created_at DESC", (account,),
+                "ORDER BY h.created_at DESC", (access_control.role_of(account),),
             ):
                 result.append({"id": row["id"], "project_id": row["project_id"],
                                "requirement_id": row["requirement_id"],
                                "title": row["question"], "status": "待答复",
                                "owner": row["sender"] + " → " + row["owner"],
                                "source_version": row["source_version"]})
-        if account == "software":
+        if access_control.role_of(account) == "software":
             labels = {"candidate": "待核对", "verified": "待专业判断",
                       "rejected": "待重审", "approved": "待写回", "stale": "版本失效"}
             for row in connection.execute(
@@ -970,7 +1060,7 @@ def tasks(account: str = Depends(actor)):
                                "requirement_id": row["requirement_id"],
                                "title": row["question"], "status": "待处理答复",
                                "owner": row["owner"] + " → 软件产品"})
-    return result
+    return [r for r in result if r["project_id"] in access_control.allowed_projects(account)]
 
 
 from gsa_router import install as install_gsa
@@ -979,5 +1069,45 @@ install_gsa(app, DB_PATH, FILES_DIR, actor, require_account)
 from workspace_router import install as install_workspaces
 install_workspaces(app, db, actor, now, log)
 
+from workflow_studio import install as install_workflow_studio
+install_workflow_studio(app,db,actor,FILES_DIR)
+
 from role_config import install as install_role_config
 install_role_config(app, db, actor, now, FILES_DIR)
+sync_project_sources()
+
+def register_f7_demo_reference():
+    path=FILES_DIR/"GSA02/F7-演示参考资料.xlsx"
+    if not path.exists():return
+    digest=hashlib.sha256(path.read_bytes()).hexdigest();identifier="gsa-f7-reference-"+digest[:12]
+    with db() as c:
+        if c.execute("SELECT 1 FROM documents WHERE id=?",(identifier,)).fetchone():return
+    content=pages(path)
+    with db() as c:
+        c.execute("INSERT INTO documents VALUES (?,?,?,?,?,?,?,?,?)",(identifier,"GSA02","F7 演示参考资料：CRM、国家标准及默认参数","演示 V1",path.name,str(path),digest,"system",now()))
+        c.executemany("INSERT INTO document_pages VALUES (?,?,?)",[(identifier,i+1,t) for i,t in enumerate(content)])
+register_f7_demo_reference()
+
+
+@app.get("/api/source-assets/{asset_path:path}")
+def source_asset(asset_path: str, presales_source_session: str = Cookie(default="")):
+    person=access_control.session(presales_source_session)
+    if asset_path.startswith("project-data/rcjm1/"):access_control.check_project(person,"RCJM1")
+    relative=Path(asset_path)
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts or relative.parts[0] not in {"shared","project-data"}:
+        raise HTTPException(404,"资料不存在")
+    key="reference-assets/"+relative.as_posix()
+    if object_storage.enabled():
+        if not object_storage.bucket().object_exists(key): raise HTTPException(404,"资料不存在")
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(object_storage.bucket(True).sign_url("GET",key,300,slash_safe=True),headers={"Cache-Control":"no-store"})
+    from fastapi.responses import FileResponse
+    path=Path(__file__).resolve().parents[1]/"public"/relative
+    if not path.is_file():raise HTTPException(404,"资料不存在")
+    return FileResponse(path)
+
+import workspace_materials
+workspace_materials.install(app,db,actor)
+
+import f7_cost_flow
+f7_cost_flow.install(app,db,actor)

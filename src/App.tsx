@@ -11,7 +11,7 @@ import { PersonalTasks } from "@/components/PersonalTasks";
 import Login from "@/pages/Login";
 import Activity from "@/pages/Activity";
 import { accounts } from "@/lib/accounts";
-import { localApi, localApiReady, clearLocalApiSession } from "@/lib/localApi";
+import { localApi, localApiReady, clearLocalApiSession, currentPerson } from "@/lib/localApi";
 import KnowledgeLibrary from "@/pages/KnowledgeLibrary";
 import Resources from "@/pages/Resources";
 import { ProjectAssistant } from "@/components/ProjectAssistant";
@@ -97,6 +97,8 @@ export default function App() {
     }
     const merged = mergeShared(s, loadShared());
     if (!merged.projects.some(p => p.id === "GSA02")) merged.projects.push({ id: "GSA02", name: "泰国 GSA02", owner: "软件产品", updated: "2026-10-10" });
+    const person=currentPerson();
+    if(person){const permitted=new Set(person.projects.map(p=>p.id));merged.projects=merged.projects.filter(p=>permitted.has(p.id));if(!permitted.has(merged.currentProjectId))merged.currentProjectId=merged.projects[0]?.id||"";}
     return merged;
   });
   const stateRef = useRef(state);
@@ -121,7 +123,11 @@ export default function App() {
   const dispatch = useCallback((action: Action) => {
     if (action.type === "logout" && !stateRef.current.running) clearLocalApiSession();
     const current = mergeShared(stateRef.current, loadShared());
+    const person=currentPerson();if(person){const permitted=new Set(person.projects.map(p=>p.id));current.projects=current.projects.filter(p=>permitted.has(p.id));}
     const next = reducer(current, action);
+    if(action.type==="login"){
+      const person=currentPerson();if(person){const permitted=new Set(person.projects.map(p=>p.id));next.projects=next.projects.filter(p=>permitted.has(p.id));for(const p of person.projects)if(!next.projects.some(x=>x.id===p.id))next.projects.push({...p,owner:next.role,updated:""});if(!permitted.has(next.currentProjectId))next.currentProjectId=next.projects[0]?.id||"";}
+    }
     stateRef.current = next;
     if (
       ![

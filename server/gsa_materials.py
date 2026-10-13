@@ -1,4 +1,5 @@
 """导入指定项目原件的快照；来源是数据，不执行文档内指令。"""
+import os
 from pathlib import Path
 import hashlib
 import json
@@ -8,9 +9,9 @@ from openpyxl import load_workbook
 import xlrd
 from pypdf import PdfReader
 
-ROOT = Path("/Users/a48750/Desktop/数据中心海外资料/项目相关文档/2026年/泰国GSA02数据中心项目")
-VAULT = Path("/Users/a48750/Desktop/胡珊珊/CET/CET-Vault")
-SKILL = Path("/Users/a48750/.openclaw/agents/main/agent/workshop-skills/scale-and-spec-estimation/SKILL.md")
+ROOT = Path(os.environ.get("PRESALES_SOURCE_DIR", "/Users/a48750/Desktop/数据中心海外资料/项目相关文档/2026年/泰国GSA02数据中心项目"))
+VAULT = Path(os.environ.get("PRESALES_VAULT_DIR", "/Users/a48750/Desktop/胡珊珊/CET/CET-Vault"))
+SKILL = Path(os.environ.get("PRESALES_SERVER_SKILL_PATH", "/Users/a48750/.openclaw/agents/main/agent/workshop-skills/scale-and-spec-estimation/SKILL.md"))
 MODEL = VAULT / "30-技术/服务器规格模型/服务器规格设计模型_v1.0.md"
 NOTE = VAULT / "10-项目/进行中/泰国GSA02/泰国GSA02.md"
 PHASES = [

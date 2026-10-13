@@ -1,3 +1,4 @@
+import { randomId } from "@/lib/id";
 import { useState } from "react";
 import { DocumentReader } from "@/components/SourceReader";
 import type {
@@ -74,7 +75,7 @@ export function SoftwareIntake({
             ? `BMS Spec · ${source.pages?.length || 0} 页`
             : `DCOM 需求分析 v2 · ${source.paragraphs?.length || 0} 段`;
       }
-      const runId = crypto.randomUUID();
+      const runId = randomId();
       const at = new Date().toISOString();
       let next = review;
       const rows = roots.filter(

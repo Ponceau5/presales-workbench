@@ -1,3 +1,4 @@
+import { randomId } from "@/lib/id";
 import {
   publishDelivery,
   invalidateDelivery,
@@ -235,7 +236,7 @@ export type Action =
       category: string;
     }
   | { type: "agentRun"; projectId: string; id: string; summary: string }
-  | { type: "login"; username: string; password: string }
+  | { type: "login"; username: string; password: string; serverVerified?: boolean }
   | { type: "followupAccept"; id: string; projectId: string }
   | { type: "followupComplete"; id: string; projectId: string; result: string }
   | {
@@ -376,7 +377,7 @@ export function reducer(s: State, a: Action): State {
   if (a.type === "hydrateShared") return a.state;
   if (a.type === "dismissPermission") return { ...s, permissionNotice: "" };
   if (a.type === "login") {
-    const account = authenticate(a.username, a.password);
+    const account = authenticate(a.username, a.password, a.serverVerified);
     if (!account) return { ...s, permissionNotice: "账号或密码不正确" };
     return {
       ...s,
@@ -505,7 +506,7 @@ export function reducer(s: State, a: Action): State {
     permissionNotice: "",
     activity: [
       {
-        id: crypto.randomUUID(),
+        id: randomId(),
         at: new Date().toISOString(),
         accountId: actor.id,
         role: actor.role,
@@ -538,7 +539,7 @@ export function domainReducer(s: State, a: Action): State {
     note: string,
     actor: string,
   ): Audit => ({
-    id: crypto.randomUUID(),
+    id: randomId(),
     at: new Date().toISOString(),
     actor,
     action,
@@ -642,7 +643,7 @@ export function domainReducer(s: State, a: Action): State {
       projects: [
         ...s.projects,
         {
-          id: "DEMO-" + crypto.randomUUID().slice(0, 6).toUpperCase(),
+          id: "DEMO-" + randomId().slice(0, 6).toUpperCase(),
           name: a.name.trim(),
           owner: a.owner,
           updated: "刚刚",
@@ -680,7 +681,7 @@ export function domainReducer(s: State, a: Action): State {
       ...s,
       followups: [
         {
-          id: crypto.randomUUID(),
+          id: randomId(),
           projectId: a.projectId,
           title: a.title,
           owner: a.owner,

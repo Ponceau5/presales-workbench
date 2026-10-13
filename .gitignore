@@ -35,3 +35,6 @@ __pycache__/
 *.njsproj
 *.sln
 *.sw?
+
+!.env.cloud.example
+data/

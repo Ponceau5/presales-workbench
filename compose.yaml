@@ -1,0 +1,13 @@
+services:
+  api:
+    build: {context: ., target: backend}
+    env_file: .env.cloud
+    volumes: ["./data:/data"]
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: "10m", max-file: "2"}}
+  web:
+    build: {context: ., target: web}
+    ports: ["80:80"]
+    depends_on: [api]
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: "10m", max-file: "2"}}

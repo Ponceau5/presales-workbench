@@ -23,6 +23,7 @@ def read_office(path):
     result=[]
     try:
         for sheet in book:
+            if sheet.max_row is None or sheet.max_column is None:sheet.calculate_dimension(force=True)
             if sheet.max_row>20000 or sheet.max_column>100:raise ValueError('工作表过大，请导入本次需要的部分')
             lines=['工作表：'+sheet.title]
             for row in sheet.iter_rows(values_only=True):

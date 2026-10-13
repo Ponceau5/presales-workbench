@@ -51,13 +51,14 @@ class WorkflowApiTest(unittest.TestCase):
 
     def test_f8_without_key_keeps_mapping_and_quote_unconfirmed(self):
         endpoint = "/api/projects/F8-DEMO/workspaces/F8"
+        doc=self.client.post('/api/projects/F8-DEMO/documents',headers=self.auth('sales'),data={'title':'测试 BOQ','version':'V1'},files={'file':('boq.txt','测试输入'.encode(),'text/plain')}).json()['id']
         with patch("workspace_router.model_config", return_value=SimpleNamespace(configured=False)), patch(
             "workspace_router.request_chat_stream",
         ) as model:
             mapping = self.client.post(endpoint + "/ask-stream", headers=self.auth("sales"),
-                                       json={"question": "整理 BOQ 映射表", "turn_id": "f8-demo-mapping"})
+                                       json={"question": "整理 BOQ 映射表", "turn_id": "f8-demo-mapping", "selected_pages":[{"document_id":doc,"page":1}]})
             quote = self.client.post(endpoint + "/ask-stream", headers=self.auth("sales"),
-                                     json={"question": "生成客户报价表", "turn_id": "f8-demo-quote"})
+                                     json={"question": "生成客户报价表", "turn_id": "f8-demo-quote", "selected_pages":[{"document_id":doc,"page":1}]})
         self.assertEqual(mapping.status_code, 200, mapping.text)
         self.assertEqual(quote.status_code, 200, quote.text)
         self.assertIn("BOQ 映射表", mapping.text)
@@ -68,6 +69,13 @@ class WorkflowApiTest(unittest.TestCase):
         model.assert_not_called()
 
     def test_f7_agent_prompt_requires_sourced_costs_and_internal_draft(self):
+        import workflow_studio,json
+        with db() as c:
+            config=workflow_studio.effective(c,'F7-TEST','F7');definition=config['definition'];task=definition['tasks'][1];task['require_sources']=False
+            for step in task['steps']:
+                if step['capability']=='cost':step['enabled']=False
+            c.execute("INSERT INTO flow_versions VALUES ('test-no-calculation','F7',1,?,'sales','test',?,'F7-TEST')",(json.dumps(definition),config['id']))
+            c.execute("UPDATE project_flows SET version_id='test-no-calculation' WHERE project_id='F7-TEST' AND stage='F7'")
         with patch("workspace_router.model_config", return_value=SimpleNamespace(configured=True)), patch(
             "workspace_router.request_chat_stream", return_value=iter(["成本待补"]),
         ) as model:
@@ -84,14 +92,15 @@ class WorkflowApiTest(unittest.TestCase):
 
     def test_f7_without_key_simulates_revision_and_internal_approval(self):
         endpoint = "/api/projects/F7-DEMO/workspaces/F7"
+        doc=self.client.post('/api/projects/F7-DEMO/documents',headers=self.auth('sales'),data={'title':'测试成本依据','version':'V1'},files={'file':('cost.txt','测试输入'.encode(),'text/plain')}).json()['id']
         with patch("workspace_router.model_config", return_value=SimpleNamespace(configured=False)), patch(
             "workspace_router.request_chat_stream",
         ) as model:
             first = self.client.post(endpoint + "/ask-stream", headers=self.auth("sales"),
-                                     json={"question": "生成报价表", "turn_id": "f7-demo-first"})
+                                     json={"question": "生成报价表", "turn_id": "f7-demo-first", "selected_pages":[{"document_id":doc,"page":1}]})
             revised = self.client.post(endpoint + "/ask-stream", headers=self.auth("sales"),
                                        json={"question": "请按人工审核意见修改刚才的报价表：补充采购来源，金额待确认。",
-                                             "turn_id": "f7-demo-revised"})
+                                             "turn_id": "f7-demo-revised", "selected_pages":[{"document_id":doc,"page":1}]})
         self.assertEqual(first.status_code, 200, first.text)
         self.assertEqual(revised.status_code, 200, revised.text)
         self.assertIn("模拟演示", first.text)
@@ -359,6 +368,11 @@ class WorkflowApiTest(unittest.TestCase):
     def setUpClass(cls):
         cls.client = TestClient(app)
         cls.tokens = {}
+        # API fixtures explicitly assign project access instead of relying on shared role accounts.
+        with db() as c:
+            for project in ('F7-DEMO','F7-TEST','F8-DEMO'):
+                c.execute('INSERT OR IGNORE INTO access_projects VALUES (?,?)',(project,project))
+                c.execute("INSERT OR IGNORE INTO project_owners VALUES (?,'sales','sales',1)",(project,))
         for username in ("sales", "software", "dev", "solution"):
             result = cls.client.post(
                 "/api/session", json={"username": username, "password": "demo2026"}
@@ -390,10 +404,10 @@ class WorkflowApiTest(unittest.TestCase):
             self.client.post(
                 "/api/projects/RCJM1/documents",
                 headers=self.auth("dev"),
-                data={"title": "BMS 技术规格", "version": "V1"},
+                data={"title": "研发补充资料", "version": "V1"},
                 files={"file": ("source.txt", original.encode(), "text/plain")},
             ).status_code,
-            403,
+            200,
         )
         uploaded = self.upload(original, "V1")
         self.assertEqual(uploaded.status_code, 200, uploaded.text)
