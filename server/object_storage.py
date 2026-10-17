@@ -7,6 +7,11 @@ from urllib.parse import quote
 from urllib.request import urlopen
 from functools import lru_cache
 
+def local_signing_config():
+    import json
+    path=Path(os.environ.get("PRESALES_DATA_DIR",Path(__file__).parent/".local"))/"oss-signing.json"
+    return json.loads(path.read_text()) if path.exists() else None
+
 def enabled():
     return os.getenv("PRESALES_STORAGE", "local") == "oss"
 
@@ -40,6 +45,11 @@ def materialize(location):
     if not location.startswith("oss://"):
         yield Path(location)
         return
+    if not enabled() and local_signing_config():
+        cached=Path(os.environ.get("PRESALES_DATA_DIR",Path(__file__).parent/".local"))/"files"/Path(location).name
+        if cached.is_file():
+            yield cached
+            return
     with TemporaryDirectory(prefix="presales-", dir=os.getenv("PRESALES_TEMP_DIR")) as directory:
         path = Path(directory) / Path(location).name
         bucket().get_object_to_file(location[6:], str(path))
@@ -49,7 +59,17 @@ def download(location, filename):
     from fastapi.responses import FileResponse, RedirectResponse
     if location.startswith("oss://"):
         disposition = "attachment; filename*=UTF-8''" + quote(filename)
-        url = bucket(True).sign_url("GET", location[6:], 300, params={"response-content-disposition": disposition}, slash_safe=True)
+        config=local_signing_config() if not enabled() else None
+        if config:
+            import subprocess,shlex
+            code="import sys;sys.path.insert(0,'server');import object_storage;print(object_storage.bucket(True).sign_url('GET',sys.argv[1],300,params={'response-content-disposition':sys.argv[2]},slash_safe=True))"
+            command="cd "+shlex.quote(config['remote_root'])+" && set -a && . ./cloud.env && set +a && venv/bin/python -c "+shlex.quote(code)+" "+shlex.quote(location[6:])+" "+shlex.quote(disposition)
+            result=subprocess.run(['ssh','-i',config['key_file'],'-o','BatchMode=yes','-o','ConnectTimeout=5',config['host'],command],capture_output=True,text=True,timeout=12,check=True)
+            url=result.stdout.strip()
+            from urllib.parse import urlsplit
+            if urlsplit(url).scheme!='https' or not (urlsplit(url).hostname or '').endswith('.aliyuncs.com'):raise ValueError('Invalid storage redirect')
+        else:
+            url = bucket(True).sign_url("GET", location[6:], 300, params={"response-content-disposition": disposition}, slash_safe=True)
         return RedirectResponse(url, status_code=307, headers={"Cache-Control":"no-store"})
     return FileResponse(location, filename=filename)
 

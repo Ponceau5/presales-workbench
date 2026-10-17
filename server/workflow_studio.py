@@ -3,7 +3,9 @@ import json,hashlib,secrets
 from uuid import uuid4
 from fastapi import APIRouter,Depends,HTTPException,UploadFile,File,Form
 from pydantic import BaseModel,Field,model_validator
-from access_control import check_owner,check_project,is_admin,role_of,event,stamp
+from access_control import check_owner,check_project,is_admin,role_of,event,stamp,STAGES
+EDITABLE_STAGES=set(STAGES)
+def can_edit_stage(user,stage):return is_admin(user) or role_of(user) in STAGES.get(stage,set())
 CAPABILITIES={'inputs':'核对输入资料','cost':'成本计算工具','generate':'生成草稿','review':'人工核对与采纳','export':'导出文件'}
 class Step(BaseModel):
  id:str=Field(pattern=r'^[a-z][a-z0-9_-]{0,39}$')
@@ -54,7 +56,7 @@ class Task(BaseModel):
   if 'export' in caps and ('review' not in caps or caps.index('review')>caps.index('export')):raise ValueError('导出前必须保留人工核对')
   return self
 class Definition(BaseModel):
- tasks:list[Task]=Field(min_length=1,max_length=12)
+ tasks:list[Task]=Field(min_length=0,max_length=12)
  @model_validator(mode='after')
  def unique(self):
   if len({t.id for t in self.tasks})!=len(self.tasks):raise ValueError('任务编号重复')
@@ -111,16 +113,37 @@ def enrich_f7_cost(definition):
    task['taskbook_md']=F7_COST_SKILL
  return definition
 
+def example_tasks(definition,stage):
+ from pathlib import Path
+ examples=json.loads((Path(__file__).parent/'skills/workspace_examples.json').read_text())
+ for task in definition['tasks']:
+  example=examples.get(stage+'-'+task['id'])
+  if example:task['taskbook_md']=(F7_COST_SKILL+'\n\n'+example if stage=='F7' and task['id']=='cost' else example)[:30000]
+ return definition
+
 def builtin(stage):
  from f7_project_demo import CostParameters
+ if stage=='F5':
+  from role_config import default_tasks
+  rows=[]
+  for source in default_tasks():
+   steps=[{'id':'inputs','name':'核对资料','capability':'inputs','rule':'核对当前项目输入和模板','enabled':True},{'id':'generate','name':'执行 Skill','capability':'generate','rule':'逐步处理并保留依据','enabled':True}]
+   if source['id']!='survey':steps += [{'id':'review','name':'人工核对','capability':'review','rule':'确认后采纳','enabled':True},{'id':'export','name':'导出工件','capability':'export','rule':'使用项目模板导出','enabled':True}]
+   rows.append({'id':source['id'],'name':source['name'],'prompt':source['prompt'],'inputs':source['required_inputs'],'output':source['template'],'acceptance':'来源可追溯，符合当前 Skill 和模板；人工确认后交接','require_sources':source['id']!='survey','sample_ids':[],'steps':steps,'parameters':[]})
+  return example_tasks({'tasks':rows},stage)
  labels={'country':'国家','person_days':'调试人天','people':'出差人数','daily_labor':'人工单价','hotel':'住宿标准','allowance':'每日补贴','flight':'往返机票','visa':'签证费用','logistics_rate':'物流比例','logistics_fixed':'物流固定费用','tax_rate':'税费预留比例','advance':'平均垫资','months':'垫资月数','annual_rate':'资金年率','crm_multiplier':'CRM 成本调整倍数'}
  params=[{'key':key,'label':labels[key],'type':'text' if isinstance(value,str) else 'number','default':value,'unit':'','min':None if isinstance(value,str) else 0,'max':None,'required':True,'purpose':'已有成本计算字段'} for key,value in CostParameters().model_dump().items()] if stage=='F7' else []
  def task(id,name,prompt,cost=False):
   steps=[{'id':'inputs','name':'核对资料','capability':'inputs','rule':'只使用本项目资料，区分目录与已读正文','enabled':True}]
   if cost:steps.append({'id':'cost','name':'计算成本','capability':'cost','rule':'使用已接入计算工具，禁止让模型编造金额','enabled':True})
   steps += [{'id':'generate','name':'生成草稿','capability':'generate','rule':'缺失项明确列出，保留来源版本','enabled':True},{'id':'review','name':'人工核对','capability':'review','rule':'确认后采纳为新版本','enabled':True},{'id':'export','name':'下载文件','capability':'export','rule':'保持已选 Excel/Word 模板格式','enabled':True}]
+  if id=='materials-survey':steps=[s for s in steps if s['capability'] not in {'review','export'}]
   return {'id':id,'name':name,'prompt':prompt,'inputs':'本项目共享资料和已选正文；已确认的上游成果','output':'清晰的核对结果；适用时提供原模板 Excel','acceptance':'来源可追溯；未知项不编造；计算和表格格式正确','require_sources':id!='materials-survey','sample_ids':[],'steps':steps,'parameters':params if cost else []}
- return enrich_f7_cost({'tasks':[task('materials-survey','项目资料摸排','请对当前项目进行本岗位的项目资料摸排，列出已读资料、版本、缺失项和下一步。'),task('cost' if stage=='F7' else 'mapping','成本估算表' if stage=='F7' else 'BOQ 映射表','请生成内部成本表。' if stage=='F7' else '请根据客户 BOQ 和内部清单整理 BOQ 映射表。',stage=='F7'),task('procurement' if stage=='F7' else 'quote','采购询价清单' if stage=='F7' else '客户报价表','请从最新配置清单整理待采购询价项目。' if stage=='F7' else '请根据已确认成本和报价原则生成报价草稿。')]})
+ if stage not in {'F7','F8'}:
+  titles={'F1':'项目建档与资料整理','F2':'需求应答与澄清','F3':'点表处理与技术配置','F4':'硬件选型与组合配置','F6':'出口可行性检查','F9':'商务报价评审','F10':'标书编制','F11':'客户反馈与合同衔接','F12':'合同风险评估','F13':'现金流与税费测算'}
+  title=titles.get(stage,stage+' 工作成果')
+  return example_tasks({'tasks':[task('materials-survey','项目资料摸排','核对当前工作区已有输入、版本与缺项。'),task('deliverable',title,'依据当前项目资料完成'+title+'，逐项保留来源与待确认事项。')]},stage)
+ return example_tasks(enrich_f7_cost({'tasks':[task('materials-survey','项目资料摸排','请对当前项目进行本岗位的项目资料摸排，列出已读资料、版本、缺失项和下一步。'),task('cost' if stage=='F7' else 'mapping','成本估算表' if stage=='F7' else 'BOQ 映射表','请生成内部成本表。' if stage=='F7' else '请根据客户 BOQ 和内部清单整理 BOQ 映射表。',stage=='F7'),task('procurement' if stage=='F7' else 'quote','采购询价清单' if stage=='F7' else '客户报价表','请从最新配置清单整理待采购询价项目。' if stage=='F7' else '请根据已确认成本和报价原则生成报价草稿。')]}),stage)
 def init(db):
  with db() as c:
   c.executescript('''CREATE TABLE IF NOT EXISTS flow_versions(id TEXT PRIMARY KEY,stage TEXT NOT NULL,revision INTEGER NOT NULL,definition TEXT NOT NULL,author TEXT NOT NULL,created_at TEXT NOT NULL,base_id TEXT,scope TEXT NOT NULL,UNIQUE(stage,scope,revision));
@@ -129,7 +152,7 @@ def init(db):
   CREATE TABLE IF NOT EXISTS flow_trials(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,stage TEXT NOT NULL,actor TEXT NOT NULL,draft_id TEXT NOT NULL,draft_hash TEXT NOT NULL,snapshot TEXT NOT NULL,input TEXT NOT NULL,output TEXT,status TEXT NOT NULL,accepted INTEGER NOT NULL DEFAULT 0,note TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS flow_submissions(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,stage TEXT NOT NULL,author TEXT NOT NULL,base_shared_id TEXT NOT NULL,definition TEXT NOT NULL,draft_hash TEXT NOT NULL,trial_id TEXT NOT NULL,status TEXT NOT NULL,review_note TEXT NOT NULL,created_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS flow_samples(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,stage TEXT NOT NULL,actor TEXT NOT NULL,purpose TEXT NOT NULL,title TEXT NOT NULL,path TEXT NOT NULL,text TEXT NOT NULL,created_at TEXT NOT NULL);''')
-  for stage in ('F7','F8'):
+  for stage in EDITABLE_STAGES:
    if not c.execute("SELECT 1 FROM flow_versions WHERE stage=? AND scope='shared'",(stage,)).fetchone():c.execute('INSERT INTO flow_versions VALUES (?,?,?,?,?,?,NULL,?)',(str(uuid4()),stage,1,json.dumps(builtin(stage),ensure_ascii=False),'system',stamp(),'shared'))
 def effective(c,project,stage):
  bound=c.execute('SELECT * FROM project_flows WHERE project_id=? AND stage=?',(project,stage)).fetchone()
@@ -137,14 +160,17 @@ def effective(c,project,stage):
  if not bound:
   c.execute('INSERT OR IGNORE INTO project_flows VALUES (?,?,?,1)',(project,stage,version['id']));bound=c.execute('SELECT * FROM project_flows WHERE project_id=? AND stage=?',(project,stage)).fetchone()
  definition=json.loads(version['definition'])
+ for task in definition['tasks']:
+  if task['id']=='materials-survey':task['steps']=[s for s in task['steps'] if s['capability'] not in {'review','export'}]
  if stage=='F7':enrich_f7_cost(definition)
  if stage=='F7':
   for t in definition['tasks']:
    if t['id']=='quote' and t['name']=='报价表':t.update(id='procurement',name='采购询价清单',prompt='请从最新配置清单整理待采购询价项目。',taskbook_md='# 采购询价清单\n\n先读取解决方案已确认配置清单，筛选需要外购询价的项目。已有有效成本依据的项目可以跳过。核对料号、型号及数量后导出 Excel，销售自行交给采购，再导入采购回价。不得向采购自动发送消息或编造回价。')
    if t['id']=='cost' and t['name']=='成本表':t['name']='成本估算表'
+ if version['author']=='system':example_tasks(definition,stage)
  return {**dict(version),'definition':definition,'binding_revision':bound['revision']}
 def resolve(c,project,stage,user,draft_id=None):
- if stage not in ('F7','F8'):return None
+ if stage not in EDITABLE_STAGES:return None
  if draft_id:
   row=c.execute('SELECT * FROM flow_drafts WHERE id=? AND project_id=? AND stage=? AND author=?',(draft_id,project,stage,user)).fetchone()
   if not row:raise HTTPException(404,'试运行草稿不存在或不属于当前人员')
@@ -152,7 +178,9 @@ def resolve(c,project,stage,user,draft_id=None):
  return effective(c,project,stage)
 def instructions(config,task_id,question):
  if not config:return ''
- tasks=config['definition']['tasks'];task=next((t for t in tasks if t['id']==task_id),None)
+ tasks=config['definition']['tasks']
+ if not tasks:return ''
+ task=next((t for t in tasks if t['id']==task_id),None)
  if not task:task=next((t for t in tasks if ('资料摸排' in question and t['id']=='materials-survey') or ('成本' in question and t['id']=='cost') or ('BOQ' in question and t['id']=='mapping') or ('报价' in question and t['id']=='quote')),tasks[0])
  return '\n按当前流程版本工作：'+json.dumps(task,ensure_ascii=False)+'\nSkill Markdown 是当前业务规则；如与旧文字说明冲突，以此为准。工具能力、权限和结构化参数校验仍必须遵守。\n'+task.get('taskbook_md','')
 def _owners(db,project):
@@ -160,14 +188,14 @@ def _owners(db,project):
 def install(app,db,actor,files_dir):
  init(db);router=APIRouter(prefix='/api/projects/{project_id}/workspaces/{stage_id}/flows')
  def guard(project,stage,user):
-  if stage not in ('F7','F8'):raise HTTPException(404,'当前工作区没有此流程编辑器')
+  if stage not in EDITABLE_STAGES:raise HTTPException(404,'当前工作区没有此流程编辑器')
   check_project(user,project)
-  if not is_admin(user) and role_of(user)!='sales':raise HTTPException(403,'当前岗位不能编辑 F7/F8 Skill')
+  if not can_edit_stage(user,stage):raise HTTPException(403,'当前岗位不能编辑此工作区 Skill')
 
  @router.get('')
  def get(project_id:str,stage_id:str,user:str=Depends(actor)):
   check_project(user,project_id)
-  if stage_id not in ('F7','F8'):raise HTTPException(404,'流程不存在')
+  if stage_id not in EDITABLE_STAGES:raise HTTPException(404,'流程不存在')
   with db() as c:
    active=effective(c,project_id,stage_id);draft=c.execute('SELECT * FROM flow_drafts WHERE project_id=? AND stage=? AND author=?',(project_id,stage_id,user)).fetchone();trials=[dict(r) for r in c.execute('SELECT * FROM flow_trials WHERE project_id=? AND stage=? AND actor=? ORDER BY created_at DESC LIMIT 20',(project_id,stage_id,user))]
    versions=[dict(r) for r in c.execute("SELECT id,revision,author,created_at,scope FROM flow_versions WHERE stage=? AND scope='shared' ORDER BY revision DESC LIMIT 15",(stage_id,))]
@@ -177,11 +205,11 @@ def install(app,db,actor,files_dir):
    for t in draft_definition['tasks']:
     if t['id']=='quote' and t['name']=='报价表':t.update(id='procurement',name='采购询价清单',prompt='请从最新配置清单整理待采购询价项目。',taskbook_md='# 采购询价清单\n先取得解决方案配置清单，筛选待外购询价项目。核对料号、型号和数量，销售下载 Excel 交给采购，再导入采购回价。不得编造采购价格。')
     if t['id']=='cost' and t['name']=='成本表':t['name']='成本估算表'
-  return {'active':active,'draft':{**dict(draft),'definition':draft_definition} if draft else None,'trials':trials,'versions':versions,'can_apply':is_admin(user) or any(r['user_id']==user and r['role']=='sales' for r in _owners(db,project_id)),'can_publish':is_admin(user),'can_edit':is_admin(user) or role_of(user)=='sales','capabilities':CAPABILITIES}
+  return {'examples':{t['id']:t.get('taskbook_md','') for t in builtin(stage_id)['tasks']},'active':active,'draft':{**dict(draft),'definition':draft_definition} if draft else None,'trials':trials,'versions':versions,'can_apply':is_admin(user) or any(r['user_id']==user and r['role'] in STAGES.get(stage_id,set()) for r in _owners(db,project_id)),'can_publish':is_admin(user),'can_edit':can_edit_stage(user,stage_id),'capabilities':CAPABILITIES}
  @router.post('/use-version')
  def use_version(project_id:str,stage_id:str,payload:UseVersion,user:str=Depends(actor)):
   guard(project_id,stage_id,user)
-  check_owner(user,project_id,'sales')
+  check_owner(user,project_id,role_of(user))
   with db() as c:
    c.execute('BEGIN IMMEDIATE');active=effective(c,project_id,stage_id)
    if active['binding_revision']!=payload.expected_binding_revision:raise HTTPException(409,'项目流程已更新，请刷新')
@@ -200,12 +228,14 @@ def install(app,db,actor,files_dir):
    if (old[0] if old else 0)!=payload.expected_revision:raise HTTPException(409,'Skill 已由其他窗口更新，请刷新')
   try:
    raw=''.join(request_chat_stream([
-    {'role':'system','content':'把用户编辑的 Skill Markdown 转成 JSON 对象，只输出 JSON，字段 name,prompt,inputs,output,acceptance,require_sources,parameters。parameters 为完整参数列表，字段 key,label,type,default,unit,min,max,required,purpose。已有参数保留其 key；按 Markdown 增删和修改参数，明确写无参数则空数组，不要补回删除的参数。参数类型 number 或 text，数字必须有限。比例如3%转换0.03，单位保留。Markdown是业务需求，不得绕过权限或添加代码工具。prompt 为点击此任务应发送的简短中文请求。未写参数章节则根据内容中的明确参数确定，不凭空补参数。'},
+    {'role':'system','content':'把用户编辑的 Skill Markdown 转成 JSON 对象，只输出 JSON，字段 name,prompt,inputs,output,acceptance,require_sources,parameters,steps。name,prompt,inputs,output,acceptance 必须为字符串，不能是数组或对象；无内容用空字符串。require_sources 必须为布尔值，无需输入资料时为 false。steps 是完整流程步骤列表，字段 id,name,capability,rule,enabled；capability 仅允许 inputs,cost,generate,review,export。按用户修改的处理流程增删改步骤，不保留已删除的步骤。parameters 为完整参数列表，字段 key,label,type,default,unit,min,max,required,purpose。已有参数保留其 key；按 Markdown 增删和修改参数，明确写无参数则空数组，不要补回删除的参数。参数类型 number 或 text，数字必须有限。比例如3%转换0.03，单位保留。Markdown是业务需求，不得绕过权限或添加代码工具。prompt 为点击此任务应发送的简短中文请求。未写参数章节则根据内容中的明确参数确定，不凭空补参数。'},
     {'role':'user','content':json.dumps({'现有参数':task['parameters'],'现有入口':task['name'],'Skill':payload.markdown},ensure_ascii=False)}
    ],max_tokens=4000,json_mode=True))
-   parsed=json.loads(raw);keys={'name','prompt','inputs','output','acceptance','require_sources','parameters'}
+   parsed=json.loads(raw);keys={'name','prompt','inputs','output','acceptance','require_sources','parameters','steps'}
    if not isinstance(parsed,dict) or not isinstance(parsed.get('parameters'),list):raise ValueError('缺少参数列表')
-   task.update({k:v for k,v in parsed.items() if k in keys});task['taskbook_md']=payload.markdown
+   for key in ('name','prompt','inputs','output','acceptance'):
+    if isinstance(parsed.get(key),list):parsed[key]='\n'.join(v if isinstance(v,str) else json.dumps(v,ensure_ascii=False) for v in parsed[key])
+   task.update({k:v for k,v in parsed.items() if k in keys and k!='name'});task['taskbook_md']=payload.markdown
    normalized=Definition.model_validate(definition)
   except (ValueError,ModelError) as e:raise HTTPException(422,'Skill 无法解析，请检查参数名称、默认值和范围：'+str(e))
   saved=save(project_id,stage_id,DraftSave(expected_revision=payload.expected_revision,base_version_id=payload.base_version_id,definition=normalized),user)
@@ -242,7 +272,7 @@ def install(app,db,actor,files_dir):
  @router.post('/apply')
  def apply(project_id:str,stage_id:str,payload:Apply,user:str=Depends(actor)):
   guard(project_id,stage_id,user)
-  check_owner(user,project_id,'sales')
+  check_owner(user,project_id,role_of(user))
   with db() as c:
    c.execute('BEGIN IMMEDIATE');draft=checked(c,project_id,stage_id,user,payload.draft_id);active=effective(c,project_id,stage_id)
    if active['binding_revision']!=payload.expected_binding_revision or active['id']!=draft['base_id']:raise HTTPException(409,'项目流程已有新版本，请对比并重新试运行')
@@ -313,12 +343,16 @@ def install(app,db,actor,files_dir):
     text='\n\n'.join(p.extract_text() or '' for p in PdfReader(path).pages)
    else:text=content.decode('utf-8')
    if len(text)>40000:raise ValueError('请使用本次需要的样本部分')
-   with db() as c:c.execute('INSERT INTO flow_samples VALUES (?,?,?,?,?,?,?,?,?)',(identifier,project_id,stage_id,user,purpose,Path(file.filename).name,str(path),text,stamp()))
+   from object_storage import save,enabled,key_for
+   location=save(path,key_for(project_id,identifier,suffix))
+   with db() as c:c.execute('INSERT INTO flow_samples VALUES (?,?,?,?,?,?,?,?,?)',(identifier,project_id,stage_id,user,purpose,Path(file.filename).name,location,text,stamp()))
+   if enabled():path.unlink(missing_ok=True)
   except Exception as e:path.unlink(missing_ok=True);raise HTTPException(422,'样本无法读取或正文过多，请缩小样本') from e
   return {'id':identifier}
  app.include_router(router)
 
 def check_capability(c,version_id,task_id,capability):
+ if task_id in {'materials-survey','survey'} and capability in {'review','export'}:raise HTTPException(409,'资料摸排是信息查询，不需要采纳为工件')
  if not version_id:return
  row=c.execute('SELECT definition FROM flow_versions WHERE id=?',(version_id,)).fetchone()
  if not row:return

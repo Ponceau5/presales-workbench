@@ -1,0 +1,12 @@
+[Unit]
+Description=Presales Casdoor Identity Service
+After=network-online.target
+Wants=network-online.target
+[Service]
+WorkingDirectory=/opt/salesworkbench/identity
+ExecStart=/opt/salesworkbench/identity/casdoor
+Restart=always
+RestartSec=3
+UMask=0077
+[Install]
+WantedBy=multi-user.target

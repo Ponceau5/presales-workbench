@@ -1,5 +1,5 @@
 """Versioned software-role configuration and isolated, real-model validation."""
-from access_control import role_of, check_project
+from access_control import role_of, check_project, is_admin
 import json, os, time, subprocess, shutil
 from pathlib import Path
 from uuid import uuid4
@@ -137,7 +137,7 @@ def install(app,db,actor,now,files_dir):
         c.execute("CREATE TABLE IF NOT EXISTS role_file_samples(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,task_id TEXT NOT NULL,purpose TEXT NOT NULL,title TEXT NOT NULL,path TEXT NOT NULL,sha256 TEXT NOT NULL,text TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL)")
     router=APIRouter(prefix="/api/role-config/software")
     def owner(account):
-        if role_of(account) not in {"software","pm"}:raise HTTPException(403,"请由软件产品或项目负责人维护软件岗位配置")
+        if not is_admin(account) and role_of(account)!="software":raise HTTPException(403,"请由软件产品或项目负责人维护软件岗位配置")
     def config(c,identifier):
         row=c.execute("SELECT * FROM role_config_versions WHERE id=? AND role='software'",(identifier,)).fetchone()
         if not row:raise HTTPException(404,"配置版本不存在")

@@ -184,7 +184,7 @@ export default function ChangeImpact() {
               <button
                 className="btn secondary"
                 disabled={
-                  !["软件产品", "研发", "PM / PO"].includes(state.role) ||
+                  !["软件产品", "研发", "系统管理员"].includes(state.role) ||
                   state.running ||
                   state.changeStatus[change.id] !== "pending"
                 }
@@ -201,7 +201,7 @@ export default function ChangeImpact() {
               <button
                 className="btn primary"
                 disabled={
-                  !["软件产品", "研发", "PM / PO"].includes(state.role) ||
+                  !["软件产品", "研发", "系统管理员"].includes(state.role) ||
                   state.running ||
                   !state.generated ||
                   ["reviewing", "done"].includes(state.changeStatus[change.id])

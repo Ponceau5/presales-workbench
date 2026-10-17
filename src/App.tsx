@@ -1,3 +1,5 @@
+import { QuickGuide } from "@/components/QuickGuide";
+import AccessManagement from "@/pages/AccessManagement";
 import { BrandMark } from "@/components/BrandMark";
 import {
   loadShared,
@@ -9,14 +11,16 @@ import {
 import type { Action } from "@/state/workbench";
 import { PersonalTasks } from "@/components/PersonalTasks";
 import Login from "@/pages/Login";
+import Signup from "@/pages/Signup";
 import Activity from "@/pages/Activity";
-import { accounts } from "@/lib/accounts";
-import { localApi, localApiReady, clearLocalApiSession, currentPerson } from "@/lib/localApi";
+import { accounts, registerAccount } from "@/lib/accounts";
+import { localApi, localApiReady, logoutLocalApi, currentPerson } from "@/lib/localApi";
 import KnowledgeLibrary from "@/pages/KnowledgeLibrary";
 import Resources from "@/pages/Resources";
 import { ProjectAssistant } from "@/components/ProjectAssistant";
 import "./workspace.css";
 import "./workbench-refinement.css";
+import "./page-layout.css";
 import { useEffect, useCallback, useRef, useState } from "react";
 import {
   NavLink,
@@ -31,7 +35,6 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   FolderOpen,
-  SlidersHorizontal,
   LayoutDashboard,
   Files,
   Sun,
@@ -47,7 +50,6 @@ import Portal from "@/pages/Portal";
 import Projects from "@/pages/Projects";
 import ChangeImpact from "@/pages/ChangeImpact";
 import RoleConfig from "@/pages/RoleConfig";
-import Settings from "@/pages/Settings";
 import {
   WorkbenchContext,
   initialState,
@@ -78,7 +80,7 @@ export default function App() {
       const saved = JSON.parse(
         localStorage.getItem("presales-ui-preferences") || "{}",
       );
-      if (saved.theme === "dark") s.theme = "dark";
+      if (saved.theme === "dark" || saved.theme === "light") s.theme = saved.theme;
       if (roles.includes(saved.role)) s.role = saved.role;
     } catch {
       /* Default appearance. */
@@ -99,6 +101,7 @@ export default function App() {
     if (!merged.projects.some(p => p.id === "GSA02")) merged.projects.push({ id: "GSA02", name: "泰国 GSA02", owner: "软件产品", updated: "2026-10-10" });
     const person=currentPerson();
     if(person){const permitted=new Set(person.projects.map(p=>p.id));merged.projects=merged.projects.filter(p=>permitted.has(p.id));if(!permitted.has(merged.currentProjectId))merged.currentProjectId=merged.projects[0]?.id||"";}
+    if(new URLSearchParams(window.location.search).has("login_error")) merged.accountId=null;
     return merged;
   });
   const stateRef = useRef(state);
@@ -121,7 +124,7 @@ export default function App() {
    return()=>{cancelled=true;};
   },[state.accountId]);
   const dispatch = useCallback((action: Action) => {
-    if (action.type === "logout" && !stateRef.current.running) clearLocalApiSession();
+    if (action.type === "logout" && !stateRef.current.running) void logoutLocalApi();
     const current = mergeShared(stateRef.current, loadShared());
     const person=currentPerson();if(person){const permitted=new Set(person.projects.map(p=>p.id));current.projects=current.projects.filter(p=>permitted.has(p.id));}
     const next = reducer(current, action);
@@ -187,6 +190,17 @@ export default function App() {
       /* Continue in memory. */
     }
   }, [state]);
+  useEffect(() => {
+    if (!state.accountId || !localApiReady(state.accountId)) return;
+    let active=true;
+    void localApi<Parameters<typeof registerAccount>[0] & {role:string;is_admin:number;projects:{id:string;name:string}[]}>("/api/me").then(person=>{
+      if(!active)return;
+      sessionStorage.setItem("presales-person",JSON.stringify(person));registerAccount(person);
+      setState(previous=>({...previous,role:person.role_name}));
+      stateRef.current={...stateRef.current,role:person.role_name};
+    }).catch(()=>{});
+    return()=>{active=false;};
+  },[state.accountId]);
   const busy = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -215,13 +229,12 @@ export default function App() {
     { to: "/tasks", label: "我的任务", icon: UsersRound },
     { to: "/projects", label: "项目", icon: FolderOpen },
     { to: "/library", label: "公共资料", icon: Files },
-    { to: "/role-config", label: "岗位配置", icon: SlidersHorizontal },
-    { to: "/settings", label: "连接设置", icon: SlidersHorizontal },
-    { to: "/activity", label: "操作记录", icon: Files },
+    { to: "/access", label: "权限管理", icon: UsersRound },
   ];
   const inProject = ![
     "/",
     "/projects",
+    "/access",
     "/settings",
     "/role-config",
     "/library",
@@ -272,6 +285,7 @@ export default function App() {
     dispatch({ type: "finish", ids });
     busy.current = false;
   }
+  if (location.pathname === "/register") return <WorkbenchContext.Provider value={{state,dispatch,runAgent}}><Signup/></WorkbenchContext.Provider>;
   if (!state.accountId)
     return (
       <WorkbenchContext.Provider value={{ state, dispatch, runAgent }}>
@@ -294,10 +308,9 @@ export default function App() {
             </span>
             <span>售前工作台</span>
           </Link>
-          <div className="workspace-label">工作空间</div>
           <nav>
             {nav
-              .filter((n) => (n.to !== "/settings" || state.role === "PM / PO") && (n.to !== "/role-config" || state.accountId === "software" || state.accountId === "pm"))
+              .filter((n) => (n.to !== "/access" || !!currentPerson()?.is_admin) && (n.to !== "/role-config" || state.accountId === "software" || state.accountId === "pm"))
               .map((n) => (
                 <NavLink
                   key={n.to}
@@ -388,6 +401,7 @@ export default function App() {
                       .map((s) => (
                         <Link
                           key={s.id}
+                          title={s.label}
                           to={"/projects/" + id + "?view=review&stage=" + s.id}
                           onClick={() =>
                             dispatch({ type: "projectSwitch", id })
@@ -401,7 +415,7 @@ export default function App() {
                           }
                         >
                           <span>{s.id}</span>
-                          {s.label}
+                          <span className="stage-nav-label">{s.label}</span>
                         </Link>
                       ))}
                   </nav>
@@ -411,7 +425,7 @@ export default function App() {
           })}
         </aside>
         <div className="main-shell">
-          <header className="topbar">
+          <header className={"topbar"+(inProject?" has-project-navigation":"")}>
             <div className="breadcrumbs">
               <button
                 className="sidebar-toggle"
@@ -432,12 +446,17 @@ export default function App() {
                 </>
               ) : null}
             </div>
+            {inProject && <nav className="project-top-navigation" aria-label="项目视图">
+              {[["flow", "项目流程"], ["materials", "资料与工件"], ["milestones", "里程碑"]].map(([view, label]) => (
+                <Link key={view} className={(new URLSearchParams(location.search).get("view") || "flow") === view ? "active" : ""} to={"/projects/" + project.id + "?view=" + view}>{label}</Link>
+              ))}
+            </nav>}
             <div className="toolbar-controls">
               <ProjectAssistant />
               <span className="account-badge">
                 <UsersRound size={14} />
-                {state.role}
-                <small>{state.accountId}</small>
+                <span className="account-role">{state.role}</span>
+                <small title={currentPerson()?.username || currentPerson()?.display_name || ""}>{currentPerson()?.username || currentPerson()?.display_name || accounts.find(a=>a.id===state.accountId)?.name || ""}</small>
               </span>
               <button
                 className="account-logout"
@@ -446,6 +465,7 @@ export default function App() {
               >
                 退出
               </button>
+              <QuickGuide />
               <button
                 className="theme-toggle"
                 aria-label={
@@ -468,7 +488,7 @@ export default function App() {
           </header>
           <div className="mobile-nav">
             {nav
-              .filter((n) => (n.to !== "/settings" || state.role === "PM / PO") && (n.to !== "/role-config" || state.accountId === "software" || state.accountId === "pm"))
+              .filter((n) => (n.to !== "/access" || !!currentPerson()?.is_admin) && (n.to !== "/role-config" || state.accountId === "software" || state.accountId === "pm"))
               .map((n) => (
                 <NavLink
                   key={n.to}
@@ -479,7 +499,7 @@ export default function App() {
                 </NavLink>
               ))}
           </div>
-          <main>
+          <main className={inProject ? "page-content project-content" : ["/tasks","/projects","/library","/access"].includes(location.pathname) ? "page-content register-content" : "page-content"} data-page={location.pathname}>
             {state.permissionNotice && (
               <div className="permission-notice" role="alert">
                 {state.permissionNotice}
@@ -518,7 +538,8 @@ export default function App() {
               />
               <Route path="/changes" element={<ChangeImpact />} />
               <Route path="/role-config" element={<RoleConfig />} />
-              <Route path="/settings" element={<Settings />} />
+              <Route path="/access" element={<AccessManagement />} />
+              <Route path="/settings" element={<Navigate to="/" replace />} />
               <Route path="*" element={<Portal key={location.search} />} />
             </Routes>
           </main>

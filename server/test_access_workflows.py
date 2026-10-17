@@ -37,7 +37,7 @@ class AccessWorkflowTests(unittest.TestCase):
   cfg['active']['definition']['tasks'][0]['taskbook_md']='# 我的 Skill'
   saved=self.c.post(self.flow+'/draft',headers=self.bh,json={'expected_revision':0,'base_version_id':cfg['active']['id'],'definition':cfg['active']['definition']});self.assertEqual(saved.status_code,200,saved.text)
   self.assertIsNone(self.c.get(self.flow,headers=self.ah).json()['draft'])
-  with patch('workspace_router.model_config',return_value=ModelConfig('zhipu','test','mock','key')),patch('workspace_router.request_chat_stream',return_value=iter(['摸排结果'])):
+  with patch('workspace_router.model_config',return_value=ModelConfig('zhipu','test','mock','key')),patch('workspace_router.request_agent_stream',return_value=iter(['摸排结果'])):
    response=self.c.post(self.base+'/ask-stream',headers=self.bh,json={'question':'测试','task_id':'materials-survey','turn_id':uuid4().hex,'test_run':True,'flow_draft_id':saved.json()['id']})
   self.assertEqual(response.status_code,200,response.text);self.assertIn('"type": "done"',response.text)
   self.assertEqual(self.c.post(self.flow+'/apply',headers=self.bh,json={'draft_id':saved.json()['id'],'expected_binding_revision':cfg['active']['binding_revision']}).status_code,403)
@@ -56,6 +56,34 @@ class AccessWorkflowTests(unittest.TestCase):
   self.assertEqual(self.c.get(self.base+'/state',headers=self.ah).status_code,403)
   self.assertIsNone(self.c.get(self.base+'/state',headers=self.bh).json()['value'])
   with db() as c:self.assertEqual(c.execute('SELECT count(*) FROM project_owners WHERE project_id=? AND role=?',(self.p,'sales')).fetchone()[0],1)
+ def test_f7_preflight_runtime_survives_and_replays(self):
+  from agent_runtime import _runtime
+  body={'question':'请先核对成本估算所需资料','task_id':'cost','cost_preflight':True,'turn_id':uuid4().hex}
+  with patch('workspace_router.model_config',return_value=ModelConfig('zhipu','test','mock','key')),patch('workspace_router.request_agent_stream',return_value=iter(['已有资料；待补采购价格'])) as model:
+   first=self.c.post(self.base+'/ask-stream',headers=self.ah,json=body)
+   self.assertEqual(first.status_code,200,first.text)
+   events=[json.loads(v[6:]) for v in first.text.splitlines() if v.startswith('data: ')]
+   runtime=next(v for v in events if v['type']=='runtime' and v['status']=='waiting');identifier=runtime['id']
+   self.assertEqual(runtime['phase'],'confirm_parameters')
+   replay=self.c.post(self.base+'/runs/'+identifier+'/retry',headers=self.ah)
+   self.assertEqual(replay.status_code,200,replay.text);self.assertEqual(model.call_count,1)
+  self.assertEqual(self.c.get(self.base+'/runs/'+identifier+'/state',headers=self.bh).status_code,403)
+  _runtime.confirm(identifier,self.p,'F7',self.a,'confirm_parameters')
+  self.assertEqual(self.c.get(self.base+'/runs/'+identifier+'/state',headers=self.ah).json()['status'],'completed')
+ def test_skill_sample_uses_shared_storage_backend(self):
+  with patch('object_storage.enabled',return_value=True),patch('object_storage.save',return_value='oss://projects/test/originals/sample.md') as save:
+   result=self.c.post(self.flow+'/samples',headers=self.ah,data={'purpose':'reference'},files={'file':('规则.md','销售规则'.encode(),'text/markdown')})
+  self.assertEqual(result.status_code,200,result.text)
+  with db() as c:row=c.execute('SELECT project_id,path FROM flow_samples WHERE id=?',(result.json()['id'],)).fetchone()
+  self.assertEqual(row['project_id'],self.p);self.assertTrue(row['path'].startswith('oss://'))
+  self.assertFalse(save.call_args.args[0].exists())
+ def test_admin_overview_private_and_password_free(self):
+  self.assertEqual(self.c.get('/api/access/overview',headers=self.ah).status_code,403)
+  self.assertEqual(self.c.get('/api/access/overview').status_code,401)
+  response=self.c.get('/api/access/overview',headers=self.admin)
+  self.assertEqual(response.status_code,200)
+  self.assertNotIn('password',response.text)
+  self.assertIn(self.p,[p['id'] for p in response.json()['projects']])
  def test_draft_trial_application_and_review(self):
   cfg=self.c.get(self.flow,headers=self.ah).json();definition=copy.deepcopy(cfg['active']['definition']);task=definition['tasks'][1]
   task['require_sources']=False
@@ -66,7 +94,7 @@ class AccessWorkflowTests(unittest.TestCase):
   r=self.c.post(self.flow+'/draft',headers=self.ah,json=body);self.assertEqual(r.status_code,200,r.text);draft=r.json()
   self.assertEqual(self.c.post(self.flow+'/draft',headers=self.ah,json=body).status_code,409)
   self.assertEqual(self.c.post(self.flow+'/apply',headers=self.ah,json={'draft_id':draft['id'],'expected_binding_revision':cfg['active']['binding_revision']}).status_code,409)
-  with patch('workspace_router.model_config',return_value=ModelConfig('zhipu','test','https://example.invalid','mock')),patch('workspace_router.request_chat_stream',return_value=iter(['核对','结果'])) as model:
+  with patch('workspace_router.model_config',return_value=ModelConfig('zhipu','test','https://example.invalid','mock')),patch('workspace_router.request_agent_stream',return_value=iter(['核对','结果'])) as model:
    response=self.c.post(self.base+'/ask-stream',headers=self.ah,json={'question':'核对测试流程','task_id':'cost','turn_id':'trial-'+uuid4().hex,'test_run':True,'flow_draft_id':draft['id']})
   self.assertEqual(response.status_code,200,response.text)
   events=[json.loads(x[6:]) for x in response.text.splitlines() if x.startswith('data: ')];trial=next(x['id'] for x in events if x['type']=='trial');self.assertTrue(any(e['type']=='done' for e in events),response.text)
@@ -101,7 +129,7 @@ class AccessWorkflowTests(unittest.TestCase):
   for step in definition['tasks'][1]['steps']:
    if step['capability']=='cost':step['enabled']=False
   saved=self.c.post(self.flow+'/draft',headers=self.ah,json={'expected_revision':0,'base_version_id':cfg['active']['id'],'definition':definition}).json()
-  with patch('workspace_router.model_config',return_value=ModelConfig('zhipu','test','mock','key')),patch('workspace_router.request_chat_stream',return_value=iter(['output'])):
+  with patch('workspace_router.model_config',return_value=ModelConfig('zhipu','test','mock','key')),patch('workspace_router.request_agent_stream',return_value=iter(['output'])):
    r=self.c.post(self.base+'/ask-stream',headers=self.ah,json={'question':'测试','turn_id':uuid4().hex,'task_id':'cost','test_run':True,'flow_draft_id':saved['id']})
   trial=next(json.loads(line[6:])['id'] for line in r.text.splitlines() if line.startswith('data: ') and json.loads(line[6:])['type']=='trial')
   self.assertEqual(self.c.post(self.flow+'/trials/'+trial+'/verdict',headers=self.ah,json={'accepted':True}).status_code,200)
@@ -131,7 +159,7 @@ class AccessWorkflowTests(unittest.TestCase):
   material=self.base+'/materials'
   r=self.c.post(material+'/classify',headers=self.ah,json={'document_id':identifier,'category':'template'});self.assertEqual(r.status_code,200,r.text)
   catalog=self.c.get(material,headers=self.ah).json();self.assertTrue(any(d['id']==identifier for d in catalog['templates']));self.assertFalse(any(d['id']==identifier for d in catalog['inputs']))
-  with patch('workspace_router.model_config',return_value=ModelConfig('zhipu','test','mock','key')),patch('workspace_router.request_chat_stream',return_value=iter(['资料摸排'])) as model:
+  with patch('workspace_router.model_config',return_value=ModelConfig('zhipu','test','mock','key')),patch('workspace_router.request_agent_stream',return_value=iter(['资料摸排'])) as model:
    response=self.c.post(self.base+'/ask-stream',headers=self.ah,json={'question':'资料摸排','task_id':'materials-survey','turn_id':uuid4().hex,'selected_pages':[{'document_id':identifier,'page':1}]})
   self.assertEqual(response.status_code,200,response.text);self.assertIn('仅参考表格格式',model.call_args.args[0][1]['content'])
  def test_materials_show_versions_and_compare_only_same_project(self):
@@ -148,3 +176,70 @@ class AccessWorkflowTests(unittest.TestCase):
   self.assertEqual(self.c.patch('/api/access/users/'+self.a,headers=self.admin,json={'active':False}).status_code,200)
   self.assertEqual(self.c.get('/api/me',headers=self.ah).status_code,401)
 if __name__=='__main__':unittest.main()
+
+class AccessManagementTests(AccessWorkflowTests):
+ def test_admin_overview_rules_and_event_access(self):
+  view=self.c.get('/api/access/overview',headers=self.admin).json()
+  self.assertIn('F7',view['role_stages']['sales']);self.assertNotIn('F5',view['role_stages']['sales'])
+  self.assertEqual(self.c.get('/api/access/events',headers=self.ah).status_code,403)
+  events=self.c.get('/api/access/events',headers=self.admin)
+  self.assertEqual(events.status_code,200);self.assertLessEqual(len(events.json()),100)
+  self.assertTrue(any(e['action']=='owner_assigned' for e in events.json()))
+ def test_profile_change_checks_role_ownership_and_revokes_sessions(self):
+  endpoint='/api/access/users/'+self.a+'/profile'
+  self.assertEqual(self.c.patch(endpoint,headers=self.ah,json={'display_name':'改名','role':'sales'}).status_code,403)
+  self.assertEqual(self.c.patch(endpoint,headers=self.admin,json={'display_name':'改名','role':'unknown'}).status_code,422)
+  self.assertEqual(self.c.patch(endpoint,headers=self.admin,json={'display_name':'改名','role':'finance'}).status_code,409)
+  self.assertEqual(self.c.patch(endpoint,headers=self.admin,json={'display_name':'销售甲','role':'sales'}).status_code,200)
+  self.assertEqual(self.c.get('/api/me',headers=self.ah).json()['display_name'],'销售甲')
+  # Transfer existing responsibilities before a position change.
+  self.assertEqual(self.c.put('/api/projects/'+self.p+'/owners',headers=self.admin,json={'role':'sales','user_id':self.b,'expected_revision':1}).status_code,200)
+  self.assertEqual(self.c.patch(endpoint,headers=self.admin,json={'display_name':'财务甲','role':'finance'}).status_code,200)
+  self.assertEqual(self.c.get('/api/me',headers=self.ah).status_code,401)
+ def test_effective_permissions_distinguish_member_and_owner(self):
+  self.assertEqual(self.c.put('/api/projects/'+self.p+'/members',headers=self.admin,json={'user_id':self.b}).status_code,200)
+  permissions=self.c.get('/api/access/overview',headers=self.admin).json()['permissions']
+  self.assertTrue(permissions[self.a][self.p]['apply']);self.assertTrue(permissions[self.b][self.p]['trial'])
+  self.assertFalse(permissions[self.b][self.p]['apply']);self.assertEqual(permissions[self.b][self.p]['process_stages'],[])
+  self.assertFalse(permissions[self.a][self.q]['read']);self.assertFalse(permissions[self.a][self.p]['publish'])
+ def test_handover_changes_visibility_atomically_and_rejects_stale_edit(self):
+  base='/api/projects/'+self.p
+  r=self.c.put(base+'/owners',headers=self.admin,json={'role':'sales','user_id':self.b,'expected_revision':1,'retain_previous_access':False});self.assertEqual(r.status_code,200,r.text)
+  self.assertEqual(self.c.get(base+'/workspaces/F7/materials',headers=self.ah).status_code,403)
+  r=self.c.put(base+'/owners',headers=self.admin,json={'role':'sales','user_id':self.a,'expected_revision':2,'retain_previous_access':True});self.assertEqual(r.status_code,200,r.text)
+  permissions=self.c.get('/api/access/overview',headers=self.admin).json()['permissions']
+  self.assertTrue(permissions[self.b][self.p]['read']);self.assertFalse(permissions[self.b][self.p]['apply'])
+  r=self.c.put(base+'/owners',headers=self.admin,json={'role':'sales','user_id':self.b,'expected_revision':2,'retain_previous_access':False});self.assertEqual(r.status_code,409)
+  with db() as c:
+   self.assertEqual(c.execute('SELECT user_id FROM project_owners WHERE project_id=? AND role=?',(self.p,'sales')).fetchone()[0],self.a)
+   self.assertTrue(c.execute('SELECT 1 FROM project_members WHERE project_id=? AND user_id=?',(self.p,self.b)).fetchone())
+ def test_owner_retains_access_when_direct_membership_removed(self):
+  self.c.put('/api/projects/'+self.p+'/members',headers=self.admin,json={'user_id':self.a,'visible':True})
+  self.c.put('/api/projects/'+self.p+'/members',headers=self.admin,json={'user_id':self.a,'visible':False})
+  permission=self.c.get('/api/access/overview',headers=self.admin).json()['permissions'][self.a][self.p]
+  self.assertEqual(permission['source'],'owner');self.assertTrue(permission['read'])
+  self.c.patch('/api/access/users/'+self.a,headers=self.admin,json={'active':False})
+  permission=self.c.get('/api/access/overview',headers=self.admin).json()['permissions'][self.a][self.p]
+  self.assertFalse(permission['read']);self.assertFalse(permission['trial']);self.assertFalse(permission['apply']);self.assertEqual(permission['process_stages'],[])
+
+ def test_all_workspaces_share_editor_and_admin_access(self):
+  for n in range(1,14):
+   base='/api/projects/'+self.p+'/workspaces/F'+str(n)+'/flows'
+   response=self.c.get(base,headers=self.admin)
+   self.assertEqual(response.status_code,200,response.text)
+   self.assertTrue(response.json()['can_edit'])
+  self.assertEqual(self.c.get('/api/me',headers=self.admin).json()['role_name'],'系统管理员')
+  cfg=self.c.get('/api/projects/'+self.p+'/workspaces/F3/flows',headers=self.ah).json()
+  self.assertFalse(cfg['can_edit'])
+  response=self.c.post('/api/projects/'+self.p+'/workspaces/F3/flows/draft',headers=self.ah,json={'expected_revision':0,'base_version_id':cfg['active']['id'],'definition':cfg['active']['definition']})
+  self.assertEqual(response.status_code,403)
+
+ def test_non_sales_workspace_trial_uses_edited_skill(self):
+  base='/api/projects/'+self.p+'/workspaces/F3';cfg=self.c.get(base+'/flows',headers=self.admin).json()
+  definition=copy.deepcopy(cfg['active']['definition']);task=definition['tasks'][0];task['taskbook_md']='# 点表检查\n只输出重复点位';task['require_sources']=False
+  saved=self.c.post(base+'/flows/draft',headers=self.admin,json={'expected_revision':0,'base_version_id':cfg['active']['id'],'definition':definition})
+  self.assertEqual(saved.status_code,200,saved.text)
+  with patch('workspace_router.model_config',return_value=ModelConfig('zhipu','test','https://example.invalid','mock')),patch('workspace_router.request_agent_stream',return_value=iter(['检查完成'])) as model:
+   response=self.c.post(base+'/ask-stream',headers=self.admin,json={'question':'检查点表','task_id':task['id'],'turn_id':'trial-'+uuid4().hex,'test_run':True,'flow_draft_id':saved.json()['id']})
+  self.assertIn('"type": "done"',response.text,response.text)
+  self.assertIn('只输出重复点位',model.call_args.args[0][0]['content'])

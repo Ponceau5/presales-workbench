@@ -49,10 +49,7 @@ export default function ReferenceProject() {
         {[
           ["flow", "项目流程"],
           ["materials", "资料与工件"],
-          ["attention", "关注事项"],
           ["milestones", "里程碑"],
-          ["changes", "变更日志"],
-          ...(view === "review" ? [["review", stage?.id + " 工作区"]] : []),
         ].map(([value, label]) => (
           <button
             key={value}
@@ -99,7 +96,7 @@ export default function ReferenceProject() {
               <span>{i.category}</span>
               <span className="status-pending">
                 待核实{" "}
-                {state.role === "PM / PO" && (
+                {state.role === "系统管理员" && (
                   <select
                     aria-label={"责任岗位 " + i.title}
                     value={assignments[i.id] || state.role}

@@ -1,0 +1,5 @@
+# Install only in isolated test environments, not production.
+# LangChain environment: existing server/requirements.txt
+# Alternative SDK environment:
+pydantic-ai-slim[openai]==2.56.0
+strands-agents==1.61.1

@@ -1,3 +1,4 @@
+import { demoProjectChanges } from "@/lib/projectDemoData";
 import { referenceChanges } from "@/lib/referenceChanges";
 import { sampleChanges } from "@/lib/sampleChanges";
 import { changes } from "@/lib/presales";
@@ -38,6 +39,7 @@ export function projectChanges(state: State, projectId: string): LogEntry[] {
     changeStatus: {} as State["changeStatus"],
   };
   return [
+    ...(demoProjectChanges[projectId] || []),
     ...state.activity
       .filter(
         (a) =>

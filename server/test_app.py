@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 from openpyxl import Workbook
 
-TEMP = tempfile.TemporaryDirectory()
+TEMP = tempfile.TemporaryDirectory(dir=os.getenv("PRESALES_TEST_TMP"))
 os.environ["PRESALES_DATA_DIR"] = TEMP.name
 
 from app import app, db  # noqa: E402
@@ -53,7 +53,7 @@ class WorkflowApiTest(unittest.TestCase):
         endpoint = "/api/projects/F8-DEMO/workspaces/F8"
         doc=self.client.post('/api/projects/F8-DEMO/documents',headers=self.auth('sales'),data={'title':'测试 BOQ','version':'V1'},files={'file':('boq.txt','测试输入'.encode(),'text/plain')}).json()['id']
         with patch("workspace_router.model_config", return_value=SimpleNamespace(configured=False)), patch(
-            "workspace_router.request_chat_stream",
+            "workspace_router.request_agent_stream",
         ) as model:
             mapping = self.client.post(endpoint + "/ask-stream", headers=self.auth("sales"),
                                        json={"question": "整理 BOQ 映射表", "turn_id": "f8-demo-mapping", "selected_pages":[{"document_id":doc,"page":1}]})
@@ -77,7 +77,7 @@ class WorkflowApiTest(unittest.TestCase):
             c.execute("INSERT INTO flow_versions VALUES ('test-no-calculation','F7',1,?,'sales','test',?,'F7-TEST')",(json.dumps(definition),config['id']))
             c.execute("UPDATE project_flows SET version_id='test-no-calculation' WHERE project_id='F7-TEST' AND stage='F7'")
         with patch("workspace_router.model_config", return_value=SimpleNamespace(configured=True)), patch(
-            "workspace_router.request_chat_stream", return_value=iter(["成本待补"]),
+            "workspace_router.request_agent_stream", return_value=iter(["成本待补"]),
         ) as model:
             reply = self.client.post(
                 "/api/projects/F7-TEST/workspaces/F7/ask-stream",
@@ -94,13 +94,13 @@ class WorkflowApiTest(unittest.TestCase):
         endpoint = "/api/projects/F7-DEMO/workspaces/F7"
         doc=self.client.post('/api/projects/F7-DEMO/documents',headers=self.auth('sales'),data={'title':'测试成本依据','version':'V1'},files={'file':('cost.txt','测试输入'.encode(),'text/plain')}).json()['id']
         with patch("workspace_router.model_config", return_value=SimpleNamespace(configured=False)), patch(
-            "workspace_router.request_chat_stream",
+            "workspace_router.request_agent_stream",
         ) as model:
             first = self.client.post(endpoint + "/ask-stream", headers=self.auth("sales"),
-                                     json={"question": "生成报价表", "turn_id": "f7-demo-first", "selected_pages":[{"document_id":doc,"page":1}]})
+                                     json={"question": "生成报价表", "task_id": "cost", "turn_id": "f7-demo-first", "selected_pages":[{"document_id":doc,"page":1}]})
             revised = self.client.post(endpoint + "/ask-stream", headers=self.auth("sales"),
                                        json={"question": "请按人工审核意见修改刚才的报价表：补充采购来源，金额待确认。",
-                                             "turn_id": "f7-demo-revised", "selected_pages":[{"document_id":doc,"page":1}]})
+                                             "turn_id": "f7-demo-revised", "task_id": "cost", "selected_pages":[{"document_id":doc,"page":1}]})
         self.assertEqual(first.status_code, 200, first.text)
         self.assertEqual(revised.status_code, 200, revised.text)
         self.assertIn("模拟演示", first.text)
@@ -389,20 +389,25 @@ class WorkflowApiTest(unittest.TestCase):
 
     def upload(self, text, version):
         return self.client.post(
-            "/api/projects/RCJM1/documents",
+            f"/api/projects/{getattr(self, 'source_project', 'RCJM1')}/documents",
             headers=self.auth("sales"),
             data={"title": "BMS 技术规格", "version": version},
             files={"file": ("bms-spec.txt", text.encode(), "text/plain")},
         )
 
     def test_source_review_handoff_publication_and_local_invalidation(self):
+        self.source_project='REVIEW-ISOLATED'
+        with db() as connection:
+            connection.execute("INSERT OR IGNORE INTO access_projects VALUES ('REVIEW-ISOLATED','独立核对测试')")
+            for role in ('sales','software','dev','solution'):
+                connection.execute("INSERT OR IGNORE INTO project_owners VALUES ('REVIEW-ISOLATED',?,?,1)",(role,role))
         original = (
             "OPC client and server connection shall support plant equipment.\n"
             "Alarm video history shall be available for review and retrieval.\n"
         )
         self.assertEqual(
             self.client.post(
-                "/api/projects/RCJM1/documents",
+                "/api/projects/REVIEW-ISOLATED/documents",
                 headers=self.auth("dev"),
                 data={"title": "研发补充资料", "version": "V1"},
                 files={"file": ("source.txt", original.encode(), "text/plain")},
@@ -514,11 +519,11 @@ class WorkflowApiTest(unittest.TestCase):
         )
         self.assertEqual(published.status_code, 200, published.text)
         active_facts = self.client.get(
-            "/api/projects/RCJM1/facts", headers=self.auth("software")
+            "/api/projects/REVIEW-ISOLATED/facts", headers=self.auth("software")
         )
         self.assertEqual(len(active_facts.json()), 1)
         project_handoffs = self.client.get(
-            "/api/projects/RCJM1/handoffs", headers=self.auth("software")
+            "/api/projects/REVIEW-ISOLATED/handoffs", headers=self.auth("software")
         )
         self.assertEqual(len(project_handoffs.json()), 2)
         changed = self.upload(
@@ -528,7 +533,7 @@ class WorkflowApiTest(unittest.TestCase):
         self.assertEqual(changed.status_code, 200, changed.text)
         self.assertEqual(changed.json()["invalidated"], 1)
         self.assertEqual(self.client.get(
-            "/api/projects/RCJM1/facts", headers=self.auth("software")
+            "/api/projects/REVIEW-ISOLATED/facts", headers=self.auth("software")
         ).json(), [])
         with db() as connection:
             old_video = connection.execute(
@@ -544,7 +549,7 @@ class WorkflowApiTest(unittest.TestCase):
         self.assertEqual(fact["active"], 0)
         self.assertEqual(opc["status"], "candidate")
         events = self.client.get(
-            "/api/projects/RCJM1/events", headers=self.auth("software")
+            "/api/projects/REVIEW-ISOLATED/events", headers=self.auth("software")
         )
         self.assertTrue(any(item["action"] == "fact_published" for item in events.json()))
 

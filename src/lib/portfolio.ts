@@ -2,7 +2,7 @@ export interface ProjectResource {
   id: string;
   projectId: string;
   title: string;
-  kind: "原始资料" | "工件" | "项目笔记";
+  kind: "原始资料" | "工件" | "项目笔记" | "工件模板";
   format: string;
   version: string;
   summary: string;

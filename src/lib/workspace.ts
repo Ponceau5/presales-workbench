@@ -8,7 +8,7 @@ export const roles = [
   '货运关务',
   '研发',
   '认证 / 法务',
-  'PM / PO',
+  '系统管理员',
 ] as const
 export type Role = (typeof roles)[number]
 export const roleWork: Record<
@@ -93,7 +93,7 @@ export const roleWork: Record<
     stages: ['F6', 'F12'],
     tasks: ['核对认证适用资料', '确认合同责任上限', '记录专业复核依据'],
   },
-  'PM / PO': {
+  '系统管理员': {
     title: '协同与变更',
     description: '资料完整性、待确认项和跨岗位行动',
     stages: ['F1', 'F2', 'F14'],
@@ -142,7 +142,7 @@ export const knowledge: Knowledge[] = [
     title: '项目资料与版本规范',
     summary: '让不同岗位复用同一份有效资料。',
     category: '方法与规则',
-    owner: 'PM / PO',
+    owner: '系统管理员',
     version: 'V1',
     updated: '09.28',
     status: 'approved',
@@ -254,5 +254,5 @@ export const taskLinks: Record<Role, string[]> = {
     '/software?artifact=clarification',
   ],
   '认证 / 法务': ['/stages/F6', '/stages/F12', '/stages/F12'],
-  'PM / PO': ['/stages/F2', '/changes', '/methods?knowledge=pending'],
+  '系统管理员': ['/stages/F2', '/changes', '/methods?knowledge=pending'],
 }

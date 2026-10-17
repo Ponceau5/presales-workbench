@@ -1093,3 +1093,24 @@
 .inspector-service-progress small { color:var(--text-secondary); }
 @media (max-width: 1150px) { .local-review-grid { grid-template-columns: minmax(160px, 28%) 1fr; } .local-review-actions { grid-column: 1 / -1; border-top: 1px solid var(--line); max-height: none; } }
 @media (max-width: 700px) { .local-review-grid, .local-review-history-grid { display: block; } .local-review-grid > * { border-right: 0; border-bottom: 1px solid var(--line); } .local-review-queue { max-height: 180px; } .local-review-inbox > div { flex-wrap: wrap; } .local-review-history-grid > section + section { border-left: 0; border-top: 1px solid var(--line); } }
+
+.main-shell>.topbar.has-project-navigation{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);column-gap:12px}
+.has-project-navigation>.breadcrumbs{min-width:0;overflow:hidden;white-space:nowrap}
+.has-project-navigation>.breadcrumbs a{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.has-project-navigation>.breadcrumbs>a:first-of-type{flex-shrink:0}
+.has-project-navigation>.toolbar-controls{justify-self:end;justify-content:flex-end;min-width:0;max-width:100%}
+.has-project-navigation .account-badge{min-width:0;overflow:hidden;white-space:nowrap}
+.has-project-navigation .account-role{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topbar .account-badge small{min-width:0;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.project-top-navigation{display:flex;align-items:center;justify-content:center;gap:4px;margin:0;min-width:0}
+.project-top-navigation a{padding:8px 12px;border-radius:7px;color:var(--text-secondary);font-size:13px;white-space:nowrap;text-decoration:none}
+.project-top-navigation a:hover{background:var(--surface-hover);color:var(--text)}
+.project-top-navigation a.active{background:var(--accent-soft);color:var(--text);font-weight:600}
+.main-shell:has(.gsa-chat) main{max-width:none;padding:8px 18px 12px}
+.main-shell .gsa-chat .gsa-transcript,.main-shell .gsa-chat .gsa-composer,.main-shell .gsa-chat .gsa-cost-confirm{max-width:1160px;width:100%}
+.main-shell .gsa-chat .gsa-transcript{padding:24px 28px 8px}
+.main-shell .gsa-chat .gsa-composer{padding:10px 28px 16px}
+.main-shell .gsa-chat{margin-top:0;border-radius:10px}
+@media(max-width:1050px){.main-shell>.topbar.has-project-navigation{height:auto;min-height:54px;grid-template-columns:minmax(0,1fr) auto;row-gap:4px;padding-block:7px}.has-project-navigation>.breadcrumbs{grid-column:1;grid-row:1}.has-project-navigation>.toolbar-controls{grid-column:2;grid-row:1}.has-project-navigation>.project-top-navigation{grid-column:1 / -1;grid-row:2;justify-self:center;justify-content:center}.project-top-navigation{gap:0}.project-top-navigation a{padding:8px;font-size:12px}.topbar .account-badge small{display:none}}
+@media(max-width:760px){.topbar:has(.project-top-navigation){height:auto;min-height:58px;flex-wrap:wrap;gap:4px;padding:8px 14px}.project-top-navigation{margin:0;width:100%;justify-content:center}.main-shell:has(.gsa-chat) main{padding:6px 8px}.main-shell .gsa-chat .gsa-transcript{padding:16px 12px 8px}.main-shell .gsa-chat .gsa-composer{padding:8px 12px 12px}}
+.signup-page{min-height:100dvh;height:auto;padding-block:30px;gap:18px}.signup-page section{width:min(420px,calc(100vw - 32px));padding:28px!important}.signup-page .signin-heading{margin-bottom:20px}.signup-page .signin-heading h1{font-size:23px}.signup-page form{gap:14px}.signup-page label{font-size:12px;gap:7px}.signup-page input,.signup-page select{font-size:13px!important;min-height:40px}.signup-page select{width:100%;padding:9px 11px;background:var(--surface-soft);border:1px solid var(--line);border-radius:8px;color:var(--text)}.signup-page .signup-role-note{font-size:11px;line-height:1.6;color:var(--text-muted);margin:0}.signup-back{display:block;text-align:center;font-size:12px;color:var(--text-secondary);margin-top:3px}.signup-page [role=alert]{font-size:12px;color:#d97d66;line-height:1.6;margin:0}

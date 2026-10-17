@@ -239,7 +239,7 @@ export default function Portal() {
           {activeDoc?.status === "pending" ? (
             <div className="knowledge-review">
               <p>待维护人确认内容准确性及内部复用权限。</p>
-              {state.role === "PM / PO" ? (
+              {state.role === "系统管理员" ? (
                 <>
                   <label className="form-label">
                     审核意见
@@ -265,7 +265,7 @@ export default function Portal() {
                   </button>
                 </>
               ) : (
-                <Tag tone="amber">PM / PO 待审核</Tag>
+                <Tag tone="amber">系统管理员 待审核</Tag>
               )}
             </div>
           ) : null}

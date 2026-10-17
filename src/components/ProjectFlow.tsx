@@ -143,7 +143,7 @@ export function ProjectFlow({
     "?view=review&stage=" +
     id;
   return (
-    <div className="project-flow-workspace">
+    <div data-tour="project-flow" className="project-flow-workspace">
       <div className="project-flow-main">
         <div className="canvas-toolbar">
           <div>
@@ -268,7 +268,7 @@ export function ProjectFlow({
           </Tag>
         </div>
         <h2>{step.label}</h2>
-        <Link className="btn primary full" to={getRoute(selected)}>
+        <Link data-tour="open-workspace" className="btn primary full" to={getRoute(selected)}>
           打开工作区
           <ArrowRight size={14} />
         </Link>

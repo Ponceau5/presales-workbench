@@ -4,7 +4,7 @@ import { projectChanges } from "@/lib/projectChanges";
 import { canCreateProject } from "@/lib/accounts";
 import { useState } from "react";
 import { useNavigate } from "react-router";
-import { Plus, Search } from "lucide-react";
+import { Plus, Search, Star } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -18,12 +18,17 @@ export default function Projects() {
   const { state, dispatch } = useWorkbench();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
+  const followKey = `presales-followed-projects:${state.accountId || 'guest'}`;
+  const [followed, setFollowed] = useState<string[]>(()=>{try{return JSON.parse(localStorage.getItem(followKey)||'[]');}catch{return [];}});
+  const [onlyFollowed,setOnlyFollowed]=useState(false);
+  function toggleFollow(id:string){const next=followed.includes(id)?followed.filter(v=>v!==id):[...followed,id];localStorage.setItem(followKey,JSON.stringify(next));setFollowed(next);}
+  function updateTime(value:string){if(value==='刚刚')return Date.now();const normalized=/^\d{2}\.\d{2}$/.test(value)?`${new Date().getFullYear()}-${value.replace('.','-')}`:value;return Date.parse(normalized)||0;}
   const [create, setCreate] = useState(false);
   const [name, setName] = useState("");
   const [owner, setOwner] = useState<string>(state.role);
   return (
-    <>
-      <div className="portal-title">
+    <div className="projects-page">
+      <div className="portal-title page-titlebar">
         <div>
           <h1>项目</h1>
         </div>
@@ -38,7 +43,7 @@ export default function Projects() {
           </button>
         )}
       </div>
-      <div className="project-toolbar">
+      <section data-tour="project-list" className="register-panel"><div className="project-toolbar"><div className="project-list-views"><button className={!onlyFollowed?'active':''} onClick={()=>setOnlyFollowed(false)}>全部项目</button><button className={onlyFollowed?'active':''} onClick={()=>setOnlyFollowed(true)}>我的关注</button></div>
         <div className="library-search">
           <Search size={15} />
           <input
@@ -65,7 +70,8 @@ export default function Projects() {
           </thead>
           <tbody>
             {state.projects
-              .filter((p) => `${p.name}${p.id}${p.owner}`.includes(query))
+              .filter((p) => `${p.name}${p.id}${p.owner}`.toLowerCase().includes(query.toLowerCase()) && (!onlyFollowed || followed.includes(p.id)))
+              .sort((a,b)=>updateTime(b.updated)-updateTime(a.updated))
               .map((p) => {
                 const snapshot =
                   p.id === state.currentProjectId ? state : p.snapshot;
@@ -78,7 +84,7 @@ export default function Projects() {
                   ).length;
                 return (
                   <tr key={p.id}>
-                    <td>
+                    <td><div className="project-name-cell"><button className="project-follow" aria-label={(followed.includes(p.id)?'取消关注 ':'关注 ')+p.name} aria-pressed={followed.includes(p.id)} onClick={()=>toggleFollow(p.id)}><Star size={15} fill={followed.includes(p.id)?'currentColor':'none'}/></button>
                       <button
                         className="file-open"
                         disabled={
@@ -91,7 +97,7 @@ export default function Projects() {
                       >
                         {p.name.replace(" · RCJM1", "")}
                         <small>{p.id}</small>
-                      </button>
+                      </button></div>
                     </td>
                     <td>
                       {p.reference ? "BMS / DCIM / BA" : "监控与软件集成"}
@@ -127,6 +133,7 @@ export default function Projects() {
           </tbody>
         </table>
       </div>
+      </section>
       <Dialog open={create} onOpenChange={setCreate}>
         <DialogContent>
           <DialogHeader>
@@ -160,6 +167,6 @@ export default function Projects() {
           </button>
         </DialogContent>
       </Dialog>
-    </>
+    </div>
   );
 }

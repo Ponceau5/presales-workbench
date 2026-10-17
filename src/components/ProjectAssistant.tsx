@@ -1,9 +1,7 @@
 import { randomId } from "@/lib/id";
-import {
-  executeAgentTask,
-  inferTask,
-  type AgentArtifact,
-} from "@/lib/agentTasks";
+import { type AgentArtifact } from "@/lib/agentTasks";
+import { localApi } from "@/lib/localApi";
+import { MarkdownReply } from "@/features/software/MarkdownReply";
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router";
 import {
@@ -21,8 +19,8 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { stagesForProject } from "@/lib/projectStages";
-import { roleWork } from "@/lib/workspace";
+
+
 import { useWorkbench } from "@/state/workbench";
 type Message = {
   id: string;
@@ -45,9 +43,7 @@ export function ProjectAssistant() {
         e.preventDefault();
         if (!open)
           setProject(
-            location.pathname.includes("RCJM1") || location.pathname === "/"
-              ? "RCJM1"
-              : state.currentProjectId,
+            state.currentProjectId,
           );
         setOpen((v) => !v);
       }
@@ -55,8 +51,10 @@ export function ProjectAssistant() {
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
   }, [open, location.pathname, state.currentProjectId]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   const [stageContext, setStageContext] = useState("");
-  const [artifactContext, setArtifactContext] = useState<AgentArtifact | null>(
+  const [, setArtifactContext] = useState<AgentArtifact | null>(
     null,
   );
   useEffect(() => {
@@ -85,89 +83,24 @@ export function ProjectAssistant() {
   }, [messages, open]);
   function show() {
     setProject(
-      location.pathname.includes("RCJM1") || location.pathname === "/"
-        ? "RCJM1"
-        : state.currentProjectId,
+      state.currentProjectId,
     );
     setStageContext("");
     setArtifactContext(null);
     setMessages([]);
     setOpen(true);
   }
-  function send(text = input) {
-    if (!text.trim()) return;
+  async function send(text = input) {
+    if (!text.trim() || busy) return;
     const value = text.trim();
-    const change =
-      /^(请|帮我)?(新增|添加|增加|登记|创建|标记).*(跟进|任务)|^(请|帮我)?(把|将).*(改成|修改为|调整为)/.test(
-        value,
-      );
-    const p = state.projects.find((p) => p.id === project)!;
-    let reply = "";
-    if (change)
-      reply =
-        "已整理为" +
-        (/改|调整/.test(value) ? "修改建议" : "跟进建议") +
-        "，请确认项目与内容。";
-    else if (artifactContext) {
-      const task = executeAgentTask(
-        project,
-        stageContext,
-        artifactContext,
-        inferTask(value),
-        value,
-        [artifactContext.source],
-        state.role,
-      );
-      reply = task.findings
-        .map((f) => f.title + "：" + f.text + "\n依据：" + f.source)
-        .join("\n\n");
-      dispatch({
-        type: "agentRun",
-        projectId: project,
-        id: artifactContext.id,
-        summary: JSON.stringify(task),
-      });
-    } else if (
-      stageContext &&
-      stagesForProject(project).some((s) => s.id === stageContext)
-    ) {
-      const node = stagesForProject(project).find(
-        (s) => s.id === stageContext,
-      )!;
-      reply = `${node.title}：${node.goal}\n资料依据：${node.source}\n待确认：${node.question}\n责任岗位：${node.owner}`;
-    } else if (/该做|做什么|任务|帮我|下一步/.test(value))
-      reply =
-        roleWork[state.role].tasks.join("；") +
-        "。我可以整理资料与待办、提出修改建议；批准和写回由责任账号完成。";
-    else if (project === "RCJM1")
-      reply = /文件|资料|规格|点表/.test(value)
-        ? "RCJM1 已登记点表、BMS 配置、BA 清单、PTC 澄清、SOO、技术规格书和图纸目录。点表、规格书、控制序列与 DCOM 需求可在“资料与工件”内阅读全文；F3 提供逐行统计，F5 提供分工件复核。"
-        : "项目记录显示 RCJM1 已中标，处于执行交付阶段。Phase 1 RFS 登记为 2026-11-06；Server OS、交换机供货、设备授权及分期日期存在待核实事项。来源：项目笔记 2026-09-15。";
-    else
-      reply = `${p.name} 可按项目流程查看资料、专业协作、报价与合同环节。F5 的 F3S 工作区提供本轮软件评审演示。`;
-    setMessages((prev) => [
-      ...prev,
-      { id: randomId(), role: "user", text: value },
-      {
-        id: randomId(),
-        role: "assistant",
-        text: reply,
-        ...(change
-          ? {
-              proposal: {
-                title: value.replace(
-                  /^(请)?(新增|添加|增加)(一项)?(待)?跟进[：:，\s]*/,
-                  "",
-                ),
-                projectId: project,
-                owner: state.role,
-                kind: /改|调整/.test(value) ? "修改建议" : "新增跟进",
-              },
-            }
-          : {}),
-      },
-    ]);
-    setInput("");
+    const history = messages.slice(-10).map(({role,text})=>({role,text}));
+    setMessages(prev=>[...prev,{id:randomId(),role:"user",text:value}]);
+    setInput("");setBusy(true);setError("");
+    try {
+      const result = await localApi<{answer:string;proposal:null|{title:string;kind:string}}>("/api/project-assistant",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({project_id:project,question:value,history})});
+      setMessages(prev=>[...prev,{id:randomId(),role:"assistant",text:result.answer,...(result.proposal?{proposal:{...result.proposal,projectId:project,owner:state.role}}:{})}]);
+    } catch(e) {setError(e instanceof Error?e.message:"发送失败，请重试");setInput(value);}
+    finally {setBusy(false);}
   }
   return (
     <>
@@ -189,16 +122,17 @@ export function ProjectAssistant() {
           <DialogHeader>
             <DialogTitle>
               <Sparkles size={18} />
-              项目助手 <span>演示</span>
+              项目助手
             </DialogTitle>
             <DialogDescription className="sr-only">
-              对话查询项目，预览变更建议并登记待跟进事项。演示回复不调用 LLM。
+              查询项目资料和进度，整理客户变更并确认登记。
             </DialogDescription>
           </DialogHeader>
           <div className="assistant-context">
             <select
               aria-label="助手当前项目"
               value={project}
+              disabled={busy}
               onChange={(e) => {
                 setProject(e.target.value);
                 setStageContext("");
@@ -225,13 +159,13 @@ export function ProjectAssistant() {
                 {[
                   "查看项目当前状态",
                   "查找技术规格书与点表",
-                  "添加一项待跟进事项",
+                  "记录客户要求变更",
                 ].map((text) => (
                   <button
                     key={text}
                     onClick={() =>
-                      text.includes("添加")
-                        ? setInput("添加待跟进：")
+                      text.includes("变更")
+                        ? setInput("客户要求变更：")
                         : send(text)
                     }
                   >
@@ -243,7 +177,7 @@ export function ProjectAssistant() {
             )}
             {messages.map((m) => (
               <article key={m.id} className={"assistant-message " + m.role}>
-                <p>{m.text}</p>
+                <MarkdownReply text={m.text}/>
                 {m.proposal && (
                   <div className="assistant-proposal">
                     <div>
@@ -254,7 +188,7 @@ export function ProjectAssistant() {
                       项目
                       <select
                         value={m.proposal.projectId}
-                        disabled={m.confirmed}
+                        disabled={m.confirmed || busy}
                         onChange={(e) =>
                           setMessages((prev) =>
                             prev.map((item) =>
@@ -283,7 +217,7 @@ export function ProjectAssistant() {
                       <textarea
                         rows={3}
                         value={m.proposal.title}
-                        disabled={m.confirmed}
+                        disabled={m.confirmed || busy}
                         onChange={(e) =>
                           setMessages((prev) =>
                             prev.map((item) =>
@@ -305,7 +239,7 @@ export function ProjectAssistant() {
                       跟进岗位
                       <input
                         value={m.proposal.owner}
-                        disabled={m.confirmed}
+                        disabled={m.confirmed || busy}
                         onChange={(e) =>
                           setMessages((prev) =>
                             prev.map((item) =>
@@ -326,25 +260,19 @@ export function ProjectAssistant() {
                     <button
                       className="btn primary full"
                       disabled={
-                        m.confirmed ||
+                        m.confirmed || busy ||
                         !m.proposal.title.trim() ||
                         !m.proposal.owner.trim()
                       }
-                      onClick={() => {
-                        dispatch({
-                          type: "followup",
-                          projectId: m.proposal!.projectId,
-                          title: m.proposal!.title,
-                          owner: m.proposal!.owner,
-                          source: "项目助手建议",
-                        });
-                        setMessages((prev) =>
-                          prev.map((item) =>
-                            item.id === m.id
-                              ? { ...item, confirmed: true }
-                              : item,
-                          ),
-                        );
+                      onClick={async () => {
+                        if (!m.proposal || busy) return;
+                        setBusy(true);setError("");
+                        try {
+                          const entry=await localApi<(typeof state.followups)[number]>("/api/project-assistant/records",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:m.id,project_id:m.proposal.projectId,title:m.proposal.title,owner:m.proposal.owner,kind:m.proposal.kind})});
+                          dispatch({type:"hydrateShared",state:{...state,followups:[entry,...state.followups.filter(f=>f.id!==entry.id)]}});
+                          setMessages(prev=>prev.map(item=>item.id===m.id?{...item,confirmed:true}:item));
+                        } catch(e) {setError(e instanceof Error?e.message:"登记失败，请重试");}
+                        finally {setBusy(false);}
                       }}
                     >
                       {m.confirmed ? (
@@ -353,7 +281,7 @@ export function ProjectAssistant() {
                           已登记待跟进
                         </>
                       ) : (
-                        "确认建议"
+                        "确认登记"
                       )}
                     </button>
                     {m.confirmed && <small>原始资料与已审工件保持原状。</small>}
@@ -361,7 +289,7 @@ export function ProjectAssistant() {
                 )}
               </article>
             ))}
-            <div ref={end} />
+            {busy && <p role="status">正在查询项目资料…</p>}{error && <p role="alert">{error}</p>}<div ref={end} />
           </div>
           <form
             className="assistant-compose"
@@ -386,10 +314,10 @@ export function ProjectAssistant() {
                 }
               }}
             />
-            <button aria-label="发送消息" disabled={!input.trim()}>
+            <button aria-label="发送消息" disabled={busy || !input.trim()}>
               <ArrowUp size={18} />
             </button>
-            <small>演示回复 · Enter 发送，Shift + Enter 换行</small>
+            <small>Enter 发送，Shift + Enter 换行 · 变更经确认后登记</small>
           </form>
           <button aria-label="关闭项目助手" onClick={() => setOpen(false)}>
             <X size={16} />

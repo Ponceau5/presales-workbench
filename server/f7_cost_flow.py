@@ -16,13 +16,21 @@ class Enquiry(BaseModel):
 def records(document):
  if not document:return []
  with materialize(document['path']) as path:
-  if path.suffix.lower() not in {'.xlsx','.xlsm'}:return []
-  w=load_workbook(path,read_only=True,data_only=True);result=[]
-  aliases={'sku':['料号','物料号','设备编号','CRM编号','编号','SKU'],'name':['设备名称','物料名称','名称','设备类型'],'model':['型号','规格型号','规格','Gateway Model'],'qty':['数量','台数','Qty'],'unit_cost':['成本单价','采购单价','单价','回价'],'category':['采购类型','供货类型','成本类型'],'currency':['币种','货币']}
+  if path.suffix.lower() not in {'.xls','.xlsx','.xlsm'}:return []
+  legacy=path.suffix.lower()=='.xls'
+  if legacy:
+   import xlrd
+   w=xlrd.open_workbook(str(path),on_demand=True)
+   sheets=((sh.name,(sh.row_values(i) for i in range(sh.nrows))) for sh in w.sheets())
+  else:
+   w=load_workbook(path,read_only=True,data_only=True)
+   sheets=((sh.title,sh.iter_rows(values_only=True)) for sh in w)
+  result=[]
+  aliases={'sku':['料号','物料号','设备编号','CRM编号','编号','SKU'],'name':['设备名称','物料名称','名称','设备类型','设备名 Device name'],'model':['型号','规格型号','规格','Gateway Model','规格型号 Spec'],'qty':['数量','台数','Qty','数量 QTY'],'unit_cost':['成本单价','采购单价','单价','回价'],'category':['采购类型','供货类型','成本类型'],'currency':['币种','货币']}
   try:
-   for sh in w:
+   for sheet_name,rows in sheets:
     mapping=None
-    for cells in sh.iter_rows(values_only=True):
+    for cells in rows:
      if mapping is None:
       headers=[str(v or '').strip() for v in cells];mapping={k:next((i for i,h in enumerate(headers) if h in options),None) for k,options in aliases.items()}
       if mapping['name'] is None or mapping['qty'] is None:mapping=None
@@ -31,7 +39,9 @@ def records(document):
      if not row['name'] or not isinstance(row['qty'],(int,float)) or row['qty']<=0:continue
      row.update(currency=str(row.get('currency') or 'CNY'),sku=str(row['sku'] or ''),name=str(row['name']),model=str(row['model'] or ''),category=str(row['category'] or '待确认'));result.append(row)
      if len(result)>1000:raise HTTPException(413,'清单超过1000行，请拆分')
-  finally:w.close()
+  finally:
+   if legacy:w.release_resources()
+   else:w.close()
  return result
 
 def install(app,db,actor):

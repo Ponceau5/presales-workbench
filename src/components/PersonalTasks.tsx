@@ -66,7 +66,7 @@ export function PersonalTasks() {
   );
   return (
     <div className="task-inbox">
-      <header className="inbox-heading">
+      <header className="inbox-heading page-titlebar">
         <div>
           <h1>
             我的任务 <span>{tasks.length}</span>
@@ -74,7 +74,7 @@ export function PersonalTasks() {
         </div>
         <span>{state.role}</span>
       </header>
-      <div className="inbox-toolbar">
+      <section className="register-panel"><div className="inbox-toolbar">
         <div className="segmented">
           {[
             "全部",
@@ -208,6 +208,7 @@ export function PersonalTasks() {
           </div>
         )}
       </div>
+      </section>
       <DeliveryDialog
         key={delivery?.id}
         delivery={delivery}

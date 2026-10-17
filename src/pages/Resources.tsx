@@ -1,6 +1,6 @@
+import { FileFormatIcon } from '@/components/FileFormatIcon';
 import { useState } from "react";
-import { Link } from "react-router";
-import { Search, FileText, Copy, ExternalLink } from "lucide-react";
+import { Search, Copy, ExternalLink } from "lucide-react";
 import { sharedCatalog } from "@/lib/sharedCatalog";
 import { PdfPreview } from "@/components/PdfPreview";
 import { fileHref } from "@/lib/portfolio";
@@ -50,11 +50,10 @@ export default function Resources() {
   );
   return (
     <div className="catalog-page">
-      <header className="catalog-heading">
+      <header className="catalog-heading page-titlebar">
         <h1>
           公共资料 <small>{sharedCatalog.length}</small>
         </h1>
-        <Link to="/methods">方法与经验 →</Link>
       </header>
       <div className="catalog-workspace">
         <aside className="catalog-tree">
@@ -133,7 +132,7 @@ export default function Resources() {
                           setCopied(false);
                         }}
                       >
-                        <FileText size={15} />
+                        <FileFormatIcon format={r.format} />
                         {r.title}
                       </button>
                     </td>

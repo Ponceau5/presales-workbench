@@ -190,7 +190,7 @@ const checks: Record<string, string[]> = {
 };
 export function taskOptions(stage: string, category?: string, owner?: string) {
   const names =
-    owner === "PM / PO"
+    owner === "系统管理员"
       ? ["读取工件状态", "核对阻塞与责任", "整理协作清单", "分派专业跟进"]
       : roleLabels[stage + ":" + owner] ||
         (stage === "F5"
@@ -235,6 +235,10 @@ export function stageArtifact(
   revision = 1,
   resolution?: string,
 ): AgentArtifact {
+  if(projectId.startsWith("PORT-") && stage === "F5") return {
+    id:"F5:"+index,title:"软件技术支持",text:text||"尚无已确认成果",
+    requirement:"核对软件范围与本项目资料",source:"待提供项目资料",owner:"软件产品",revision,resolution,
+  };
   const def = stagesForProject(projectId).find((s) => s.id === stage)!;
   const row = def.outputs[index];
   return {
@@ -267,7 +271,7 @@ export function executeAgentTask(
   const label = taskOptions(
     stage,
     artifact.category,
-    actorRole === "PM / PO" ? actorRole : artifact.owner,
+    actorRole === "系统管理员" ? actorRole : artifact.owner,
   ).find((t) => t.kind === task)!.label;
   const def = stagesForProject(projectId).find((s) => s.id === stage);
   const needsConfirmation =
@@ -346,7 +350,7 @@ export function executeAgentTask(
       source: artifact.id,
       status: "建议",
     });
-  } else if (task === "draft" && actorRole === "PM / PO") {
+  } else if (task === "draft" && actorRole === "系统管理员") {
     findings.push({
       title: "专业协作",
       text: `${artifact.owner}负责「${artifact.title}」；${needsConfirmation ? "先补齐：" + artifact.blocker : "核对现有确认记录后继续复核"}。`,
@@ -410,7 +414,7 @@ export function executeAgentTask(
     });
   const proposal =
     task === "draft" &&
-    actorRole !== "PM / PO" &&
+    actorRole !== "系统管理员" &&
     (sourceSelected || artifactSelected) &&
     !unsafeCommitment
       ? `${artifact.text}${needsConfirmation && !artifact.text.includes(artifact.blocker || "关联确认尚未完成") ? "\n待确认：" + artifact.blocker : ""}${artifact.context && artifact.category !== "客户应答" ? "\n关联输入（待复核）：" + artifact.context : ""}`

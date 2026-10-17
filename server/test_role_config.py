@@ -56,11 +56,13 @@ class RoleConfigTests(unittest.TestCase):
         import workspace_router
         app=FastAPI()
         with self.db() as c:
-            c.executescript('CREATE TABLE documents(id TEXT,project_id TEXT,title TEXT,version TEXT,sha256 TEXT); CREATE TABLE document_pages(document_id TEXT,page INT,text TEXT);')
+            c.executescript('CREATE TABLE documents(id TEXT,project_id TEXT,title TEXT,filename TEXT,version TEXT,sha256 TEXT,created_at TEXT); CREATE TABLE document_registry(document_id TEXT,category TEXT); CREATE TABLE workspace_material_tags(document_id TEXT,stage_id TEXT,category TEXT); CREATE TABLE document_pages(document_id TEXT,page INT,text TEXT);')
+            c.execute("INSERT INTO documents VALUES ('source-A','A','项目功能要求','source.md','V1','test-hash','now')")
+            c.execute("INSERT INTO document_pages VALUES ('source-A',1,'本项目需要告警查询和历史报表')")
             c.execute("UPDATE role_config_versions SET status='published' WHERE id=?",(self.cfg['id'],))
         workspace_router.install(app,self.db,lambda:self.account,lambda:'now',lambda *a:None)
         client=TestClient(app);base='/api/projects/A/workspaces/F5'
-        with patch.object(workspace_router,'request_chat_stream',side_effect=lambda *a,**k:iter(['已知内容'])):
+        with patch.object(workspace_router,'request_agent_stream',side_effect=lambda *a,**k:iter(['已知内容'])):
             r=client.post(base+'/ask-stream',json={'question':'功能清单','turn_id':'origin','task_id':'functions'})
             self.assertIn('done',r.text)
         tasks=json.loads(json.dumps(self.cfg['tasks']));next(t for t in tasks if t['id']=='functions')['recipient']='none'

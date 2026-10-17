@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import object_storage
 import access_control
+import identity_provider
+import agent_runtime
 import csv
 import json
 import os
@@ -59,7 +61,7 @@ ROLE_BY_ACCOUNT = {
     "logistics": "货运关务",
     "dev": "研发",
     "legal": "认证 / 法务",
-    "pm": "PM / PO",
+    "pm": "系统管理员",
 }
 DEMO_PASSWORD = os.environ.get("PRESALES_DEMO_PASSWORD", "demo2026")
 if object_storage.enabled() and (DEMO_PASSWORD == "demo2026" or DEMO_PASSWORD == "CHANGE_TO_A_LONG_PASSWORD" or len(DEMO_PASSWORD) < 16):
@@ -69,7 +71,8 @@ app = FastAPI(title="售前工作台 · 本机测试 API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:3000", "http://localhost:3000", "http://127.0.0.1:7100", "http://localhost:7100", "http://localhost:7101", "http://127.0.0.1:7101"],
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_methods=["GET", "POST", "DELETE", "PUT", "PATCH"],
+    allow_credentials=True,
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -169,6 +172,7 @@ access_control.init(db,DEMO_PASSWORD)
 
 def actor(request: Request, authorization: str = Header(default="")) -> str:
     token = authorization.removeprefix("Bearer ")
+    identity_provider.check_session(token)
     account = access_control.session(token)
     access_control.authorize(account,request)
     return account
@@ -176,7 +180,7 @@ def actor(request: Request, authorization: str = Header(default="")) -> str:
 
 
 def require_account(account: str, allowed: set[str]) -> None:
-    if access_control.role_of(account) not in allowed:
+    if not access_control.is_admin(account) and access_control.role_of(account) not in allowed:
         raise HTTPException(status_code=403, detail="当前岗位无权操作")
 
 
@@ -204,12 +208,15 @@ class Login(BaseModel):
 
 @app.post("/api/session")
 def login(payload: Login, response: Response):
+    if identity_provider.enabled():raise HTTPException(409,"请通过统一账号登录")
     token,person=access_control.login(payload.username,payload.password)
     SESSIONS[token] = payload.username
     response.set_cookie("presales_source_session",token,httponly=True,samesite="lax",secure=os.getenv("PRESALES_HTTPS")=="1",path="/",max_age=28800)
     return {"token":token,"account":person["id"],"role":person["role_name"],"person":person}
 
 access_control.install(app,actor)
+identity_provider.install(app,db,DATA_DIR,actor)
+agent_runtime.install(app,db,DATA_DIR,actor)
 
 
 
@@ -304,7 +311,7 @@ async def upload_document(
 ):
     require_account(account, set(access_control.ROLES))
     suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in {".pdf", ".txt", ".md", ".docx", ".xlsx"} or not title.strip() or not version.strip():
+    if not title.strip() or not version.strip():
         raise HTTPException(status_code=422, detail="支持带标题和版本的 PDF、Word (.docx)、Excel (.xlsx)、Markdown/文本")
     identifier = str(uuid4())
     destination = FILES_DIR / (identifier + suffix)
@@ -320,8 +327,20 @@ async def upload_document(
                 output.write(chunk)
         if not size:
             raise HTTPException(status_code=422, detail="空文件")
-        parsed_pages = pages(destination)
-        stored_location = object_storage.save(destination, object_storage.key_for(project_id, identifier, suffix))
+        with db() as connection:
+            existing=connection.execute("SELECT d.*, (SELECT count(*) FROM document_pages p WHERE p.document_id=d.id) page_count FROM documents d WHERE d.project_id=? AND d.sha256=? ORDER BY d.created_at DESC LIMIT 1",(project_id,digest.hexdigest())).fetchone()
+            latest_title=connection.execute('SELECT id FROM documents WHERE project_id=? AND title=? ORDER BY created_at DESC LIMIT 1',(project_id,title.strip())).fetchone()
+        explicit_version_change = existing and __import__('re').fullmatch(r'[vV]\d+(?:\.\d+)*',version.strip()) and (existing['version'] != version.strip() or latest_title and latest_title['id'] != existing['id'])
+        if existing and title.strip()==existing['title'] and not explicit_version_change:
+            destination.unlink(missing_ok=True)
+            image=Path(existing['filename']).suffix.lower() in {'.png','.jpg','.jpeg','.webp','.gif','.bmp','.tif','.tiff'}
+            return {'id':existing['id'],'version':existing['version'],'sha256':existing['sha256'],'page_count':existing['page_count'],'is_image':image,'parse_status':'text' if existing['page_count'] else 'image' if image else 'unparsed','duplicate':True}
+        try:
+            parsed_pages = pages(destination) if suffix in {'.pdf','.txt','.md','.docx','.xlsx','.xls','.csv','.json','.xml','.yaml','.yml','.log'} else []
+        except HTTPException:
+            parsed_pages = []
+        stored_location = existing['path'] if existing else object_storage.save(destination, object_storage.key_for(project_id, identifier, suffix))
+        if existing:destination.unlink(missing_ok=True)
         new_text = " ".join("\n".join(parsed_pages).split())
         with db() as connection:
             previous = connection.execute(
@@ -364,7 +383,7 @@ async def upload_document(
                 f"{title.strip()} {version.strip()}; 失效要求 {stale} 条")
         if object_storage.enabled(): destination.unlink(missing_ok=True)
         return {"id": identifier, "version": version.strip(),
-                "sha256": digest.hexdigest(), "invalidated": stale}
+                "sha256": digest.hexdigest(), "invalidated": stale, "page_count":len(parsed_pages), "is_image":suffix in {".png",".jpg",".jpeg",".webp",".gif",".bmp",".tif",".tiff"}, "parse_status":"text" if parsed_pages else "image" if suffix in {".png",".jpg",".jpeg",".webp",".gif",".bmp",".tif",".tiff"} else "unparsed"}
     except Exception:
         destination.unlink(missing_ok=True)
         raise
@@ -378,14 +397,19 @@ class DirectUpload(BaseModel):
 
 @app.get("/api/storage/status")
 def storage_status(account: str = Depends(actor)):
-    return {"direct_upload": object_storage.enabled()}
+    return {"direct_upload": object_storage.enabled(),"mode":"oss" if object_storage.enabled() else "local","shared_pool":"project","bucket":os.getenv("OSS_BUCKET") if object_storage.enabled() else None}
+
+@app.get("/api/projects/{project_id}/storage")
+def project_storage(project_id:str,account:str=Depends(actor)):
+    with db() as c:
+        records=[dict(r) for r in c.execute("SELECT id,title,version,filename,created_at FROM documents WHERE project_id=? ORDER BY created_at DESC",(project_id,))]
+    return {"project_id":project_id,"mode":"oss" if object_storage.enabled() else "local","documents":records,"version_policy":"immutable","workspace_policy":"reference"}
 
 @app.post("/api/projects/{project_id}/uploads/prepare")
 def prepare_upload(project_id: str, payload: DirectUpload, account: str = Depends(actor)):
-    require_account(account, {"sales", "software", "pm"})
+    require_account(account, set(access_control.ROLES))
     if not object_storage.enabled(): raise HTTPException(409, "未启用对象存储")
     suffix=Path(payload.filename).suffix.lower()
-    if suffix not in {".pdf", ".txt", ".md", ".docx", ".xlsx"}: raise HTTPException(422, "不支持此文件格式")
     identifier=str(uuid4()); key="pending/"+identifier+suffix
     import time
     with db() as c:
@@ -452,14 +476,22 @@ def sync_project_sources():
                 c.executemany("INSERT INTO document_pages VALUES (?,?,?)",[(identifier,i+1,text) for i,text in enumerate(content)])
 
 
+@app.get("/api/documents/{identifier}/download-link")
+def document_download_link(identifier: str, account: str = Depends(actor)):
+    with db() as connection: document=row_or_404(connection,"documents",identifier)
+    response=object_storage.download(document['path'],document['filename'])
+    if response.status_code in {302,303,307,308}:return {"url":response.headers['location']}
+    return {"url":None}
+
+
 @app.get("/api/projects/{project_id}/documents")
 def list_documents(project_id: str, account: str = Depends(actor)):
     if project_id == "GSA02": sync_project_sources()
     with db() as connection:
         return [dict(row) for row in connection.execute(
-            "SELECT d.id, d.title, d.version, d.filename, d.sha256, d.actor, d.created_at, CASE WHEN d.id LIKE 'gsa-f7-reference-%' THEN 'F7' ELSE NULL END AS stage_id, "
+            "SELECT d.id, d.title, d.version, d.filename, d.sha256, d.actor, d.created_at, COALESCE(r.category, 'input') AS category, CASE WHEN d.id LIKE 'gsa-f7-reference-%' THEN 'F7' ELSE NULL END AS stage_id, "
             "(SELECT COUNT(*) FROM document_pages p WHERE p.document_id=d.id) AS page_count "
-            "FROM documents d WHERE d.project_id=? ORDER BY d.created_at DESC", (project_id,),
+            "FROM documents d LEFT JOIN document_registry r ON r.document_id=d.id WHERE d.project_id=? AND COALESCE(r.category, 'input')!='temporary' ORDER BY d.created_at DESC", (project_id,),
         )]
 
 
@@ -1091,6 +1123,7 @@ register_f7_demo_reference()
 
 @app.get("/api/source-assets/{asset_path:path}")
 def source_asset(asset_path: str, presales_source_session: str = Cookie(default="")):
+    identity_provider.check_session(presales_source_session)
     person=access_control.session(presales_source_session)
     if asset_path.startswith("project-data/rcjm1/"):access_control.check_project(person,"RCJM1")
     relative=Path(asset_path)
@@ -1111,3 +1144,21 @@ workspace_materials.install(app,db,actor)
 
 import f7_cost_flow
 f7_cost_flow.install(app,db,actor)
+
+import agent_sdk_trial
+agent_sdk_trial.install(app,db,actor,now)
+
+import document_media
+document_media.install(app,db,actor)
+
+import project_assistant
+project_assistant.install(app, db, actor)
+
+import trial_signup
+trial_signup.install(app, db, identity_provider)
+
+import user_guides
+user_guides.install(app, db, actor, now)
+
+import document_registry
+document_registry.install(app, db, actor, now)

@@ -39,7 +39,7 @@ export function NodeAgent({
   const fallbackItem = items.find((i) => i.owner === state.role) || items[0];
   const baseArtifact =
     supplied ||
-    (stage === "F5"
+    (stage === "F5" && !projectId.startsWith("PORT-")
       ? softwareArtifact(fallbackItem, {
           ...readProjectReview(projectId, state).rows[fallbackItem.id],
         })
@@ -48,7 +48,7 @@ export function NodeAgent({
           stage,
           0,
           state.currentProjectId === projectId
-            ? state.stageStates[stage]?.rows[0].text
+            ? state.stageStates[stage]?.rows[0]?.text
             : undefined,
           state.stageStates[stage]?.version,
           state.stageStates[stage]?.response?.text,
@@ -214,7 +214,7 @@ export function NodeAgent({
         {taskOptions(
           stage,
           artifact.category,
-          state.role === "PM / PO" ? state.role : artifact.owner,
+          state.role === "系统管理员" ? state.role : artifact.owner,
         ).map((t) => (
           <button key={t.kind} onClick={() => run(t.kind, t.label)}>
             {t.label}

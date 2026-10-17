@@ -1,3 +1,4 @@
+import type {PortfolioRecord} from '@/lib/projectPortfolio';
 import { randomId } from "@/lib/id";
 import {
   publishDelivery,
@@ -72,6 +73,7 @@ export interface StageState {
   assigned: boolean;
 }
 export interface Project {
+  portfolio?: PortfolioRecord;
   id: string;
   name: string;
   owner: string;
@@ -151,7 +153,7 @@ export const initialState = (settings: LLMSettings): State => ({
   permissionNotice: "",
   role: "软件产品",
   bookmarks: {},
-  theme: "light",
+  theme: "dark",
   knowledge: knowledge.map((k) => ({ ...k })),
   resources: projectResources.map((r) => ({ ...r })),
   followups: [],
@@ -333,7 +335,7 @@ export function permitted(s: State, a: Action): boolean {
     return (
       !!f &&
       f.projectId === a.projectId &&
-      (f.owner === s.role || s.role === "PM / PO")
+      (f.owner === s.role || s.role === "系统管理员")
     );
   }
   if (a.type === "agentRun")
@@ -349,12 +351,12 @@ export function permitted(s: State, a: Action): boolean {
     return canEditStageRow(s.role, a.id, a.index || 0);
   if (a.type === "stage")
     return a.kind === "assign"
-      ? s.role === "PM / PO" || stagePermission(s.role, a.id)
+      ? s.role === "系统管理员" || stagePermission(s.role, a.id)
       : ["approve", "reject", "write"].includes(a.kind)
         ? canReviewStage(s.role, a.id)
         : stagePermission(s.role, a.id);
   if (a.type === "review" || a.type === "respond")
-    return s.rows.find((r) => r.id === a.id)?.owner === s.role;
+    return s.rows.some((r) => r.id === a.id && (s.role === "系统管理员" || r.owner === s.role));
   if (a.type === "model") return s.role === "解决方案";
   if (a.type === "write") return canPublishSoftware(s.role);
   if (a.type === "start" || a.type === "finish" || a.type === "event") {
@@ -366,11 +368,11 @@ export function permitted(s: State, a: Action): boolean {
     return true;
   }
   if (a.type === "change")
-    return s.role === "PM / PO" || s.role === "软件产品" || s.role === "研发";
+    return s.role === "系统管理员" || s.role === "软件产品" || s.role === "研发";
   if (a.type === "settings") return canManageConnection(s.role);
-  if (a.type === "reset") return s.role === "PM / PO";
+  if (a.type === "reset") return s.role === "系统管理员";
   if (a.type === "projectCreate") return canCreateProject(s.role);
-  if (a.type === "knowledgeApprove") return s.role === "PM / PO";
+  if (a.type === "knowledgeApprove") return s.role === "系统管理员";
   return true;
 }
 export function reducer(s: State, a: Action): State {
@@ -620,7 +622,7 @@ export function domainReducer(s: State, a: Action): State {
       knowledge: [{ ...a.item, status: "pending" }, ...s.knowledge],
     };
   if (a.type === "knowledgeApprove") {
-    if (s.role !== "PM / PO" || !a.note.trim()) return s;
+    if (s.role !== "系统管理员" || !a.note.trim()) return s;
     return {
       ...s,
       knowledge: s.knowledge.map((k) =>

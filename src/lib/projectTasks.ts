@@ -44,7 +44,7 @@ export function projectTasks(state: State): ProjectTask[] {
       });
     }
     if (
-      state.role === "PM / PO" &&
+      state.role === "系统管理员" &&
       items.some((i) => !review.rows[i.id]?.written)
     )
       result.push({
@@ -69,7 +69,7 @@ export function projectTasks(state: State): ProjectTask[] {
       };
       if (data.written) continue;
       const flow = stageFlow(data, state.deliveries, p.id, def.id);
-      if (state.role === "PM / PO") {
+      if (state.role === "系统管理员") {
         result.push({
           id: p.id + def.id + "-coordination",
           title: def.title,

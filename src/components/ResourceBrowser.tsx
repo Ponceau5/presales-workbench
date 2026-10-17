@@ -1,7 +1,9 @@
-import { randomId } from "@/lib/id";
+import { FileFormatIcon } from '@/components/FileFormatIcon';
 import { projectFileCatalog } from "@/lib/projectFileCatalog";
 import { PointReader, DocumentReader } from "@/components/SourceReader";
-import { useState } from "react";
+import {SourceFigure} from "@/features/software/MarkdownReply";
+import { localApi, localApiBase } from "@/lib/localApi";
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { FileText, Copy, Plus, Search, ArrowUpRight } from "lucide-react";
 import {
@@ -23,7 +25,13 @@ export function ResourceBrowser({
   resourceIds?: string[];
 }) {
   const { state, dispatch } = useWorkbench();
+  const [storedDocuments,setStoredDocuments]=useState<(ProjectResource & {page_count:number})[]>([]);
+  const [documentText,setDocumentText]=useState('');
+  const [storageError,setStorageError]=useState('');
+  async function loadDocuments(){const scope=projectId||filter;if(!scope||scope==='全部')return;const rows=await localApi<{id:string;title:string;filename:string;version:string;created_at:string;page_count:number;category?:string}[]>(`/api/projects/${encodeURIComponent(scope)}/documents`);setStoredDocuments(rows.map(r=>({id:r.id,page_count:r.page_count,projectId:scope,title:r.title,version:r.version,format:r.filename.split('.').pop()?.toUpperCase()||'',kind:r.category==='template'?'工件模板':'原始资料',path:`/api/documents/${r.id}/download`,source:'项目共享池',folder:r.category==='template'?'工件模板':r.id.startsWith('intake-')?'F7 F8 必要资料':'项目上传',summary:r.filename,modified:r.created_at.slice(0,10)})));}
+  useEffect(()=>{void loadDocuments().catch(e=>setStorageError(e.message));const refresh=()=>void loadDocuments().catch(e=>setStorageError(e.message));window.addEventListener('project-materials-updated',refresh);return()=>window.removeEventListener('project-materials-updated',refresh);},[projectId]);
   const allResources = [
+    ...storedDocuments,
     ...state.resources.map((r) => ({
       ...projectFileCatalog.find((f) => f.path === r.path),
       ...r,
@@ -33,19 +41,15 @@ export function ResourceBrowser({
     ),
   ];
   const [aux, setAux] = useState(false);
-  const [folder, setFolder] = useState("全部"),
-    [format, setFormat] = useState("全部"),
+  const [format, setFormat] = useState("全部"),
     [sort, setSort] = useState("更新时间"),
     [page, setPage] = useState(0);
   const pageSize = 50;
-  const folderRoot = (r: ProjectResource) =>
-    !r.folder ? "重点资料" : r.folder === "." ? "根目录" : r.folder;
-  const isInFolder = (r: ProjectResource, f: string) =>
-    f === "全部" || folderRoot(r) === f || folderRoot(r).startsWith(f + "/");
   const projectFiles = allResources.filter(
     (r) => state.projects.some(p=>p.id===r.projectId) && (!projectId || r.projectId === projectId),
   );
   const classify = (r: ProjectResource) => {
+    if (r.kind === "工件模板") return "工件模板";
     if (r.kind === "项目笔记") return "项目档案";
     if (r.id.includes("PTC") || /PTC|clarif|澄清/i.test(r.title))
       return "澄清记录";
@@ -73,10 +77,13 @@ export function ResourceBrowser({
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState(projectId || "全部");
   const [opened, setOpened] = useState<ProjectResource | null>(null);
+  useEffect(()=>{setDocumentText('');if(opened&&storedDocuments.some(d=>d.id===opened.id&&d.page_count>0)){void localApi<{text:string}>(`/api/documents/${opened.id}/pages/1`).then(p=>setDocumentText(p.text)).catch(e=>setStorageError(e.message));}},[opened?.id]);
+  async function downloadStored(id:string){setStorageError('');try{const value=await localApi<{url:string}>(`/api/documents/${id}/download-link`);if(value.url)window.location.assign(value.url);else{const response=await fetch(localApiBase+`/api/documents/${id}/download`,{headers:{Authorization:'Bearer '+sessionStorage.getItem('presales-local-api-token')}});if(!response.ok)throw new Error('下载失败');const url=URL.createObjectURL(await response.blob());const link=document.createElement('a');link.href=url;link.download=storedDocuments.find(d=>d.id===id)?.summary||'原件';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}}catch(e){setStorageError(e instanceof Error?e.message:'下载失败');}}
   const [copied, setCopied] = useState(false);
   const [create, setCreate] = useState(false);
   const [title, setTitle] = useState("");
-  const [path, setPath] = useState("");
+  const [file,setFile]=useState<File|null>(null);
+  const [uploading,setUploading]=useState(false);
   const [summary, setSummary] = useState("");
   const [version, setVersion] = useState("");
   const [kind, setKind] = useState<ProjectResource["kind"]>("原始资料");
@@ -85,7 +92,6 @@ export function ResourceBrowser({
     .filter(
       (r) =>
         (filter === "全部" || r.projectId === filter) &&
-        isInFolder(r, folder) &&
         (aux || !["BAK", "DWL", "DWL2", "LOG", "DB"].includes(r.format)) &&
         (format === "全部" || r.format === format) &&
         (category === "全部" || classify(r) === category) &&
@@ -101,24 +107,13 @@ export function ResourceBrowser({
           ? (b.size || 0) - (a.size || 0)
           : a.title.localeCompare(b.title, "zh-CN"),
     );
-  const directories = [...new Set(projectFiles.map((r) => folderRoot(r)))];
-  const childFolders = [
-    ...new Set(
-      directories
-        .filter((f) => folder === "全部" || f.startsWith(folder + "/"))
-        .map((f) =>
-          folder === "全部"
-            ? f.split("/")[0]
-            : folder + "/" + f.slice(folder.length + 1).split("/")[0],
-        ),
-    ),
-  ];
   const safePage = Math.min(
     page,
     Math.max(0, Math.ceil(resources.length / pageSize) - 1),
   );
   return (
     <section className="resource-index">
+      {storageError&&<p role="alert" className="gsa-chat-error">{storageError}</p>}
       <div className="resource-toolbar">
         <h2>
           资料与工件{" "}
@@ -163,7 +158,8 @@ export function ResourceBrowser({
           </button>
         </div>
       </div>
-      <div className="resource-categories">
+      <div className="project-files-workspace">
+        <aside className="file-folder-tree">      <div className="resource-category-tree">
         {[
           "全部",
           "项目档案",
@@ -172,6 +168,7 @@ export function ResourceBrowser({
           "点表与配置",
           "澄清记录",
           "成果工件",
+          "工件模板",
         ].map((k) => (
           <button
             key={k}
@@ -194,51 +191,10 @@ export function ResourceBrowser({
           </button>
         ))}
       </div>
-      <div className="project-files-workspace">
-        <aside className="file-folder-tree">
-          <button
-            className={folder === "全部" ? "active" : ""}
-            onClick={() => {
-              setFolder("全部");
-              setPage(0);
-            }}
-          >
-            全部目录 <small>{projectFiles.length}</small>
-          </button>
-          {folder !== "全部" && (
-            <button
-              onClick={() => {
-                setFolder(
-                  folder.includes("/")
-                    ? folder.slice(0, folder.lastIndexOf("/"))
-                    : "全部",
-                );
-                setPage(0);
-              }}
-            >
-              ← 上级目录
-            </button>
-          )}
-          {childFolders.map((f) => (
-            <button
-              title={f}
-              className={folder === f ? "active" : ""}
-              key={f}
-              onClick={() => {
-                setFolder(f);
-                setPage(0);
-              }}
-            >
-              <span>{f.split("/").at(-1)}</span>
-              <small>
-                {projectFiles.filter((r) => isInFolder(r, f)).length}
-              </small>
-            </button>
-          ))}
-        </aside>
+</aside>
         <div className="project-files-main">
           <div className="catalog-tools">
-            <strong>{folder === "全部" ? "项目文件" : folder}</strong>
+            <strong>{category === "全部" ? "项目文件" : category}</strong>
             <select
               aria-label="文件格式"
               value={format}
@@ -304,7 +260,7 @@ export function ResourceBrowser({
                             setCopied(false);
                           }}
                         >
-                          <FileText size={15} />
+                          <FileFormatIcon format={r.format} />
                           <span>{r.title}</span>
                         </button>
                       </td>
@@ -390,19 +346,21 @@ export function ResourceBrowser({
           {opened?.id === "RC-DCOM" && (
             <DocumentReader document="dcom-requirements" />
           )}
+          {opened&&storedDocuments.some(d=>d.id===opened.id)&&<section className="stored-source-preview"><button className="btn primary" onClick={()=>void downloadStored(opened.id)}>下载原件</button>{['PNG','JPG','JPEG','WEBP','GIF','BMP'].includes(opened.format)?<SourceFigure src={`/api/documents/${opened.id}/figures/1`} label={opened.title}/>:<pre>{documentText||(storedDocuments.find(d=>d.id===opened.id)?.page_count?'正在读取资料…':'已保存原件，暂无可预览正文')}</pre>}</section>}
+          {!storedDocuments.some(d=>d.id===opened?.id)&&<>
           <div className="resource-source">
             <FileText size={15} />
             {opened?.source}
           </div>
           {opened?.path ? (
             <>
-              <details className="source-location">
+              {opened&&!storedDocuments.some(d=>d.id===opened.id)&&<details className="source-location">
                 <summary>活文件位置</summary>
                 <label className="form-label">
                   活文件位置
                   <textarea rows={4} value={opened.path} readOnly />
                 </label>
-              </details>
+              </details>}
               <div className="actions">
                 <button
                   className="btn primary"
@@ -442,7 +400,7 @@ export function ResourceBrowser({
               打开工作区
               <ArrowUpRight size={14} />
             </Link>
-          )}
+          )}</>}
         </DialogContent>
       </Dialog>
       <Dialog open={create} onOpenChange={setCreate}>
@@ -476,7 +434,7 @@ export function ResourceBrowser({
                   setKind(e.target.value as ProjectResource["kind"])
                 }
               >
-                {["原始资料", "工件", "项目笔记"].map((k) => (
+                {["原始资料", "工件模板"].map((k) => (
                   <option key={k}>{k}</option>
                 ))}
               </select>
@@ -493,14 +451,8 @@ export function ResourceBrowser({
               onChange={(e) => setVersion(e.target.value)}
             />
           </label>
-          <label className="form-label">
-            本地路径
-            <input
-              value={path}
-              onChange={(e) => setPath(e.target.value)}
-              placeholder="/Users/…"
-            />
-          </label>
+          <label className="form-label">本地文件<input type="file" aria-label="上传项目资料文件" onChange={e=>{const next=e.target.files?.[0]||null;setFile(next);if(next&&!title)setTitle(next.name);if(!version)setVersion('V1');}}/></label>
+          {kind==='工件模板'&&<p className="muted">上传空白或已确认格式的模板。Skill 可按名称和版本引用其列名、占位符和输出结构，示例数据不会作为项目事实。</p>}
           <label className="form-label">
             内容说明
             <textarea
@@ -511,38 +463,9 @@ export function ResourceBrowser({
           </label>
           <button
             className="btn primary"
-            disabled={
-              !title.trim() ||
-              !version.trim() ||
-              !path.startsWith("/") ||
-              !summary.trim()
-            }
-            onClick={() => {
-              dispatch({
-                type: "resource",
-                item: {
-                  id: randomId(),
-                  projectId: project,
-                  title: title.trim(),
-                  kind,
-                  format:
-                    path.split(".").pop()?.toUpperCase().slice(0, 5) || "文件",
-                  version: version.trim(),
-                  summary: summary.trim(),
-                  path,
-                  source:
-                    state.role + "登记 · " + new Date().toLocaleDateString(),
-                },
-              });
-              setCreate(false);
-              setTitle("");
-              setPath("");
-              setSummary("");
-              setVersion("");
-            }}
-          >
-            保存资料索引
-          </button>
+            disabled={uploading||!file||!title.trim()||!version.trim()}
+            onClick={async()=>{if(!file)return;setUploading(true);setStorageError('');try{const body=new FormData();body.append('file',file);body.append('title',title.trim());body.append('version',version.trim());body.append('archive_mode',kind==='工件模板'?'template':'input');body.append('stage_id','*');body.append('usage',summary);await localApi(`/api/projects/${encodeURIComponent(project)}/documents`,{method:'POST',body});await loadDocuments();setCreate(false);setFile(null);setTitle('');setSummary('');setVersion('');}catch(e){setStorageError(e instanceof Error?e.message:'上传失败');}finally{setUploading(false);}}}
+          >{uploading?'正在上传…':'上传并登记'}</button>{storageError&&<p role="alert">{storageError}</p>}
         </DialogContent>
       </Dialog>
     </section>

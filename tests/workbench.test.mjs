@@ -290,14 +290,14 @@ test("知识先待审，审核需要治理视角与意见；状态在项目切�
     note: "已核对",
   });
   assert.equal(s.knowledge[0].status, "pending");
-  s = reducer(s, { type: "role", role: "PM / PO" });
+  s = reducer(s, { type: "role", role: "系统管理员" });
   s = reducer(s, {
     type: "knowledgeApprove",
     id: "test-knowledge",
     note: "已核对内容和复用权限",
   });
   assert.equal(s.knowledge[0].status, "approved");
-  assert.equal(s.knowledge[0].approvedBy, "PM / PO");
+  assert.equal(s.knowledge[0].approvedBy, "系统管理员");
   s = reducer(s, {
     type: "projectCreate",
     name: "第二个演示项目",
@@ -308,7 +308,7 @@ test("知识先待审，审核需要治理视角与意见；状态在项目切�
     id: s.projects.find((p) => p.name === "第二个演示项目").id,
   });
   assert.equal(s.knowledge[0].status, "approved");
-  assert.equal(s.role, "PM / PO");
+  assert.equal(s.role, "系统管理员");
 });
 test("多项目数据隔离，返回项目恢复评审与事实；重置仅清空当前项目", () => {
   let s = reducer(ready(), { type: "write", actor });
@@ -498,7 +498,7 @@ test("十个账号：登录身份固定，非负责岗位不能修改或批准�
           note: "x",
           actor: "伪造用户",
         }),
-        row.owner === account.role,
+        account.role === "系统管理员" || row.owner === account.role,
       );
     for (const stage of Object.keys(stageReviewers))
       assert.equal(
@@ -509,9 +509,9 @@ test("十个账号：登录身份固定，非负责岗位不能修改或批准�
           actor: "x",
           note: "x",
         }),
-        stageRowOwner(stage, 0) === account.role,
+        account.role === "系统管理员" || stageRowOwner(stage, 0) === account.role,
       );
-    s = authenticatedReducer(s, { type: "role", role: "PM / PO" });
+    s = authenticatedReducer(s, { type: "role", role: "系统管理员" });
     assert.equal(s.role, account.role);
   }
   assert.equal(
@@ -813,6 +813,7 @@ const { referenceItems: changeItems, initialReferenceReview: changeReview } =
   await import(refUrl);
 const { projectChanges } = await import(
   moduleUrl("src/lib/projectChanges.ts", {
+    "@/lib/projectDemoData": moduleUrl("src/lib/projectDemoData.ts"),
     "@/lib/referenceChanges": moduleUrl("src/lib/referenceChanges.ts"),
     "@/lib/sampleChanges": moduleUrl("src/lib/sampleChanges.ts"),
     "@/lib/presales": dataUrl,
@@ -934,7 +935,7 @@ test("Agent 提取遵循所选来源，专业答复不能单独生成工件，PM
     "draft",
     "整理协作清单",
     [artifact.source],
-    "PM / PO",
+    "系统管理员",
   );
   assert.equal(pm.proposal, undefined);
   assert.ok(pm.findings.some((f) => f.title === "专业协作"));
@@ -1548,4 +1549,26 @@ test("F7 成本与报价导出共用 V6 模板，报价另有首页且保留成�
   assert.match(exported.get("xl/worksheets/sheet8.xml"), /<x:c r="B2"[^>]*><x:f>M10<\/x:f><x:v>300<\/x:v><\/x:c>/);
   assert.match(exported.get("xl/worksheets/sheet8.xml"), /<x:c r="B3"[^>]*><x:f>H10<\/x:f><x:v>250<\/x:v><\/x:c>/);
   assert.match(exported.get("xl/worksheets/sheet8.xml"), /topLeftCell="A8"/);
+});
+
+test("仅有档案的新项目不沿用演示项目的输入和成果", () => {
+  for (const stage of ["F1", "F5", "F7", "F8", "F12"]) {
+    const artifact = stageArtifact("PORT-MY-01", stage, 0);
+    assert.equal(artifact.text, "尚无已确认成果");
+    assert.equal(artifact.source, "待提供项目资料");
+    assert.equal(/DEMO-026|RCJM1|BMS 6 台/.test(artifact.text + artifact.source), false);
+  }
+});
+
+test('delivery progress separates archive stage from accepted deliverables',async()=>{
+ const {deliveryProgress}=await import(moduleUrl('src/lib/deliveryProgress.ts'));
+ const pending=deliveryProgress({stageStates:{}},'tender');
+ assert.equal(pending.group,'quote');assert.equal(pending.recorded,false);assert.equal(pending.done,0);
+ assert.equal(deliveryProgress(undefined).group,'untracked');
+ const stages=Object.fromEntries(Array.from({length:13},(_,i)=>['F'+(i+1),{written:i<6,generated:i===6,change:false}]));
+ const progress=deliveryProgress({stageStates:stages},'lead');
+ assert.equal(progress.group,'quote');assert.equal(progress.done,6);assert.equal(progress.review,1);
+ stages.F1.change=true;
+ assert.equal(deliveryProgress({stageStates:stages}).changed,1);
+ assert.equal(deliveryProgress({stageStates:stages}).done,5);
 });

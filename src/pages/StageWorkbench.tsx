@@ -392,7 +392,7 @@ export default function StageWorkbench({ stageId }: { stageId?: string } = {}) {
                   <button
                     className="btn secondary"
                     disabled={
-                      (!canEdit && state.role !== "PM / PO") ||
+                      (!canEdit && state.role !== "系统管理员") ||
                       !data.change ||
                       data.assigned
                     }

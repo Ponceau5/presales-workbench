@@ -4,7 +4,7 @@ from datetime import datetime,timezone
 from fastapi import Depends,HTTPException
 from pydantic import BaseModel,Field
 _db=None
-ROLES={'sales':'销售','solution':'解决方案','hardware':'硬件产品','software':'软件产品','commercial':'商务支持','finance':'财务 / 风控','logistics':'货运关务','dev':'研发','legal':'认证 / 法务','pm':'PM / PO'}
+ROLES={'sales':'销售','solution':'解决方案','hardware':'硬件产品','software':'软件产品','commercial':'商务支持','finance':'财务 / 风控','logistics':'货运关务','dev':'研发','legal':'认证 / 法务','admin':'系统管理员'}
 STAGES={'F1':{'sales','commercial'},'F2':{'solution','software'},'F3':{'solution'},'F4':{'hardware'},'F5':{'software','solution'},'F6':{'logistics','legal'},'F7':{'sales','finance'},'F8':{'sales','solution'},'F9':{'commercial','finance'},'F10':{'sales','commercial'},'F11':{'sales','commercial'},'F12':{'legal'},'F13':{'finance'}}
 def stamp():return datetime.now(timezone.utc).isoformat()
 def password_hash(value):
@@ -22,20 +22,25 @@ def init(db,password):
   CREATE TABLE IF NOT EXISTS access_events(id TEXT PRIMARY KEY,actor TEXT NOT NULL,action TEXT NOT NULL,detail TEXT NOT NULL,created_at TEXT NOT NULL);''')
   first=c.execute('SELECT count(*) FROM users').fetchone()[0]==0
   if first:
-   for role,name in ROLES.items():c.execute('INSERT INTO users VALUES (?,?,?,?,?,1,?)',(role,name+'（原演示账号）',password_hash(password),role,int(role=='pm'),stamp()))
+   for role,name in ROLES.items():c.execute('INSERT INTO users VALUES (?,?,?,?,?,1,?)',('pm' if role=='admin' else role,'系统管理员' if role=='admin' else name+'（原演示账号）',password_hash(password),role,int(role=='admin'),stamp()))
    for project,name in [('GSA02','泰国 GSA02'),('RCJM1','Racks Central'),('DEMO-026','数据中心二期')]:
     c.execute('INSERT OR IGNORE INTO access_projects VALUES (?,?)',(project,name))
-    for role in ROLES:c.execute('INSERT OR IGNORE INTO project_owners VALUES (?,?,?,1)',(project,role,role))
+    for role in ROLES:
+     if role!='admin':c.execute('INSERT OR IGNORE INTO project_owners VALUES (?,?,?,1)',(project,role,role))
   if first:
    for row in c.execute('SELECT DISTINCT project_id FROM documents').fetchall():c.execute('INSERT OR IGNORE INTO access_projects VALUES (?,?)',(row[0],row[0]))
    if c.execute("SELECT 1 FROM sqlite_master WHERE name='workspace_sessions'").fetchone():
     for row in c.execute('SELECT DISTINCT project_id FROM workspace_sessions').fetchall():c.execute('INSERT OR IGNORE INTO access_projects VALUES (?,?)',(row[0],row[0]))
+  c.execute("UPDATE users SET role='admin',is_admin=1,display_name=CASE WHEN id='pm' THEN '系统管理员' ELSE display_name END WHERE role='pm'")
+  c.execute("DELETE FROM project_owners WHERE role='pm'")
 def profile(user):
  with _db() as c:
   r=c.execute('SELECT id,display_name,role,is_admin,active FROM users WHERE id=?',(str(user),)).fetchone()
   if not r or not r['active']:raise HTTPException(401,'账号已停用，请重新登录')
   projects=c.execute('SELECT id,name FROM access_projects' if r['is_admin'] else 'SELECT DISTINCT p.id,p.name FROM access_projects p WHERE p.id IN (SELECT project_id FROM project_owners WHERE user_id=? UNION SELECT project_id FROM project_members WHERE user_id=?) ORDER BY p.id',() if r['is_admin'] else (str(user),str(user))).fetchall()
-  return {**dict(r),'role_name':ROLES[r['role']],'projects':[dict(p) for p in projects]}
+  link=c.execute('SELECT external_name FROM identity_links WHERE user_id=? LIMIT 1',(str(user),)).fetchone() if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='identity_links'").fetchone() else None
+  username=link['external_name'] if link else (r['display_name'] if r['id'].startswith('identity_') else r['id'])
+  return {**dict(r),'username':username,'role_name':ROLES[r['role']],'projects':[dict(p) for p in projects]}
 def role_of(user):return profile(user)['role'] if _db else str(user)
 def is_admin(user):return bool(profile(user)['is_admin']) if _db else str(user)=='pm'
 def allowed_projects(user):return {p['id'] for p in profile(user)['projects']}
@@ -52,6 +57,9 @@ def event(c,user,action,detail):c.execute('INSERT INTO access_events VALUES (?,?
 def login(user,password):
  with _db() as c:r=c.execute('SELECT * FROM users WHERE id=? AND active=1',(user,)).fetchone()
  if not r or not verify(password,r['password_hash']):raise HTTPException(401,'账号或密码不正确')
+ return issue_session(user)
+def issue_session(user):
+ profile(user)
  token=secrets.token_urlsafe(32)
  with _db() as c:c.execute('INSERT INTO auth_sessions VALUES (?,?,?)',(hashlib.sha256(token.encode()).hexdigest(),user,time.time()+28800))
  return token,profile(user)
@@ -78,7 +86,7 @@ def authorize(user,request):
  if not project:return
  # Existing local intake can create a new empty project, never take over an existing one.
  with _db() as c:exists=c.execute('SELECT 1 FROM access_projects WHERE id=?',(project,)).fetchone()
- if not exists and request.method=='POST' and path.endswith('/documents') and role_of(user) in {'sales','software','pm'}:
+ if not exists and request.method=='POST' and path.endswith('/documents') and role_of(user) in {'sales','software','admin'}:
   with _db() as c:
    c.execute('INSERT OR IGNORE INTO access_projects VALUES (?,?)',(project,project));c.execute('INSERT OR IGNORE INTO project_owners VALUES (?,?,?,1)',(project,role_of(user),user))
  check_project(user,project)
@@ -102,27 +110,71 @@ class Owner(BaseModel):
  role:str
  user_id:str
  expected_revision:int=Field(ge=0)
+ retain_previous_access:bool|None=None
 class ActiveUser(BaseModel):
  active:bool
+class UserProfile(BaseModel):
+ display_name:str=Field(min_length=1,max_length=80)
+ role:str
 class NewProject(BaseModel):
  id:str=Field(pattern=r'^[A-Za-z0-9_-]{1,60}$')
  name:str=Field(min_length=1,max_length=100)
+def effective_project_access(user,project,owners,members):
+ owned=[o['role'] for o in owners if o['project_id']==project and o['user_id']==user['id']]
+ direct=any(m['project_id']==project and m['user_id']==user['id'] for m in members)
+ admin=bool(user['is_admin']);visible=admin or bool(owned) or direct
+ active=bool(user['active']) and visible
+ return {'assigned':visible,'source':'admin' if admin else 'owner' if owned else 'member' if direct else 'none','owner_roles':owned,
+         'read':active,'trial':active and (admin or any(user['role'] in roles for stage,roles in STAGES.items() if stage!='F5')),
+         'apply':active and (admin or any(role in owned for roles in STAGES.values() for role in roles)),'publish':active and admin,
+         'process_stages':[stage for stage,roles in STAGES.items() if active and (admin or user['role'] in owned and user['role'] in roles)]}
+
 def install(app,actor):
  def admin(user):
   if not is_admin(user):raise HTTPException(403,'仅管理员可管理账号与负责人')
  @app.get('/api/me')
  def me(user:str=Depends(actor)):return profile(user)
+ @app.get('/api/access/overview')
+ def overview(user:str=Depends(actor)):
+  admin(user)
+  with _db() as c:
+   people=[dict(r) for r in c.execute('SELECT id,display_name,role,is_admin,active FROM users ORDER BY created_at')]
+   projects=[dict(r) for r in c.execute('SELECT id,name FROM access_projects ORDER BY name')]
+   owners=[dict(r) for r in c.execute('SELECT * FROM project_owners')]
+   members=[dict(r) for r in c.execute('SELECT * FROM project_members')]
+   permissions={u['id']:{p['id']:effective_project_access(u,p['id'],owners,members) for p in projects} for u in people}
+   return {'users':people,'projects':projects,'owners':owners,'members':members,'roles':ROLES,'role_stages':{role:[stage for stage,roles in STAGES.items() if role=='admin' or role in roles] for role in ROLES},'permissions':permissions}
  @app.get('/api/access/users')
  def users(user:str=Depends(actor)):
   admin(user)
   with _db() as c:return [dict(r) for r in c.execute('SELECT id,display_name,role,is_admin,active FROM users ORDER BY created_at')]
- @app.post('/api/access/users')
- def create(payload:NewUser,user:str=Depends(actor)):
+ @app.get('/api/access/events')
+ def events(user:str=Depends(actor)):
+  admin(user)
+  actions=('user_created','user_active_changed','user_renamed','user_profile_changed','owner_assigned','project_visibility_changed','project_created','identity_linked')
+  with _db() as c:return [dict(r) for r in c.execute('SELECT * FROM access_events WHERE action IN ('+','.join('?' for _ in actions)+') ORDER BY created_at DESC,rowid DESC LIMIT 100',actions)]
+ @app.patch('/api/access/users/{identifier}/profile')
+ def edit_profile(identifier:str,payload:UserProfile,user:str=Depends(actor)):
   admin(user)
   if payload.role not in ROLES:raise HTTPException(422,'岗位不存在')
   with _db() as c:
+   c.execute('BEGIN IMMEDIATE')
+   old=c.execute('SELECT display_name,role FROM users WHERE id=?',(identifier,)).fetchone()
+   if not old:raise HTTPException(404,'账号不存在')
+   if old['role']!=payload.role and c.execute('SELECT 1 FROM project_owners WHERE user_id=?',(identifier,)).fetchone():raise HTTPException(409,'请先转交该用户的项目负责人职责，再调整岗位')
+   c.execute('UPDATE users SET display_name=?,role=?,is_admin=? WHERE id=?',(payload.display_name,payload.role,int(payload.role=='admin'),identifier))
+   if old['role']!=payload.role:c.execute('DELETE FROM auth_sessions WHERE user_id=?',(identifier,))
+   event(c,user,'user_profile_changed',{'id':identifier,'previous':dict(old),**payload.model_dump()})
+  return {'id':identifier}
+ @app.post('/api/access/users')
+ def create(payload:NewUser,user:str=Depends(actor)):
+  admin(user)
+  import identity_provider
+  if identity_provider.enabled():raise HTTPException(409,'请在统一账号管理中创建账号')
+  if payload.role not in ROLES:raise HTTPException(422,'岗位不存在')
+  with _db() as c:
    if c.execute('SELECT 1 FROM users WHERE id=?',(payload.username,)).fetchone():raise HTTPException(409,'账号已存在')
-   c.execute('INSERT INTO users VALUES (?,?,?,?,0,1,?)',(payload.username,payload.display_name,password_hash(payload.password),payload.role,stamp()));event(c,user,'user_created',{'id':payload.username,'role':payload.role})
+   c.execute('INSERT INTO users VALUES (?,?,?,?,?,1,?)',(payload.username,payload.display_name,password_hash(payload.password),payload.role,int(payload.role=='admin'),stamp()));event(c,user,'user_created',{'id':payload.username,'role':payload.role})
   return {'id':payload.username}
  @app.post('/api/access/users/{identifier}/rename')
  def rename_user(identifier:str,payload:RenameUser,user:str=Depends(actor)):
@@ -188,9 +240,12 @@ def install(app,actor):
    target=c.execute('SELECT role,active FROM users WHERE id=?',(payload.user_id,)).fetchone()
    if not target or not target['active'] or target['role']!=payload.role:raise HTTPException(422,'人员岗位与负责人岗位不匹配')
    if not c.execute('SELECT 1 FROM access_projects WHERE id=?',(project_id,)).fetchone():raise HTTPException(404,'项目不存在')
-   old=c.execute('SELECT revision FROM project_owners WHERE project_id=? AND role=?',(project_id,payload.role)).fetchone();revision=old[0] if old else 0
+   old=c.execute('SELECT user_id,revision FROM project_owners WHERE project_id=? AND role=?',(project_id,payload.role)).fetchone();revision=old['revision'] if old else 0
    if revision!=payload.expected_revision:raise HTTPException(409,'负责人已被调整，请刷新后再确认')
-   c.execute('INSERT INTO project_owners VALUES (?,?,?,?) ON CONFLICT(project_id,role) DO UPDATE SET user_id=excluded.user_id,revision=excluded.revision',(project_id,payload.role,payload.user_id,revision+1));event(c,user,'owner_assigned',{'project':project_id,**payload.model_dump()})
+   if old and old['user_id']!=payload.user_id and payload.retain_previous_access is not None:
+    if payload.retain_previous_access:c.execute('INSERT OR IGNORE INTO project_members VALUES (?,?)',(project_id,old['user_id']))
+    else:c.execute('DELETE FROM project_members WHERE project_id=? AND user_id=?',(project_id,old['user_id']))
+   c.execute('INSERT INTO project_owners VALUES (?,?,?,?) ON CONFLICT(project_id,role) DO UPDATE SET user_id=excluded.user_id,revision=excluded.revision',(project_id,payload.role,payload.user_id,revision+1));event(c,user,'owner_assigned',{'project':project_id,'previous_user_id':old['user_id'] if old else None,**payload.model_dump()})
   return {'revision':revision+1}
 
 def filter_shared(value,user):

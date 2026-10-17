@@ -12,7 +12,14 @@ class Compare(BaseModel):
  previous_id:str
 
 def install(app,db,actor):
- with db() as c:c.execute('CREATE TABLE IF NOT EXISTS workspace_material_tags(document_id TEXT PRIMARY KEY,stage_id TEXT NOT NULL,category TEXT NOT NULL CHECK(category IN (\'input\',\'template\')),FOREIGN KEY(document_id) REFERENCES documents(id))')
+ with db() as c:
+  c.execute("CREATE TABLE IF NOT EXISTS workspace_material_tags(document_id TEXT NOT NULL,stage_id TEXT NOT NULL,category TEXT NOT NULL CHECK(category IN ('input','template')),PRIMARY KEY(document_id,stage_id),FOREIGN KEY(document_id) REFERENCES documents(id))")
+  primary=[row['name'] for row in c.execute('PRAGMA table_info(workspace_material_tags)') if row['pk']]
+  if primary==['document_id']:
+   c.execute("CREATE TABLE workspace_material_tags_new(document_id TEXT NOT NULL,stage_id TEXT NOT NULL,category TEXT NOT NULL CHECK(category IN ('input','template')),PRIMARY KEY(document_id,stage_id),FOREIGN KEY(document_id) REFERENCES documents(id))")
+   c.execute('INSERT INTO workspace_material_tags_new SELECT * FROM workspace_material_tags')
+   c.execute('DROP TABLE workspace_material_tags')
+   c.execute('ALTER TABLE workspace_material_tags_new RENAME TO workspace_material_tags')
  router=APIRouter(prefix='/api/projects/{project_id}/workspaces/{stage_id}/materials')
  def outputs(c,project,stage):
   rows=[dict(r) for r in c.execute('SELECT id,title,revision,content,stage_id,created_at FROM workspace_artifacts WHERE project_id=? ORDER BY revision DESC,created_at DESC',(project,))]
@@ -24,24 +31,20 @@ def install(app,db,actor):
  def catalog(project_id:str,stage_id:str,user:str=Depends(actor)):
   if stage_id not in {'F'+str(i) for i in range(1,14)}:raise HTTPException(404,'工作区不存在')
   with db() as c:
-   docs=[dict(r) for r in c.execute('SELECT d.id,d.title,d.filename,d.version,d.created_at,t.stage_id,t.category,(SELECT count(*) FROM document_pages p WHERE p.document_id=d.id) page_count FROM documents d LEFT JOIN workspace_material_tags t ON t.document_id=d.id WHERE d.project_id=? ORDER BY d.created_at DESC',(project_id,))]
+   docs=[dict(r) for r in c.execute("SELECT d.id,d.title,d.filename,d.version,d.created_at,t.stage_id,COALESCE(t.category,r.category) category,(SELECT count(*) FROM document_pages p WHERE p.document_id=d.id) page_count FROM documents d LEFT JOIN workspace_material_tags t ON t.document_id=d.id AND t.stage_id=(SELECT stage_id FROM workspace_material_tags WHERE document_id=d.id AND stage_id IN (?, '*') ORDER BY stage_id DESC LIMIT 1) LEFT JOIN document_registry r ON r.document_id=d.id WHERE d.project_id=? AND COALESCE(r.category,'input')!='temporary' ORDER BY d.created_at DESC",(stage_id,project_id))]
    rows=outputs(c,project_id,stage_id)
   inputs=[{**d,'kind':'document'} for d in docs if d['category']!='template']
   inputs += [{**r,'kind':'upstream','version':'V'+str(r['revision'])} for r in rows if r['stage_id']!=stage_id]
-  # Upstream consumers use only the latest output for each originating stage and title.
-  seen=set();filtered=[]
-  for item in inputs:
-   key=(item.get('stage_id'),item['title']) if item['kind']=='upstream' else ('document',item['id'])
-   if key not in seen:filtered.append(item);seen.add(key)
-  templates=[{**d,'kind':'document'} for d in docs if d['category']=='template' and d['stage_id']==stage_id]
+  templates=[{**d,'kind':'document'} for d in docs if d['category']=='template']
   if stage_id in {'F7','F8'}:templates.insert(0,{'id':'builtin-template','title':'海外成本估算模板 V6' if stage_id=='F7' else '客户 BOQ 映射与报价模板','version':'默认模板','kind':'builtin','page_count':0})
-  return {'inputs':filtered,'templates':templates,'outputs':[r for r in rows if r['stage_id']==stage_id]}
+  return {'inputs':inputs,'templates':templates,'outputs':[r for r in rows if r['stage_id']==stage_id]}
  @router.post('/classify')
  def classify(project_id:str,stage_id:str,payload:Classification,user:str=Depends(actor)):
+  if stage_id not in {'F'+str(i) for i in range(1,14)}:raise HTTPException(404,'工作区不存在')
   if payload.category not in {'input','template'}:raise HTTPException(422,'资料类型无效')
   with db() as c:
    if not c.execute('SELECT 1 FROM documents WHERE id=? AND project_id=?',(payload.document_id,project_id)).fetchone():raise HTTPException(404,'资料不存在')
-   c.execute('INSERT INTO workspace_material_tags VALUES (?,?,?) ON CONFLICT(document_id) DO UPDATE SET stage_id=excluded.stage_id,category=excluded.category',(payload.document_id,stage_id,payload.category))
+   c.execute('INSERT INTO workspace_material_tags VALUES (?,?,?) ON CONFLICT(document_id,stage_id) DO UPDATE SET category=excluded.category',(payload.document_id,stage_id,payload.category))
   return {'saved':True}
  @router.post('/compare-stream')
  def compare(project_id:str,stage_id:str,payload:Compare,user:str=Depends(actor)):

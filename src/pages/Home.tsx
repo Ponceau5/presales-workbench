@@ -19,7 +19,7 @@ import { GsaSoftwareWorkbench } from "@/features/software/GsaSoftwareWorkbench";
 export default function Home() {
   const { state, dispatch } = useWorkbench();
   const { projectId } = useParams();
-  const [params, setParams] = useSearchParams();
+  const [params] = useSearchParams();
   const requestedView = params.get("view") || "flow";
   const view = requestedView;
   const [factsOpen, setFactsOpen] = useState(false);
@@ -79,27 +79,7 @@ export default function Home() {
           </button>
         </div>
       </header>
-      <nav className="project-view-tabs">
-        {[
-          ["flow", "项目流程"],
-          ["materials", "资料与工件"],
-          ["collaboration", "协作交接"],
-          ["attention", "关注事项"],
-          ["milestones", "里程碑"],
-          ["changes", "变更日志"],
-          ...(view === "review"
-            ? [["review", (params.get("stage") || "F5") + " 工作区"]]
-            : []),
-        ].map(([v, l]) => (
-          <button
-            key={v}
-            className={view === v ? "active" : ""}
-            onClick={() => setParams({ view: v })}
-          >
-            {l}
-          </button>
-        ))}
-      </nav>
+
       {view === "flow" && (
         <ProjectFlow
           key={state.currentProjectId}
@@ -161,12 +141,12 @@ export default function Home() {
                 >
                   查看
                 </Link>
-                {state.role === "PM / PO" && (
+                {state.role === "系统管理员" && (
                   <select
                     aria-label={"分派 " + i.title}
                     value={
                       assignments[i.id] ||
-                      (state.role === "PM / PO"
+                      (state.role === "系统管理员"
                         ? stageRowOwner(i.stage, 0)
                         : state.role)
                     }
@@ -191,7 +171,7 @@ export default function Home() {
                       title: i.title,
                       owner:
                         assignments[i.id] ||
-                        (state.role === "PM / PO"
+                        (state.role === "系统管理员"
                           ? stageRowOwner(i.stage, 0)
                           : state.role),
                     })
@@ -201,7 +181,7 @@ export default function Home() {
                     (f) => f.projectId === project.id && f.title === i.title,
                   )
                     ? "已加入待办"
-                    : state.role === "PM / PO"
+                    : state.role === "系统管理员"
                       ? "分派"
                       : "加入待办"}
                 </button>

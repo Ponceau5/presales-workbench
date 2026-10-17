@@ -20,14 +20,14 @@ def migrate():
                 object_storage.save(original,object_storage.legacy_key(original))
     with sqlite3.connect(database) as c:
         c.row_factory=sqlite3.Row
-        for table in ("documents","role_file_samples"):
+        for table in ("documents","role_file_samples","flow_samples"):
             if not c.execute("SELECT 1 FROM sqlite_master WHERE name=?",(table,)).fetchone(): continue
             for row in c.execute("SELECT * FROM "+table).fetchall():
                 if row["path"].startswith("oss://"): continue
                 original=Path(row["path"])
                 if not original.is_file(): raise FileNotFoundError(original)
                 digest=hashlib.sha256(original.read_bytes()).hexdigest()
-                if digest!=row["sha256"]: raise ValueError("Source changed: "+str(original))
+                if "sha256" in row.keys() and digest!=row["sha256"]: raise ValueError("Source changed: "+str(original))
                 key=object_storage.key_for(row["project_id"],row["id"],original.suffix)
                 location=object_storage.save(original,key)
                 c.execute("UPDATE "+table+" SET path=? WHERE id=?",(location,row["id"]))

@@ -1,509 +1,59 @@
-import { Collaboration } from "@/components/Collaboration";
-import { useEffect, useState } from "react";
-import { Link } from "react-router";
-import {
-  ArrowUpRight,
-  Activity,
-  Bot,
-  Expand,
-  Search,
-  ShieldAlert,
-  Radio,
-} from "lucide-react";
-import { useWorkbench } from "@/state/workbench";
-import { pipelineSteps } from "@/lib/presales";
-import { projectFileCatalog } from "@/lib/projectFileCatalog";
-import { projectChanges } from "@/lib/projectChanges";
-import { stagesForProject } from "@/lib/projectStages";
-import { readProjectReview } from "@/lib/projectReview";
-import { referenceItems } from "@/lib/referenceReview";
-import { demoReviewItems } from "@/lib/demoReview";
-import { rackIssues } from "@/lib/portfolio";
-import { projectTasks } from "@/lib/projectTasks";
-import { roles } from "@/lib/workspace";
-const lanes = [
-  { name: "资料准备", ids: ["F1", "F2"] },
-  { name: "专业协作", ids: ["F3", "F4", "F5", "F6"] },
-  { name: "报价投标", ids: ["F7", "F8", "F9", "F10"] },
-  { name: "合同交付", ids: ["F11", "F12", "F13"] },
-];
-export default function Portal() {
-  const { state } = useWorkbench();
-  const [now, setNow] = useState(() => new Date());
-  const [query, setQuery] = useState("");
-  const [focus, setFocus] = useState(false);
-  useEffect(() => {
-    const timer = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  const allowed=new Set(state.projects.map(p=>p.id));
-  const files = [
-    ...state.resources,
-    ...projectFileCatalog.filter(
-      (r) => !state.resources.some((s) => s.path === r.path),
-    ),
-  ].filter(r=>allowed.has(r.projectId));
-  const projects = state.projects.map((p) => {
-    const snapshot = p.id === state.currentProjectId ? state : p.snapshot;
-    const review = readProjectReview(p.id, state);
-    const items = p.reference ? referenceItems : demoReviewItems;
-    const pending = items.filter((i) => !review.rows[i.id]?.written);
-    const blockers = pending.filter(
-      (i) => i.blocker && !review.rows[i.id]?.resolution,
-    );
-    const changes = projectChanges(state, p.id).filter(
-      (c) => !["已写回", "已完成", "已关闭"].includes(c.status),
-    );
-    return {
-      p,
-      snapshot,
-      review,
-      items,
-      pending,
-      blockers,
-      changes,
-      files: files.filter((f) => f.projectId === p.id),
-      completed: Object.values(snapshot?.stageStates || {}).filter(
-        (s) => s.written,
-      ).length,
-    };
-  });
-  const visible = projects.filter(
-    (x) =>
-      (x.p.name + x.p.id).toLowerCase().includes(query.toLowerCase()) &&
-      (!focus || x.blockers.length || x.changes.length),
-  );
-  const changeRows = projects.flatMap((x) =>
-    x.changes.map((c) => ({ ...c, projectId: x.p.id })),
-  );
-  const pending = [
-    ...new Map(
-      roles
-        .filter((r) => r !== "PM / PO")
-        .flatMap((role) =>
-          projectTasks({ ...state, role }).filter(
-            (t) =>
-              t.stage !== "交接" &&
-              !["待跟进", "待处理答复"].includes(t.status),
-          ),
-        )
-        .map((t) => [t.id, t]),
-    ).values(),
-  ];
-  const owners = [...new Set(pending.map((i) => i.owner))];
-  const events = state.activity.filter(e=>allowed.has(e.projectId)).slice(0, 8);
-  const issues = [
-    ...(allowed.has("RCJM1")?rackIssues:[]).map((i) => ({
-      ...i,
-      owner: /点表/.test(i.title)
-        ? "解决方案"
-        : /设备授权/.test(i.title)
-          ? "研发"
-          : /交付/.test(i.title)
-            ? "商务支持"
-            : /交换机/.test(i.title)
-              ? "销售"
-              : "软件产品",
-      projectId: "RCJM1",
-    })),
-    ...state.followups
-      .filter(
-        (f) =>
-          f.status !== "done" &&
-          !rackIssues.some(
-            (i) => f.projectId === "RCJM1" && i.title === f.title,
-          ),
-      )
-      .map((f) => ({
-        id: f.id,
-        title: f.title,
-        owner: f.owner,
-        text: "待跟进",
-        stage: "F5",
-        projectId: f.projectId,
-      })),
-  ].filter(i=>allowed.has(i.projectId));
-  const totals = [
-    { title: "监控项目", value: projects.length, unit: "个" },
-    { title: "待办工件", value: pending.length, unit: "项" },
-    {
-      title: "未确认风险",
-      value: projects.reduce((n, x) => n + x.blockers.length, 0),
-      unit: "项",
-      risk: true,
-    },
-    { title: "版本待复核", value: changeRows.length, unit: "项", risk: true },
-    { title: "项目资料", value: files.length.toLocaleString(), unit: "份" },
-    {
-      title: "索引容量",
-      value: (files.reduce((n, f) => n + (f.size || 0), 0) / 1024 ** 3).toFixed(
-        2,
-      ),
-      unit: "GB",
-    },
-  ];
-  return (
-    <div className="mission-control">
-      <header className="mission-header">
-        <div>
-          <Radio size={22} />
-          <h1>项目监控</h1>
-          <span>售前协同驾驶舱</span>
-        </div>
-        <div className="mission-clock">
-          <span className="session-signal">本机共享</span>
-          <time>{now.toLocaleTimeString("zh-CN", { hour12: false })}</time>
-          <button
-            aria-label="全屏监控"
-            onClick={() => {
-              if (document.fullscreenElement) void document.exitFullscreen();
-              else
-                void document.documentElement
-                  .requestFullscreen()
-                  .catch(() => {});
-            }}
-          >
-            <Expand size={17} />
-          </button>
-        </div>
-      </header>
-      <div className="mission-ticker">
-        <Activity size={14} />
-        <strong>最新动态</strong>
-        {events.length ? (
-          <Link to="/activity">
-            {events[0].projectId} · {events[0].role} ·{" "}
-            {state.deliveries.find((d) => d.id === events[0].target)?.title ||
-              events[0].target}{" "}
-            ·{" "}
-            {(
-              {
-                edit: "修改工件",
-                write: "写回事实",
-                approve: "复核批准",
-                followup: "新增跟进",
-                followupComplete: "完成跟进",
-                followupAccept: "已阅答复",
-                agentRun: "执行 Agent 任务",
-                publishSoftware: "交付软件工件",
-                deliveryReceive: "处理交接",
-              } as Record<string, string>
-            )[events[0].action] || events[0].action}
-            <ArrowUpRight size={12} />
-          </Link>
-        ) : (
-          <span>等待项目操作记录</span>
-        )}
-        <span className="mission-ticker-count">
-          {state.activity.length} 条操作记录
-        </span>
-      </div>
-      <section className="mission-metrics">
-        {totals.map((t) => (
-          <div key={t.title} className={t.risk ? "risk" : ""}>
-            <span>{t.title}</span>
-            <strong>
-              {t.value}
-              <small>{t.unit}</small>
-            </strong>
-          </div>
-        ))}
-      </section>
-      <div className="mission-grid">
-        <section className="mission-panel mission-projects">
-          <header>
-            <h2>项目进度</h2>
-            <label>
-              <Search size={13} />
-              <input
-                aria-label="搜索监控项目"
-                placeholder="项目名称 / 编号"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-            </label>
-            <button
-              className={focus ? "active" : ""}
-              onClick={() => setFocus(!focus)}
-            >
-              只看需关注
-            </button>
-            <Link to="/projects">全部项目 ↗</Link>
-          </header>
-          <div className="mission-stage-matrix">
-            <div className="mission-phase-heading">
-              <span>项目 / 范围</span>
-              {lanes.map((l) => (
-                <span
-                  key={l.name}
-                  style={{ gridColumn: "span " + l.ids.length }}
-                >
-                  {l.name}
-                </span>
-              ))}
-              <span>待办 / 变更</span>
-            </div>
-            {visible.map(({ p, snapshot, changes, completed }) => (
-              <div className="mission-project-row" key={p.id}>
-                <Link
-                  className="mission-project-label"
-                  to={"/projects/" + p.id}
-                >
-                  <strong>{p.name.replace(" · RCJM1", "")}</strong>
-                  <span>
-                    {p.id} ·{" "}
-                    {p.reference ? "BMS / DCIM / BA" : "监控与软件集成"}
-                  </span>
-                </Link>
-                {pipelineSteps
-                  .filter((s) => s.id !== "F14")
-                  .map((s) => ({
-                    id: s.id,
-                    title:
-                      stagesForProject(p.id).find((d) => d.id === s.id)
-                        ?.title || s.label,
-                  }))
-                  .map((s) => (
-                    <Link
-                      key={s.id}
-                      title={
-                        s.title +
-                        " · " +
-                        (snapshot?.stageStates[s.id]?.written
-                          ? "已写回"
-                          : snapshot?.stageStates[s.id]?.generated
-                            ? "待人审"
-                            : "待处理")
-                      }
-                      className={
-                        "mission-stage " +
-                        (snapshot?.stageStates[s.id]?.written
-                          ? "done"
-                          : snapshot?.stageStates[s.id]?.generated
-                            ? "review"
-                            : changes.some((c) => c.affected.includes(s.id))
-                              ? "changed"
-                              : "")
-                      }
-                      to={"/projects/" + p.id + "?view=review&stage=" + s.id}
-                    >
-                      {s.id}
-                    </Link>
-                  ))}
-                <div className="mission-project-count">
-                  <Link
-                    to={
-                      pending.find((t) => t.projectId === p.id)?.url ||
-                      "/projects/" + p.id
-                    }
-                  >
-                    {pending.filter((t) => t.projectId === p.id).length} 任务
-                  </Link>
-                  <Link to={"/projects/" + p.id + "?view=changes"}>
-                    {changes.length} 变更
-                  </Link>
-                  <small>{completed}/13 写回</small>
-                </div>
-              </div>
-            ))}
-          </div>
-          <footer className="mission-legend">
-            <span>
-              <i className="done" />
-              已写回
-            </span>
-            <span>
-              <i className="review" />
-              待人审
-            </span>
-            <span>
-              <i className="changed" />
-              变更影响
-            </span>
-            <span>
-              <i />
-              待处理
-            </span>
-          </footer>
-          <div className="mission-node-workload" aria-label="环节任务分布">
-            {pipelineSteps
-              .filter((s) => s.id !== "F14")
-              .map((s) => {
-                const tasks = pending.filter((t) => t.stage === s.id);
-                return (
-                  <Link
-                    key={s.id}
-                    to={tasks[0]?.url || "/projects"}
-                    title={s.label}
-                  >
-                    <span>{s.id}</span>
-                    <b>{tasks.length}</b>
-                    <small>{s.label}</small>
-                  </Link>
-                );
-              })}
-          </div>
-        </section>
-        <section className="mission-panel mission-roles">
-          <header>
-            <h2>专业任务队列</h2>
-            <Link to="/tasks">我的任务 ↗</Link>
-          </header>
-          {owners.map((owner) => (
-            <Link key={owner} to={pending.find((i) => i.owner === owner)!.url}>
-              <span>{owner}</span>
-              <div>
-                <i
-                  style={{
-                    width:
-                      (pending.filter((i) => i.owner === owner).length /
-                        Math.max(1, pending.length)) *
-                        100 +
-                      "%",
-                  }}
-                />
-              </div>
-              <b>{pending.filter((i) => i.owner === owner).length}</b>
-            </Link>
-          ))}
-          <div className="mission-agent-status">
-            <Bot size={16} />
-            <span>Agent 执行</span>
-            <strong>{state.running ? "处理中" : "等待任务"}</strong>
-          </div>
-        </section>
-        <div className="mission-collaboration">
-          <Collaboration />
-        </div>
-        <section className="mission-panel mission-change-feed">
-          <header>
-            <h2>变更影响</h2>
-            <span>{changeRows.length} 项待复核</span>
-          </header>
-          <div className="mission-feed-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>项目</th>
-                  <th>变更内容</th>
-                  <th>影响环节</th>
-                  <th>责任</th>
-                  <th>版本</th>
-                </tr>
-              </thead>
-              <tbody>
-                {changeRows.map((c) => (
-                  <tr key={c.projectId + c.id}>
-                    <td>{c.projectId}</td>
-                    <td>
-                      <Link to={"/projects/" + c.projectId + "?view=changes"}>
-                        {c.title}
-                      </Link>
-                    </td>
-                    <td>{c.affected.join(" / ")}</td>
-                    <td>{c.owner}</td>
-                    <td>{c.version}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-        <section className="mission-panel mission-risk-feed">
-          <header>
-            <h2>
-              <ShieldAlert size={14} />
-              关注事项
-            </h2>
-            <span>{issues.length}</span>
-          </header>
-          <div className="mission-feed-scroll">
-            {issues.map((i) => (
-              <Link
-                key={i.projectId + i.id}
-                to={"/projects/" + i.projectId + "?view=attention"}
-              >
-                <strong>{i.title}</strong>
-                <span>
-                  {i.projectId} · {i.owner}
-                </span>
-                <p>{i.text}</p>
-              </Link>
-            ))}
-          </div>
-        </section>
-        <section className="mission-panel mission-data">
-          <header>
-            <h2>资料分布</h2>
-            <Link to="/library">公共资料 ↗</Link>
-          </header>
-          {projects.map((x) => (
-            <Link key={x.p.id} to={"/projects/" + x.p.id + "?view=materials"}>
-              <span>{x.p.id}</span>
-              <div className="mission-file-strip">
-                {["PDF", "DWG", "XLSX", "XLS", "DOCX"].map((format) => (
-                  <span
-                    key={format}
-                    title={
-                      format +
-                      " " +
-                      x.files.filter((f) => f.format === format).length
-                    }
-                    style={{
-                      flex: Math.max(
-                        1,
-                        x.files.filter((f) => f.format === format).length,
-                      ),
-                    }}
-                    data-format={format}
-                  />
-                ))}
-              </div>
-              <strong>{x.files.length}</strong>
-            </Link>
-          ))}
-          <footer>PDF · CAD · 点表与配置 · 文档</footer>
-        </section>
-        <section className="mission-panel mission-audit">
-          <header>
-            <h2>操作流水</h2>
-            <Link to="/activity">全部记录 ↗</Link>
-          </header>
-          <div className="mission-feed-scroll">
-            {events.map((e) => (
-              <Link key={e.id} to="/activity">
-                <time>
-                  {new Date(e.at).toLocaleTimeString("zh-CN", {
-                    hour12: false,
-                  })}
-                </time>
-                <span>{e.projectId}</span>
-                <strong>{e.target}</strong>
-                <span>
-                  {e.accountId} · {e.role}
-                </span>
-              </Link>
-            ))}
-            {!events.length && <p>暂无操作记录</p>}
-          </div>
-        </section>
-        <section className="mission-panel mission-delivery">
-          <header>
-            <h2>交付节点</h2>
-          </header>
-          {allowed.has("RCJM1")&&<><Link to="/projects/RCJM1?view=milestones">
-            <span>RCJM1 · Phase 1 RFS</span>
-            <strong>2026-11-06</strong>
-            <small>日期待核实</small>
-          </Link>
-          <Link to="/projects/RCJM1?view=milestones">
-            <span>RCJM1 · 暂定竣工</span>
-            <strong>2027-08-06</strong>
-            <small>项目档案登记</small>
-          </Link></>}
-          {!allowed.has("RCJM1")&&<p>暂无交付节点</p>}
-        </section>
-      </div>
-    </div>
-  );
+import {useEffect,useRef,useState} from 'react';
+import {Link} from 'react-router';
+import {createPortal} from 'react-dom';
+import {ArrowUpRight,Search,X,ChevronRight,Clock3,FolderOpen,SlidersHorizontal} from 'lucide-react';
+import {localApi} from '@/lib/localApi';
+import {useWorkbench,type State,type Project} from '@/state/workbench';
+import {portfolioCountries,portfolioStages,followupNeeded,cleanPortfolioText} from '@/lib/projectPortfolio';
+import {deliveryGroups,deliveryProgress} from '@/lib/deliveryProgress';
+import './portal.css';
+
+export default function Portal(){
+ const {state}=useWorkbench();
+ const [country,setCountry]=useState('ALL'),[query,setQuery]=useState(''),[attention,setAttention]=useState(false),[selected,setSelected]=useState<string|null>(null);
+ const [mode,setMode]=useState<'delivery'|'business'>('delivery');
+ const [notifications,setNotifications]=useState<State['activity']>([]);
+ useEffect(()=>{let active=true;const refresh=()=>{if(document.visibilityState==='hidden')return;void localApi<State['activity']>('/api/workbench/notifications').then(rows=>{if(active)setNotifications(rows);}).catch(()=>{});};refresh();const timer=setInterval(refresh,30000);return()=>{active=false;clearInterval(timer);};},[]);
+ const projects=state.projects;
+ const progress=(p:Project)=>deliveryProgress(p.id===state.currentProjectId?state:p.snapshot,p.portfolio?.stage);
+ const groups=mode==='delivery'?deliveryGroups:portfolioStages;
+ const tracked=projects.filter(p=>p.portfolio);
+ const visible=projects.filter(p=>{
+  const info=p.portfolio;
+  return (country==='ALL'||info?.country===country)&&(!attention||!!info&&followupNeeded(info))&&[p.name,p.id,info?.code,info?.owner,info?.endUser,info?.pic,info?.contractor].join(' ').toLowerCase().includes(query.trim().toLowerCase());
+ });
+ const selectedProject=projects.find(p=>p.id===selected);
+ const latest=[...Array.from(new Map([...notifications,...state.activity].map(a=>[a.id,a])).values()).filter(a=>projects.some(p=>p.id===a.projectId)).map(a=>({date:a.at.slice(0,16).replace('T',' '),text:activityText(a),project:projects.find(p=>p.id===a.projectId)!})),...tracked.flatMap(p=>(p.portfolio?.timeline||[]).map(t=>({...t,project:p})))].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,20);
+ const summary=[{label:'售前项目',unit:'个',value:projects.length,sub:`${projects.filter(p=>!progress(p).recorded).length} 个待建立工件进度`,tone:'cyan'},{label:'成果待复核',unit:'项',value:projects.reduce((n,p)=>n+progress(p).review,0),sub:'人工核对后采纳与写回',tone:'amber'},{label:'变更影响',unit:'项',value:projects.reduce((n,p)=>n+progress(p).changed,0),sub:'需复核受影响环节',tone:'purple'},{label:'已写回成果',unit:'项',value:projects.reduce((n,p)=>n+progress(p).done,0),sub:'按 F1–F13 环节统计',tone:'mint'}];
+ return <div className="ltc-portfolio">
+  <header className="ltc-heading"><div><h1>项目监控 <span>需求 · 方案 · 报价 · 交接</span></h1><p>售前交付进度 <i/> 项目资料 · 工件复核 · 变更跟进</p></div><Link to="/projects">项目档案 <ArrowUpRight size={14}/></Link></header>
+  <div className="ltc-ticker"><span><i/> 最新跟进</span>{latest.length?<div className="ltc-ticker-window" aria-label="最新跟进滚动消息"><div className="ltc-ticker-track">{[0,1].map(copy=><div className="ltc-ticker-set" key={copy} aria-hidden={copy===1}>{latest.map((t,i)=><button key={i} tabIndex={copy===1?-1:0} onClick={()=>setSelected(t.project.id)}><time>{t.date}</time><b>{t.project.name}</b><span>{t.text}</span><ArrowUpRight size={13}/></button>)}</div>)}</div></div>:<p>暂无跟进记录</p>}</div>
+  <section className="ltc-metrics" data-tour="monitor">{summary.map(t=><div key={t.label} data-tone={t.tone}><span>{t.label}</span><strong>{t.value}<small>{t.unit}</small></strong><p>{t.sub}</p></div>)}</section>
+  <div className="ltc-toolbar"><div className="ltc-view-tabs" aria-label="项目分类方式"><button aria-pressed={mode==='delivery'} onClick={()=>setMode('delivery')}>售前交付</button><button aria-pressed={mode==='business'} onClick={()=>setMode('business')}>商务阶段</button></div><div className="ltc-country-tabs"><button className={country==='ALL'?'active':''} onClick={()=>setCountry('ALL')}>全部</button>{portfolioCountries.map(c=><button key={c.id} className={country===c.id?'active':''} onClick={()=>setCountry(c.id)}>{c.name}</button>)}</div><label className="ltc-search"><Search size={14}/><input aria-label="搜索监控项目" placeholder="项目 / 客户 / 编号 / 跟进人" value={query} onChange={e=>setQuery(e.target.value)}/></label><button className={'ltc-attention '+(attention?'active':'')} aria-pressed={attention} onClick={()=>setAttention(!attention)}><SlidersHorizontal size={13}/>仅看待跟进</button><small>{visible.length} / {projects.length} 个项目</small></div>
+  <div className="ltc-body"><main className="ltc-board" aria-label="项目阶段看板">{groups.map(stage=>{
+   const rows=visible.filter(p=>(mode==='delivery'?progress(p).group:p.portfolio?.stage)===stage.id);return <section className="ltc-lane" key={stage.id} style={{'--lane-color':stage.color} as React.CSSProperties}><header><div><i/><h2>{stage.name}</h2><b>{rows.length}</b></div><p>{stage.hint}</p></header><div className="ltc-lane-cards">{rows.map(p=><ProjectCard key={p.id} project={p} progress={progress(p)} onOpen={()=>setSelected(p.id)}/>)}{!rows.length&&<p className="ltc-empty">暂无项目</p>}</div></section>;
+  })}{mode==='business'&&visible.some(p=>!p.portfolio)&&<section className="ltc-lane ltc-unclassified"><header><div><i/><h2>阶段待确认</h2><b>{visible.filter(p=>!p.portfolio).length}</b></div><p>补充档案后纳入阶段看板</p></header><div className="ltc-lane-cards">{visible.filter(p=>!p.portfolio).map(p=><ProjectCard key={p.id} project={p} progress={progress(p)} onOpen={()=>setSelected(p.id)}/>)}</div></section>}</main>
+  <aside className="ltc-rail"><section><h2>国家进度概览</h2>{portfolioCountries.map(c=>{const rows=tracked.filter(p=>p.portfolio?.country===c.id);return <button className={'ltc-country-card '+(country===c.id?'selected':'')} key={c.id} onClick={()=>setCountry(country===c.id?'ALL':c.id)} style={{'--country-color':c.color} as React.CSSProperties}><header><b>{c.name}</b><strong>{rows.length}<small> 个</small></strong></header><div className="ltc-country-bars">{groups.slice(0,6).map(s=>{const inGroup=(p:Project)=>(mode==='delivery'?progress(p).group:p.portfolio?.stage)===s.id;const count=rows.filter(inGroup).length;const max=Math.max(1,...groups.map(s=>rows.filter(p=>(mode==='delivery'?progress(p).group:p.portfolio?.stage)===s.id).length));return <div key={s.id} title={`${s.name} ${count} 个`}><i><span style={{height:Math.max(count?8:0,count/max*100)+'%'}}/></i><small>{s.name}</small></div>;})}</div><footer>{mode==='delivery'?`方案 ${rows.filter(p=>progress(p).group==='solution').length} · 报价 ${rows.filter(p=>progress(p).group==='quote').length} · 交接 ${rows.filter(p=>progress(p).group==='done').length}`:`投标 ${rows.filter(p=>p.portfolio?.stage==='tender').length} · 中标与交付 ${rows.filter(p=>['won','delivery','acceptance'].includes(p.portfolio!.stage)).length}`}</footer></button>;})}</section>
+   <section><h2>成果与变更待处理</h2>{projects.filter(p=>progress(p).review||progress(p).changed).slice(0,6).map(p=><button key={p.id} className="ltc-rail-project" onClick={()=>setSelected(p.id)}><strong>{p.name}</strong><small>{progress(p).review} 项待复核 · {progress(p).changed} 项变更</small><ChevronRight size={14}/></button>)}</section>
+   <section><h2>待跟进事项 <span>{tracked.filter(p=>followupNeeded(p.portfolio!)).length}</span></h2>{tracked.filter(p=>followupNeeded(p.portfolio!)).slice(0,8).map(p=><button className="ltc-rail-project" key={p.id} onClick={()=>setSelected(p.id)}><strong>{p.name}</strong><small>{p.portfolio!.lastUpdate?'核对当前状态与下一步':'跟进记录待补充'} · {p.portfolio!.pic}</small><ChevronRight size={14}/></button>)}</section></aside></div>
+  {selectedProject&&<ProjectArchive project={selectedProject} onClose={()=>setSelected(null)}/>}
+ </div>;
+}
+function ProjectCard({project:p,progress,onOpen}:{project:Project;progress:ReturnType<typeof deliveryProgress>;onOpen:()=>void}){
+ const info=p.portfolio;const c=portfolioCountries.find(c=>c.id===info?.country);const note=cleanPortfolioText(info?.notes||'')||info?.timeline[0]?.text;
+ return <button className={'ltc-project-card '+(info&&followupNeeded(info)?'needs-followup':'')} onClick={onOpen}><header><span style={{color:c?.color}}>{c?.name||'地区待补'}</span><small>{info?.code||p.id}</small>{info?.risk!=='normal'&&info&&<i title="待跟进"/>}</header><h3>{p.name}</h3>{(info?.owner||info?.endUser)&&<p className="ltc-client">{[info.owner,info.endUser].filter(Boolean).join(' · ')}</p>}{info?.park&&<p className="ltc-park">{info.park}</p>}{note&&<p className="ltc-card-note">{note.replace(/\n+/g,' ')}</p>}{info?.products.length? <div className="ltc-product-tags">{info.products.slice(0,3).map(x=><span key={x.name}>{x.name}</span>)}{info.products.length>3&&<span>+{info.products.length-3}</span>}</div>:null}<div className="ltc-delivery-progress"><div><span>{!progress.recorded?'工件进度待建立':`已写回 ${progress.done} / 13`}</span><b>{progress.changed?`${progress.changed} 项变更`:progress.review?`${progress.review} 项待复核`:!progress.recorded?'待登记':`${progress.percent}%`}</b></div><div className="ltc-stage-segments">{progress.stages.map(s=><i key={s.id} data-state={s.state} title={`${s.id} · ${{done:'已写回',review:'待复核',changed:'变更待复核',waiting:'待处理'}[s.state as 'done'|'review'|'changed'|'waiting']}`}/>)}</div><small>{portfolioStages.find(s=>s.id===info?.stage)?.name||'商务阶段待补'}<span>{progress.recorded?'灰：待处理 · 紫：待复核 · 绿：已写回':'阶段依据档案 · 工件完成度待登记'}</span></small></div><footer><span className="ltc-person"><i>{info?.pic&&info.pic!=='未分配'?info.pic[0]:'—'}</i>{info?.pic||'待分配'}</span><time><Clock3 size={10}/>{info?.lastUpdate?.slice(5)||'更新待补'}</time></footer></button>;
+}
+function ProjectArchive({project:p,onClose}:{project:Project;onClose:()=>void}){
+ const info=p.portfolio;const ref=useRef<HTMLElement>(null);const previous=useRef<HTMLElement|null>(null);
+ useEffect(()=>{previous.current=document.activeElement as HTMLElement;ref.current?.focus();return()=>previous.current?.focus();},[]);
+ const stage=portfolioStages.find(s=>s.id===info?.stage);
+ const fields=info?[['国家',portfolioCountries.find(c=>c.id===info.country)?.name||info.country],['大区 / 园区',[info.region,info.park].filter(Boolean).join(' / ')],['业主',info.owner],['最终用户',info.endUser],['机电总包',info.contractor],['顾问',info.consultant],['跟进人（来源记录）',info.pic],['最近跟进',info.lastUpdate||'未记录']]:[['项目编号',p.id],['协调岗位',p.owner]];
+ return createPortal(<div className="ltc-drawer-backdrop" onClick={onClose} onKeyDown={e=>{if(e.key==='Escape')onClose();if(e.key==='Tab'){const nodes=Array.from(ref.current?.querySelectorAll<HTMLElement>('button,a[href]')||[]);if(e.shiftKey&&document.activeElement===nodes[0]){e.preventDefault();nodes.at(-1)?.focus();}else if(!e.shiftKey&&document.activeElement===nodes.at(-1)){e.preventDefault();nodes[0]?.focus();}}}}><aside ref={ref} tabIndex={-1} className="ltc-drawer" role="dialog" aria-modal="true" aria-label={p.name+'项目档案'} onClick={e=>e.stopPropagation()}><header><div><small>{info?.code||p.id} · 项目档案</small><h2>{p.name}</h2></div><button aria-label="关闭项目档案" onClick={onClose}><X size={18}/></button></header><div className="ltc-drawer-content"><div className="ltc-archive-status"><span style={{color:stage?.color}}>{stage?.name||'阶段待确认'}</span><small>{info?.rawProgress||'项目状态待确认'}</small></div><dl>{fields.map(([k,v])=><div key={k}><dt>{k}</dt><dd>{v||'待补充'}</dd></div>)}</dl>{info&&<><section><h3>合同 / 中标情况</h3><p>{info.bidStatus||'待确认'}</p></section><section><h3>产品范围</h3>{info.products.length?<dl className="ltc-product-details">{info.products.map(x=><div key={x.name}><dt>{x.name}</dt><dd>{x.value}</dd></div>)}</dl>:<p className="muted">尚未登记产品范围</p>}</section><section><h3>项目阶段</h3><div className="ltc-archive-stages">{portfolioStages.map(s=><span className={s.id===info.stage?'active':''} key={s.id}>{s.name}</span>)}</div></section><section><h3>跟进记录</h3>{info.timeline.length?info.timeline.slice().sort((a,b)=>b.date.localeCompare(a.date)).map((t,i)=><article key={t.date+i}><time>{t.date}</time><p>{t.text}</p></article>):<p className="muted">暂无带日期的跟进记录</p>}{cleanPortfolioText(info.notes)&&<article><time>补充说明 · 原记录未标日期</time><p>{info.notes}</p></article>}</section><p className="ltc-source">来源：项目看板资料快照。阶段与跟进信息以负责人后续确认更新为准；不代表工作区成果已通过复核。</p></>}</div><footer><Link onClick={onClose} to={'/projects/'+p.id+'?view=materials'}><FolderOpen size={14}/>项目资料</Link><Link className="primary" onClick={onClose} to={'/projects/'+p.id+'?view=flow'}>进入项目流程 <ArrowUpRight size={14}/></Link></footer></aside></div>,document.body);
+}
+
+function activityText(a:{action:string;after:string;target:string}){
+ const labels:Record<string,string>={agentRun:'完成快捷工作流',followup:'登记待跟进',followupComplete:'反馈跟进结果',followupAccept:'确认跟进结果',stage:'更新流程成果',resource:'登记项目资料',projectCreate:'建立项目档案',publishSoftware:'发布软件成果',review:'完成工件复核',respond:'补充澄清意见'};
+ let detail=a.after||'';
+ try {const parsed=JSON.parse(detail);detail=parsed.title||parsed.label||parsed.summary||parsed.text||'';} catch {if(/^[{[]/.test(detail))detail='';}
+ return (labels[a.action]||(/^[A-Za-z]+$/.test(a.action)?'更新项目记录':a.action))+(detail?' · '+String(detail).slice(0,140):'');
 }

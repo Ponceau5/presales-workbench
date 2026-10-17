@@ -23,7 +23,7 @@ export function authenticate(username: string, password: string, serverVerified 
     : undefined;
 }
 export function stagePermission(role: Role, stage: string) {
-  return stageReviewers[stage]?.includes(role) || false;
+  return role === "系统管理员" || stageReviewers[stage]?.includes(role) || false;
 }
 export const stageRowOwners: Record<string, Role[]> = {
   F1: ["销售", "商务支持"],
@@ -43,7 +43,7 @@ export function stageRowOwner(stage: string, index = 0) {
   return stageRowOwners[stage]?.[index];
 }
 export function canEditStageRow(role: Role, stage: string, index = 0) {
-  return stageRowOwner(stage, index) === role;
+  return role === "系统管理员" || stageRowOwner(stage, index) === role;
 }
 export const stageReviewers: Record<string, Role[]> = {
   F1: ["销售", "商务支持"],
@@ -60,16 +60,16 @@ export const stageReviewers: Record<string, Role[]> = {
   F13: ["财务 / 风控"],
 };
 export function canReviewStage(role: Role, stage: string) {
-  return stageReviewers[stage]?.includes(role) || false;
+  return role === "系统管理员" || stageReviewers[stage]?.includes(role) || false;
 }
 export function canCreateProject(role: Role) {
-  return ["销售", "商务支持", "PM / PO"].includes(role);
+  return ["销售", "商务支持", "系统管理员"].includes(role);
 }
 export function canManageConnection(role: Role) {
-  return role === "PM / PO";
+  return role === "系统管理员";
 }
 export function canPublishSoftware(role: Role) {
-  return role === "软件产品" || role === "PM / PO";
+  return role === "软件产品" || role === "系统管理员";
 }
 
 export function registerAccount(person: {id:string;display_name:string;role_name:Role}) {
