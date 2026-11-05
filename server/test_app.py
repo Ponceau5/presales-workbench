@@ -164,7 +164,7 @@ class WorkflowApiTest(unittest.TestCase):
             endpoint, headers=self.auth("software"), json={"pages": [1]},
         ).status_code, 503)
         quote = source.strip()
-        with patch.dict(os.environ, {"MOONSHOT_API_KEY": "test-placeholder"}), patch(
+        with patch.dict(os.environ, {"MOONSHOT_API_KEY": "test-placeholder", "PRESALES_MODEL_PROVIDER": "kimi"}), patch(
             "app.extract_requirements", return_value=[
                 {"quote": quote, "requirement": "支持告警历史检索"},
                 {"quote": "fabricated source", "requirement": "虚构的要求"},
@@ -208,7 +208,7 @@ class WorkflowApiTest(unittest.TestCase):
         document_id = uploaded.json()["id"]
         self.client.post(f"/api/documents/{document_id}/extract",
                          headers=self.auth("software"))
-        with patch.dict(os.environ, {"MOONSHOT_API_KEY": "test-placeholder"}), patch(
+        with patch.dict(os.environ, {"MOONSHOT_API_KEY": "test-placeholder", "PRESALES_MODEL_PROVIDER": "kimi"}), patch(
             "app.extract_requirements", side_effect=ModelError("模型临时不可用"),
         ):
             response = self.client.post(
@@ -238,7 +238,7 @@ class WorkflowApiTest(unittest.TestCase):
             f"/api/documents/{document_id}/extract", headers=self.auth("software"),
         ).json()["requirements"]
         self.assertTrue(before)
-        with patch.dict(os.environ, {"MOONSHOT_API_KEY": "test-placeholder"}), patch(
+        with patch.dict(os.environ, {"MOONSHOT_API_KEY": "test-placeholder", "PRESALES_MODEL_PROVIDER": "kimi"}), patch(
             "app.extract_requirements", return_value=[],
         ):
             result = self.client.post(
@@ -371,7 +371,7 @@ class WorkflowApiTest(unittest.TestCase):
         # API fixtures explicitly assign project access instead of relying on shared role accounts.
         with db() as c:
             for project in ('F7-DEMO','F7-TEST','F8-DEMO'):
-                c.execute('INSERT OR IGNORE INTO access_projects VALUES (?,?)',(project,project))
+                c.execute('INSERT OR IGNORE INTO access_projects(id,name) VALUES (?,?)',(project,project))
                 c.execute("INSERT OR IGNORE INTO project_owners VALUES (?,'sales','sales',1)",(project,))
         for username in ("sales", "software", "dev", "solution"):
             result = cls.client.post(
@@ -398,7 +398,7 @@ class WorkflowApiTest(unittest.TestCase):
     def test_source_review_handoff_publication_and_local_invalidation(self):
         self.source_project='REVIEW-ISOLATED'
         with db() as connection:
-            connection.execute("INSERT OR IGNORE INTO access_projects VALUES ('REVIEW-ISOLATED','独立核对测试')")
+            connection.execute("INSERT OR IGNORE INTO access_projects(id,name) VALUES ('REVIEW-ISOLATED','独立核对测试')")
             for role in ('sales','software','dev','solution'):
                 connection.execute("INSERT OR IGNORE INTO project_owners VALUES ('REVIEW-ISOLATED',?,?,1)",(role,role))
         original = (
@@ -526,9 +526,9 @@ class WorkflowApiTest(unittest.TestCase):
             "/api/projects/REVIEW-ISOLATED/handoffs", headers=self.auth("software")
         )
         self.assertEqual(len(project_handoffs.json()), 2)
-        changed = self.upload(
-            original.replace("OPC client and server", "OPC  client and server")
-            .replace("history shall", "alarm snapshots shall"), "V2"
+        changed = self.client.put(
+            f"/api/documents/{document_id}", headers=self.auth("software"),
+            files={"file": ("updated.txt", original.replace("OPC client and server", "OPC  client and server").replace("history shall", "alarm snapshots shall").encode(), "text/plain")},
         )
         self.assertEqual(changed.status_code, 200, changed.text)
         self.assertEqual(changed.json()["invalidated"], 1)

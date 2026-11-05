@@ -1,0 +1,13 @@
+.conversation-history{font-size:14px;line-height:1.7;overflow-wrap:anywhere}
+.conversation-history-views{display:flex;gap:8px;margin-bottom:20px}
+.conversation-history-views button[aria-pressed=true]{background:var(--accent-soft);color:var(--text);border-color:var(--gsa-accent)}
+.conversation-original,.conversation-fact{padding:16px 0;border-bottom:1px solid var(--line)}
+.conversation-original:first-child,.conversation-fact:first-child{padding-top:0}
+.conversation-fact h4{font-size:14px;margin:0 0 6px;font-weight:600}
+.conversation-fact p{margin:0 0 10px}
+.conversation-fact dl{margin:0;color:var(--text-secondary);font-size:12px}
+.conversation-fact dl>div{display:flex;gap:12px}
+.conversation-fact dt{flex:none}
+.conversation-fact dd{margin:0;min-width:0}
+.conversation-history .gsa-actions{justify-content:space-between}
+.conversation-history button:focus-visible{outline:2px solid var(--gsa-accent);outline-offset:3px}

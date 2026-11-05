@@ -9,13 +9,13 @@ import {
 import { roles } from "@/lib/workspace";
 import { rackIssues } from "@/lib/portfolio";
 import { Link, useParams, useSearchParams } from "react-router";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { FileText, ArrowUpRight, X } from "lucide-react";
 import { useWorkbench } from "@/state/workbench";
 import { stages } from "@/lib/stages";
 import { ProjectFlow } from "@/components/ProjectFlow";
 import { Heading, Tag } from "@/components/WorkbenchUI";
-import { GsaSoftwareWorkbench } from "@/features/software/GsaSoftwareWorkbench";
+const GsaSoftwareWorkbench=lazy(()=>import("@/features/software/GsaSoftwareWorkbench").then(module=>({default:module.GsaSoftwareWorkbench})));
 export default function Home() {
   const { state, dispatch } = useWorkbench();
   const { projectId } = useParams();
@@ -89,7 +89,7 @@ export default function Home() {
       {view === "collaboration" && <Collaboration projectId={project.id} />}
       {view === "materials" && <ResourceBrowser projectId={project.id} />}
       {view === "milestones" && <Milestones reference={reference} />}
-      {view === "review" && <GsaSoftwareWorkbench key={project.id + ":" + (params.get("stage") || "F5")} projectId={project.id} stageId={params.get("stage") || "F5"} />}
+      {view === "review" && <Suspense fallback={<div role="status">正在打开工作区…</div>}><GsaSoftwareWorkbench key={state.accountId + ":" + project.id + ":" + (params.get("stage") || "F5")} projectId={project.id} stageId={params.get("stage") || "F5"} /></Suspense>}
       {view === "changes" && <ChangeLog projectId={project.id} />}
       {view === "attention" && (
         <section className="issue-register">

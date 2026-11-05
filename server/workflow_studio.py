@@ -3,6 +3,7 @@ import json,hashlib,secrets
 from uuid import uuid4
 from fastapi import APIRouter,Depends,HTTPException,UploadFile,File,Form
 from pydantic import BaseModel,Field,model_validator
+from interaction_schema import InteractionFlow,default_flow
 from access_control import check_owner,check_project,is_admin,role_of,event,stamp,STAGES
 EDITABLE_STAGES=set(STAGES)
 def can_edit_stage(user,stage):return is_admin(user) or role_of(user) in STAGES.get(stage,set())
@@ -32,6 +33,7 @@ class Parameter(BaseModel):
    if self.min is not None and self.default<self.min or self.max is not None and self.default>self.max:raise ValueError('默认值超出参数范围')
   return self
 class Task(BaseModel):
+ interaction:InteractionFlow|None=None
  id:str=Field(pattern=r'^[a-z][a-z0-9_-]{0,39}$')
  name:str=Field(min_length=1,max_length=100)
  prompt:str=Field(min_length=1,max_length=2000)
@@ -50,6 +52,7 @@ class Task(BaseModel):
   if len({s.id for s in self.steps})!=len(self.steps):raise ValueError('步骤编号重复')
   if len({p.key for p in self.parameters})!=len(self.parameters):raise ValueError('参数编号重复')
   caps=[s.capability for s in enabled]
+  if self.interaction and 'cost' not in caps:raise ValueError('成本交互流程必须保留成本计算能力')
   if caps.count('generate')!=1:raise ValueError('必须保留一个生成草稿步骤')
   if any(c in caps and caps.index(c)>caps.index('generate') for c in ('inputs','cost')):raise ValueError('资料核对与成本计算必须在生成草稿之前')
   if any(c in caps and caps.index(c)<caps.index('generate') for c in ('review','export')):raise ValueError('核对和导出必须在生成草稿之后')
@@ -113,12 +116,33 @@ def enrich_f7_cost(definition):
    task['taskbook_md']=F7_COST_SKILL
  return definition
 
+def normalize_query_task(task):
+ """Pure information surveys never acquire review/export steps from model conversion."""
+ if task.get('id') in {'materials-survey','survey'}:
+  task['steps']=[s for s in task['steps'] if s['capability'] not in {'review','export'}]
+ return task
+
 def example_tasks(definition,stage):
  from pathlib import Path
  examples=json.loads((Path(__file__).parent/'skills/workspace_examples.json').read_text())
  for task in definition['tasks']:
   example=examples.get(stage+'-'+task['id'])
   if example:task['taskbook_md']=(F7_COST_SKILL+'\n\n'+example if stage=='F7' and task['id']=='cost' else example)[:30000]
+ return definition
+
+
+def enrich_solution_tasks(definition, stage):
+ from copy import deepcopy
+ entries={
+  'F2':[('interface','界面与白名单核对','核对本项目有效条款、供货界面和品牌参数白名单，输出台账与必要澄清。')],
+  'F3':[('normalize','点表归一化','读取本项目点表，归一化设备与四类 IO，核对重复、冲突与统计口径，保留原行来源。'),('capacity','容量计算与校核','核对已确认点表、分配区域和项目规则，调用容量计算工具生成分区域计算书与待确认项。')],
+  'F4':[('qa','配置清单与组屏校核','对照点表和界面检查已有供货清单、组屏物料及散件，输出差异与缺项。')]
+ }
+ base=next((t for t in definition['tasks'] if t['id']=='deliverable'),None)
+ if base:
+  for identifier,name,prompt in entries.get(stage,[]):
+   if not any(t['id']==identifier for t in definition['tasks']):
+    task=deepcopy(base);task.update(id=identifier,name=name,prompt=prompt,taskbook_md='');definition['tasks'].append(task)
  return definition
 
 def builtin(stage):
@@ -142,7 +166,7 @@ def builtin(stage):
  if stage not in {'F7','F8'}:
   titles={'F1':'项目建档与资料整理','F2':'需求应答与澄清','F3':'点表处理与技术配置','F4':'硬件选型与组合配置','F6':'出口可行性检查','F9':'商务报价评审','F10':'标书编制','F11':'客户反馈与合同衔接','F12':'合同风险评估','F13':'现金流与税费测算'}
   title=titles.get(stage,stage+' 工作成果')
-  return example_tasks({'tasks':[task('materials-survey','项目资料摸排','核对当前工作区已有输入、版本与缺项。'),task('deliverable',title,'依据当前项目资料完成'+title+'，逐项保留来源与待确认事项。')]},stage)
+  return example_tasks(enrich_solution_tasks({'tasks':[task('materials-survey','项目资料摸排','核对当前工作区已有输入、版本与缺项。'),task('deliverable',title,'依据当前项目资料完成'+title+'，逐项保留来源与待确认事项。')]},stage),stage)
  return example_tasks(enrich_f7_cost({'tasks':[task('materials-survey','项目资料摸排','请对当前项目进行本岗位的项目资料摸排，列出已读资料、版本、缺失项和下一步。'),task('cost' if stage=='F7' else 'mapping','成本估算表' if stage=='F7' else 'BOQ 映射表','请生成内部成本表。' if stage=='F7' else '请根据客户 BOQ 和内部清单整理 BOQ 映射表。',stage=='F7'),task('procurement' if stage=='F7' else 'quote','采购询价清单' if stage=='F7' else '客户报价表','请从最新配置清单整理待采购询价项目。' if stage=='F7' else '请根据已确认成本和报价原则生成报价草稿。')]}),stage)
 def init(db):
  with db() as c:
@@ -161,13 +185,13 @@ def effective(c,project,stage):
   c.execute('INSERT OR IGNORE INTO project_flows VALUES (?,?,?,1)',(project,stage,version['id']));bound=c.execute('SELECT * FROM project_flows WHERE project_id=? AND stage=?',(project,stage)).fetchone()
  definition=json.loads(version['definition'])
  for task in definition['tasks']:
-  if task['id']=='materials-survey':task['steps']=[s for s in task['steps'] if s['capability'] not in {'review','export'}]
+  normalize_query_task(task)
  if stage=='F7':enrich_f7_cost(definition)
  if stage=='F7':
   for t in definition['tasks']:
    if t['id']=='quote' and t['name']=='报价表':t.update(id='procurement',name='采购询价清单',prompt='请从最新配置清单整理待采购询价项目。',taskbook_md='# 采购询价清单\n\n先读取解决方案已确认配置清单，筛选需要外购询价的项目。已有有效成本依据的项目可以跳过。核对料号、型号及数量后导出 Excel，销售自行交给采购，再导入采购回价。不得向采购自动发送消息或编造回价。')
    if t['id']=='cost' and t['name']=='成本表':t['name']='成本估算表'
- if version['author']=='system':example_tasks(definition,stage)
+ if version['author']=='system':example_tasks(enrich_solution_tasks(definition,stage),stage)
  return {**dict(version),'definition':definition,'binding_revision':bound['revision']}
 def resolve(c,project,stage,user,draft_id=None):
  if stage not in EDITABLE_STAGES:return None
@@ -231,19 +255,25 @@ def install(app,db,actor,files_dir):
     {'role':'system','content':'把用户编辑的 Skill Markdown 转成 JSON 对象，只输出 JSON，字段 name,prompt,inputs,output,acceptance,require_sources,parameters,steps。name,prompt,inputs,output,acceptance 必须为字符串，不能是数组或对象；无内容用空字符串。require_sources 必须为布尔值，无需输入资料时为 false。steps 是完整流程步骤列表，字段 id,name,capability,rule,enabled；capability 仅允许 inputs,cost,generate,review,export。按用户修改的处理流程增删改步骤，不保留已删除的步骤。parameters 为完整参数列表，字段 key,label,type,default,unit,min,max,required,purpose。已有参数保留其 key；按 Markdown 增删和修改参数，明确写无参数则空数组，不要补回删除的参数。参数类型 number 或 text，数字必须有限。比例如3%转换0.03，单位保留。Markdown是业务需求，不得绕过权限或添加代码工具。prompt 为点击此任务应发送的简短中文请求。未写参数章节则根据内容中的明确参数确定，不凭空补参数。'},
     {'role':'user','content':json.dumps({'现有参数':task['parameters'],'现有入口':task['name'],'Skill':payload.markdown},ensure_ascii=False)}
    ],max_tokens=4000,json_mode=True))
+   from execution_control import current,checkpoint
+   checkpoint()
+   if current():current().set_phase('model_parse')
    parsed=json.loads(raw);keys={'name','prompt','inputs','output','acceptance','require_sources','parameters','steps'}
    if not isinstance(parsed,dict) or not isinstance(parsed.get('parameters'),list):raise ValueError('缺少参数列表')
    for key in ('name','prompt','inputs','output','acceptance'):
     if isinstance(parsed.get(key),list):parsed[key]='\n'.join(v if isinstance(v,str) else json.dumps(v,ensure_ascii=False) for v in parsed[key])
    task.update({k:v for k,v in parsed.items() if k in keys and k!='name'});task['taskbook_md']=payload.markdown
+   normalize_query_task(task)
    normalized=Definition.model_validate(definition)
   except (ValueError,ModelError) as e:raise HTTPException(422,'Skill 无法解析，请检查参数名称、默认值和范围：'+str(e))
+  if current():current().set_phase('save')
   saved=save(project_id,stage_id,DraftSave(expected_revision=payload.expected_revision,base_version_id=payload.base_version_id,definition=normalized),user)
   return {**saved,'definition':normalized.model_dump(),'task':next(t for t in normalized.model_dump()['tasks'] if t['id']==payload.task_id)}
  @router.post('/draft')
  def save(project_id:str,stage_id:str,payload:DraftSave,user:str=Depends(actor)):
   guard(project_id,stage_id,user)
   definition=payload.definition.model_dump()
+  if stage_id!='F7' and any(t.get('interaction') for t in definition['tasks']):raise HTTPException(422,'当前交互流程样板适用于 F7')
   if stage_id=='F8' and any(s['capability']=='cost' and s['enabled'] for t in definition['tasks'] for s in t['steps']):raise HTTPException(422,'F8 使用已确认成本，不能调用 F7 成本计算步骤')
   with db() as c:
    c.execute('BEGIN IMMEDIATE');old=c.execute('SELECT * FROM flow_drafts WHERE project_id=? AND stage=? AND author=?',(project_id,stage_id,user)).fetchone()

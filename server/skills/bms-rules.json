@@ -1,0 +1,61 @@
+{
+  "version": "bms-solution-0.2",
+  "status": "专家经验候选；项目确认后使用，不是厂家认证容量表",
+  "priority": [
+    "项目已确认有效条款",
+    "有效图纸、点表、Spec；冲突先澄清",
+    "已确认产品手册",
+    "历史样本与专家经验"
+  ],
+  "candidate_gateway_effective_ports": {
+    "iSmartGate 2S": 3,
+    "PMC-1606": 4,
+    "PMC-1316C": 14,
+    "PMC-1618": 16
+  },
+  "candidate_module_effective_channels": {
+    "16DI": 14,
+    "8DO": 6,
+    "16DO": 14,
+    "8AI": 6,
+    "4AO": 3
+  },
+  "candidate_plc_module_limits": {
+    "TM221": 7,
+    "TM241": 15
+  },
+  "candidate_switch_effective_ports": {
+    "24-port": 20,
+    "8-port": 6
+  },
+  "counting": [
+    "HLI 为设备台数；按 rs485/ethernet 区分接入，不代表采集变量/许可/存储点数",
+    "LLI 分 DI/DO/AI/AO；每台乘数量，整行合计不再乘",
+    "SW 不占物理 IO，但是否采集/存储/许可由 F5 判断"
+  ],
+  "confirmation_required": [
+    "每串设备上限按本项目协议和设备确认，不统一套 6 台或一台一串",
+    "使用有效容量预留后不再统一加 20%",
+    "CPU自带DI/DO/AI/AO有效通道须明确；先扣CPU自带通道再计算扩展模块，不能漏计或重复计预留",
+    "PLC 型号、模块组合、顺序、供电和通信兼容性由硬件岗位确认",
+    "交换机包含设备、网关/PLC上行、服务器和其他网络占口；拓扑另核"
+  ],
+  "unresolved": [
+    "iPAC 16 个扩展且 RS485 不超过 3 个，与装 3 个 RS485 后不能加 IO 存在组合限制待确认，不套普通 PLC 算式",
+    "TH/DP/H2/漏水布点是经验候选，不自动推算正式数量",
+    "RS485、铜缆以太网和光纤不能统一套 90–100m",
+    "HLI每台=1、SW=0 不覆盖现有 F5 采样与存储模型",
+    "柜内配件、白名单、备件和认证缺依据时待确认，不擅自补齐"
+  ],
+  "candidate_device_aliases": {
+    "TH": [
+      "温湿度"
+    ],
+    "H2": [
+      "氢气"
+    ],
+    "DP": [
+      "压差"
+    ]
+  }
+}

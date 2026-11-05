@@ -52,3 +52,10 @@ class TrialSignupTests(unittest.TestCase):
   self.assertEqual(tuple(self.c.execute('SELECT role,is_admin FROM users').fetchone()),('admin',1))
   info['id']='old-user';info['signupApplication']=''
   self.assertIsNone(trial_signup.link_registered_subject(self.db,self.config,'old-user',lambda *args:[info]))
+
+ def test_workbench_role_does_not_require_casdoor_application_tag(self):
+  with patch.object(trial_signup.httpx,'post',return_value=self.result) as signup,patch.object(trial_signup.access_control,'event'),patch.object(trial_signup.access_control,'issue_session',return_value=('token',{})):
+   response=self.client.post('/api/auth/register',headers={'Origin':self.config['frontend_url']},json={'username':'newuser','password':'demo2026','confirm_password':'demo2026','role':'marketing'})
+  self.assertEqual(response.status_code,200,response.text)
+  self.assertNotIn('tag',signup.call_args.kwargs['json'])
+  self.assertEqual(tuple(self.c.execute('SELECT role,is_admin FROM users').fetchone()),('marketing',0))

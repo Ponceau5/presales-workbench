@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import {FloatingNotice} from "@/components/FloatingNotice"
 import type * as LabelPrimitive from "@radix-ui/react-label"
 import { Slot } from "@radix-ui/react-slot"
 import {
@@ -144,14 +145,14 @@ function FormMessage({ className, ...props }: React.ComponentProps<"p">) {
   }
 
   return (
-    <p
+    <FloatingNotice
       data-slot="form-message"
       id={formMessageId}
       className={cn("text-destructive text-sm", className)}
       {...props}
     >
       {body}
-    </p>
+    </FloatingNotice>
   )
 }
 

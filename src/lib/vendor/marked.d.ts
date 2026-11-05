@@ -56,7 +56,7 @@ export declare namespace Tokens {
 		text: string;
 	}
 	interface Generic {
-		[index: string]: any;
+		[index: string]: unknown;
 		type: string;
 		raw: string;
 		tokens?: Token[];
@@ -239,7 +239,7 @@ declare class _Parser<ParserOutput = string, RendererOutput = string> {
 	 */
 	parseInline(tokens: Token[], renderer?: _Renderer<ParserOutput, RendererOutput> | _TextRenderer<RendererOutput>): ParserOutput;
 }
-declare const other: {
+type OtherRules = {
 	codeRemoveIndent: RegExp;
 	outputLinkReplace: RegExp;
 	indentCodeCompensation: RegExp;
@@ -297,7 +297,7 @@ declare const other: {
 	htmlBeginRegex: (indent: number) => RegExp;
 	blockquoteBeginRegex: (indent: number) => RegExp;
 };
-declare const blockNormal: {
+type BlockRules = {
 	blockquote: RegExp;
 	code: RegExp;
 	def: RegExp;
@@ -312,8 +312,8 @@ declare const blockNormal: {
 	table: RegExp;
 	text: RegExp;
 };
-export type BlockKeys = keyof typeof blockNormal;
-declare const inlineNormal: {
+export type BlockKeys = keyof BlockRules;
+type InlineRules = {
 	_backpedal: RegExp;
 	anyPunctuation: RegExp;
 	autolink: RegExp;
@@ -336,9 +336,9 @@ declare const inlineNormal: {
 	text: RegExp;
 	url: RegExp;
 };
-export type InlineKeys = keyof typeof inlineNormal;
+export type InlineKeys = keyof InlineRules;
 export interface Rules {
-	other: typeof other;
+	other: OtherRules;
 	block: Record<BlockKeys, RegExp>;
 	inline: Record<InlineKeys, RegExp>;
 }
@@ -623,7 +623,7 @@ declare class _Lexer<ParserOutput = string, RendererOutput = string> {
  * Gets the original marked default options.
  */
 declare function _getDefaults<ParserOutput = string, RendererOutput = string>(): MarkedOptions<ParserOutput, RendererOutput>;
-declare let _defaults: MarkedOptions<any, any>;
+declare let _defaults: MarkedOptions<unknown, unknown>;
 export type MaybePromise = void | Promise<void>;
 export declare class Marked<ParserOutput = string, RendererOutput = string> {
 	defaults: MarkedOptions<ParserOutput, RendererOutput>;
@@ -703,13 +703,13 @@ export declare function marked(src: string, options: MarkedOptions & {
 }): Promise<string>;
 export declare function marked(src: string, options?: MarkedOptions | null): string | Promise<string>;
 export declare namespace marked {
-	var options: (options: MarkedOptions) => typeof marked;
-	var setOptions: (options: MarkedOptions) => typeof marked;
-	var getDefaults: typeof _getDefaults;
-	var defaults: MarkedOptions<any, any>;
-	var use: (...args: MarkedExtension[]) => typeof marked;
-	var walkTokens: (tokens: Token[] | TokensList, callback: (token: Token) => MaybePromise | MaybePromise[]) => MaybePromise[];
-	var parseInline: {
+	let options: (options: MarkedOptions) => typeof marked;
+	let setOptions: (options: MarkedOptions) => typeof marked;
+	let getDefaults: typeof _getDefaults;
+	let defaults: MarkedOptions<unknown, unknown>;
+	let use: (...args: MarkedExtension[]) => typeof marked;
+	let walkTokens: (tokens: Token[] | TokensList, callback: (token: Token) => MaybePromise | MaybePromise[]) => MaybePromise[];
+	let parseInline: {
 		(src: string, options: MarkedOptions<string, string> & {
 			async: true;
 		}): Promise<string>;
@@ -718,15 +718,15 @@ export declare namespace marked {
 		}): string;
 		(src: string, options?: MarkedOptions<string, string> | null | undefined): string | Promise<string>;
 	};
-	var Parser: typeof _Parser;
-	var parser: typeof _Parser.parse;
-	var Renderer: typeof _Renderer;
-	var TextRenderer: typeof _TextRenderer;
-	var Lexer: typeof _Lexer;
-	var lexer: typeof _Lexer.lex;
-	var Tokenizer: typeof _Tokenizer;
-	var Hooks: typeof _Hooks;
-	var parse: typeof marked;
+	let Parser: typeof _Parser;
+	let parser: typeof _Parser.parse;
+	let Renderer: typeof _Renderer;
+	let TextRenderer: typeof _TextRenderer;
+	let Lexer: typeof _Lexer;
+	let lexer: typeof _Lexer.lex;
+	let Tokenizer: typeof _Tokenizer;
+	let Hooks: typeof _Hooks;
+	let parse: typeof marked;
 }
 export declare const options: (options: MarkedOptions) => typeof marked;
 export declare const setOptions: (options: MarkedOptions) => typeof marked;

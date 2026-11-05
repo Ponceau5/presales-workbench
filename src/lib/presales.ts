@@ -8,7 +8,7 @@ export interface PipelineStep {
   hint?: string
 }
 export const pipelineSteps: PipelineStep[] = [
-  ['F1', '项目建立与资料归集', '销售 / 商务', 'done'],
+  ['F1', '项目建立与资料归集', '市场 / 销售 / 商务', 'done'],
   ['F2', '需求应答与澄清', '各专业岗位', 'done'],
   ['F3', '点表处理与技术配置', '解决方案', 'todo'],
   ['F4', '硬件选型与组合配置', '硬件产品', 'todo'],

@@ -1,0 +1,5 @@
+[data-sonner-toaster].app-messages{--width:min(540px,calc(100vw - 32px))!important;z-index:10000!important}
+[data-sonner-toast].app-message{padding:10px 14px!important;gap:8px!important;min-height:40px!important;border-radius:6px!important;background:var(--surface,#fff)!important;color:var(--text,#262626)!important;border:1px solid var(--line,#ddd)!important;box-shadow:0 4px 14px #0002!important;font-size:13px!important;line-height:1.5!important}
+[data-sonner-toast].app-message [data-icon]{color:#e34d59}
+[data-sonner-toast].app-message [data-close-button]{left:auto!important;right:6px!important;top:50%!important;transform:translateY(-50%)!important;border:0!important;background:transparent!important;color:inherit!important}
+[data-sonner-toast].app-message [data-content]{padding-right:18px}

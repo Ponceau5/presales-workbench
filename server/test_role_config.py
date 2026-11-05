@@ -101,14 +101,31 @@ class RoleConfigTests(unittest.TestCase):
         value=json.loads(exported[0]);self.assertEqual(set(value),{'schema_version','role','revision','tasks'})
         self.assertNotIn('test-key',exported[0])
     def test_zhipu_balance_and_busy_are_distinct(self):
-        import io
-        from urllib.error import HTTPError
+        import httpx
+        from openai import RateLimitError
         import model_gateway
         cfg=model_gateway.ModelConfig('zhipu','glm','https://example.test','test-key')
         for code in ['1113','1305']:
-            error=HTTPError('https://example.test',429,'error',{},io.BytesIO(json.dumps({'error':{'code':code}}).encode()))
-            with patch.object(model_gateway,'urlopen',side_effect=error):
+            response=httpx.Response(429,request=httpx.Request('POST','https://example.test'))
+            error=RateLimitError('fixture',response=response,body={'code':code})
+            async def fail(*args,**kwargs):
+                raise error
+                yield
+            with patch.object(model_gateway,'_sdk_response',side_effect=fail):
                 with self.assertRaisesRegex(model_gateway.ModelError,code):list(model_gateway._request_chat_stream([],config=cfg))
+    def test_one_users_trial_in_another_project_is_not_blocked(self):
+        task=next(t for t in self.cfg['tasks'] if t['id']=='survey')
+        previous,_=self.trial(task)
+        with self.db() as c:c.execute("UPDATE config_validation_runs SET status='running' WHERE id=?",(previous,))
+        payload={'config_id':self.cfg['id'],'task_id':task['id'],'project_id':'OTHER','question':'核对另一项目'}
+        response=self.client.post(self.base+'/trials',json=payload)
+        self.assertEqual(response.status_code,200,response.text)
+        identifier=response.json()['id']
+        self.assertNotEqual(identifier,previous)
+        stream=self.client.get(self.base+'/trials/'+identifier+'/stream')
+        self.assertIn('completed',stream.text)
+        with self.db() as c:c.execute("UPDATE config_validation_runs SET status='completed' WHERE id=?",(previous,))
+
     def test_word_excel_samples_and_exports(self):
         from io import BytesIO
         from docx import Document

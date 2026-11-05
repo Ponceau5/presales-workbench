@@ -1,3 +1,4 @@
+import {FloatingNotice} from "@/components/FloatingNotice";
 import { useEffect, useRef, useState } from "react";
 import { ArrowRight, FileText, Send, Sparkles, X } from "lucide-react";
 import { localApi } from "@/lib/localApi";
@@ -146,7 +147,7 @@ export function SoftwareAgentPanel({
         </div>
 
         <div className="software-agent-composer">
-          {error && <p role="alert">{error}</p>}
+          {error && <FloatingNotice role="alert">{error}</FloatingNotice>}
           <div className="software-agent-input">
             <textarea aria-label="向 Agent 提问" value={question} placeholder="问这页资料，例如：告警回溯视频的范围写清楚了吗？" rows={2}
               onChange={(event) => setQuestion(event.target.value)}

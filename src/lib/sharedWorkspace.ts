@@ -56,3 +56,20 @@ export function loadShared(): SharedWorkspace | null {
 export function saveShared(s: State) {
   localStorage.setItem(sharedKey, JSON.stringify(sharedWorkspace(s)));
 }
+
+export function scopeToProjects(s: State, permitted?: {id:string;name:string}[]): State {
+  if (!permitted) return s;
+  const ids = new Set(permitted.map(project => project.id));
+  const belongs = (value: unknown) => {
+    const row = value as {projectId?:string;project_id?:string};
+    const project = row.projectId || row.project_id;
+    return !project || ids.has(project);
+  };
+  const projects = s.projects.filter(project => ids.has(project.id));
+  for (const project of permitted) {
+    if (!projects.some(item => item.id === project.id))
+      projects.push({...project,owner:s.role,updated:""});
+  }
+  return {...s,projects,activity:s.activity.filter(belongs),resources:s.resources.filter(belongs),
+    followups:s.followups.filter(belongs),deliveries:s.deliveries.filter(belongs),knowledge:s.knowledge.filter(belongs)};
+}

@@ -1,3 +1,4 @@
+import {FloatingNotice} from "@/components/FloatingNotice";
 import { SoftwareIntake } from "@/components/SoftwareIntake";
 import { LocalSourceReview } from "@/components/LocalSourceReview";
 import { localApiReady } from "@/lib/localApi";
@@ -383,7 +384,7 @@ export function ReferenceWorkbench({
           </div>
         ))}
       {remoteConflict && (
-        <div className="draft-switch-prompt" role="alert">
+        <FloatingNotice className="draft-switch-prompt" role="alert">
           <strong>另一会话已更新此工件，本地修改尚未提交</strong>
           <button
             className="btn secondary"
@@ -401,10 +402,10 @@ export function ReferenceWorkbench({
           >
             使用最新版本
           </button>
-        </div>
+        </FloatingNotice>
       )}
       {pendingSelection && (
-        <div className="draft-switch-prompt" role="alert">
+        <FloatingNotice className="draft-switch-prompt" role="alert">
           <strong>当前修改尚未保存</strong>
           <button
             className="btn secondary"
@@ -421,7 +422,7 @@ export function ReferenceWorkbench({
           >
             放弃修改并切换
           </button>
-        </div>
+        </FloatingNotice>
       )}
       {intake && stage !== "F3" ? (
         <SoftwareIntake

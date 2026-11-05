@@ -14,6 +14,8 @@ class Registration(BaseModel):
 def install(app,db,actor,now):
     with db() as c:
         c.execute('CREATE TABLE IF NOT EXISTS document_registry(document_id TEXT PRIMARY KEY,category TEXT NOT NULL,reason TEXT NOT NULL,registered_by TEXT NOT NULL,updated_at TEXT NOT NULL)')
+        columns={row[1] for row in c.execute('PRAGMA table_info(document_registry)')}
+        if 'business_type' not in columns:c.execute("ALTER TABLE document_registry ADD COLUMN business_type TEXT NOT NULL DEFAULT ''")
         c.execute('CREATE INDEX IF NOT EXISTS documents_project_digest ON documents(project_id,sha256)')
     @app.post('/api/projects/{project_id}/documents/{identifier}/register')
     def register(project_id:str,identifier:str,payload:Registration,user=Depends(actor)):
@@ -39,14 +41,41 @@ def install(app,db,actor,now):
                     except ModelError:pass
                 elif not text and Path(doc['filename']).suffix.lower() in {'.png','.jpg','.jpeg','.webp'}:category='temporary';reason='图片先用于当前对话；需要长期保存时可明确要求归档'
         with db() as c:
-            c.execute('INSERT INTO document_registry VALUES (?,?,?,?,?) ON CONFLICT(document_id) DO UPDATE SET category=excluded.category,reason=excluded.reason,registered_by=excluded.registered_by,updated_at=excluded.updated_at',(identifier,category,reason,str(user),now()))
+            c.execute('INSERT INTO document_registry(document_id,category,reason,registered_by,updated_at,business_type) VALUES (?,?,?,?,?,?) ON CONFLICT(document_id) DO UPDATE SET category=excluded.category,reason=excluded.reason,registered_by=excluded.registered_by,updated_at=excluded.updated_at',(identifier,category,reason,str(user),now(),existing['business_type'] if existing else ''))
             if category!='template':c.execute("DELETE FROM workspace_material_tags WHERE document_id=? AND stage_id=?",(identifier,payload.stage_id))
             if category=='template':c.execute("INSERT INTO workspace_material_tags VALUES (?,?,'template') ON CONFLICT(document_id,stage_id) DO UPDATE SET category='template'",(identifier,payload.stage_id))
+        import project_retrieval
+        project_retrieval.index_document(db,identifier)
         return {'category':category,'reason':reason,'archived':category!='temporary','reused':False}
+
+
+def solution_excerpt(c, document, stage):
+    """Select relevant sheets/pages from the authorized document, retaining page provenance."""
+    patterns = {
+        'F2': r'界面|白名单|条款|澄清|specification|requirement|interface|whitelist|raci',
+        'F3': r'点表|点位|point\s*(?:schedule|list)|io\s*(?:list|schedule)|i/o|\b(?:DI|DO|AI|AO)\b',
+        'F4': r'组屏|屏柜|清单|白名单|界面|configuration|panel|bom|interface',
+    }
+    pages = list(c.execute('SELECT page,text FROM document_pages WHERE document_id=? ORDER BY page LIMIT 200', (document['id'],)))
+    pattern = patterns[stage]
+    def score(page):
+        text = page['text']
+        heading = text.splitlines()[0] if text else ''
+        penalty = 20 if re.search(r'成本|报价|cost|price', heading, re.I) else 0
+        return 5 * len(re.findall(pattern, heading, re.I)) + min(5, len(re.findall(pattern, text[:3000], re.I))) - penalty
+    selected = sorted(sorted(pages, key=score, reverse=True)[:2], key=lambda page: page['page'])
+    catalog = '\n'.join(f"第{page['page']}页：{page['text'].splitlines()[0] if page['text'] else ''}（{len(page['text'])}字符）" for page in pages)
+    excerpts=[]
+    for page in selected:
+        text=page['text'];snippet=text[:3500]
+        if len(text)>3500:
+            snippet=snippet.rsplit('\n',1)[0]+'\n[正文尚未读完，请用read_project_material读取原件；不能据此统计完整数量或判断缺项]'
+        excerpts.append(f"[来源页 {page['page']}]\n{snippet}")
+    return '完整工作表/页目录：\n'+catalog+'\n\n'+'\n\n'.join(excerpts), [page['page'] for page in selected]
 
 def project_sources(c,project,stage,request,rule,sources):
     """Resolve only this project's registered inputs and output formats."""
-    rows=[dict(r) for r in c.execute("SELECT d.*,r.category FROM documents d LEFT JOIN document_registry r ON r.document_id=d.id WHERE d.project_id=? AND COALESCE(r.category,'input')!='temporary' ORDER BY d.created_at DESC",(project,))]
+    rows=[dict(r) for r in c.execute("SELECT d.*,r.category FROM documents d LEFT JOIN document_registry r ON r.document_id=d.id WHERE d.project_id=? AND COALESCE(r.category,'input') NOT IN ('temporary','disabled') ORDER BY d.created_at DESC",(project,))]
     selected={s.get('id') for s in sources}
     templates=[r for r in rows if r.get('category')=='template' or c.execute("SELECT 1 FROM workspace_material_tags WHERE document_id=? AND stage_id IN (?, '*') AND category='template'",(r['id'],stage)).fetchone()]
     scope=request+'\n'+rule
@@ -63,6 +92,10 @@ def project_sources(c,project,stage,request,rule,sources):
         terms=set(re.findall(r'[A-Za-z0-9_]{3,}|成本|配置|清单|点表|规格|需求|合同|报价|BOQ|澄清',scope,re.I))
         inputs.sort(key=lambda r:sum(t.lower() in (r['title']+' '+r['filename']).lower() for t in terms),reverse=True)
         for r in inputs[:5]:
-            text='\n'.join(p[0] for p in c.execute('SELECT text FROM document_pages WHERE document_id=? ORDER BY page LIMIT 2',(r['id'],)))[:3500]
-            if text:result.append({'id':r['id'],'title':r['title'],'version':r['version'],'sha256':r['sha256'],'purpose':'input','text':text,'usage':'自动读取的相关资料节选，不代表已通读全文'})
+            if stage in {'F2','F3','F4'}:
+                text,page_numbers=solution_excerpt(c,r,stage)
+            else:
+                page_numbers=[]
+                text='\n'.join(p[0] for p in c.execute('SELECT text FROM document_pages WHERE document_id=? ORDER BY page LIMIT 2',(r['id'],)))[:3500]
+            if text:result.append({'id':r['id'],'title':r['title'],'version':r['version'],'sha256':r['sha256'],'purpose':'input','text':text,'page_numbers':page_numbers,'usage':'自动读取的相关资料节选，不代表已通读全文'})
     return result

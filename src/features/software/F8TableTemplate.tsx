@@ -19,7 +19,7 @@ function dateVersion(generatedAt?: string) {
 
 export function F8ReviewSummary({ kind, draft, generatedAt }: { kind: F8TemplateKind; draft?: string; generatedAt?: string }) {
   if (kind === "quote") return <F7ReviewSummary kind="quote" draft={draft} generatedAt={generatedAt}/>;
-  const rows = draft?.split(/\r?\n/).filter(line => /^\|.*\|$/.test(line) && !/^\|[\s:|\-]+\|$/.test(line)) ?? [];
+  const rows = draft?.split(/\r?\n/).filter(line => /^\|.*\|$/.test(line) && !/^\|[\s:|-]+\|$/.test(line)) ?? [];
   const blank = draft ? rows.length ? rows.filter(line => /待补|待确认|未确认|空白/.test(line)).length : null : placeholderRows;
   const stamp = dateVersion(generatedAt);
   return <div className="gsa-f7-review-summary" aria-label="BOQ 映射表审核摘要">

@@ -10,7 +10,7 @@ class ProjectAssistantTests(unittest.TestCase):
         self.role_patch=patch.object(project_assistant,'role_of',return_value='sales');self.role_patch.start()
         self.connection=sqlite3.connect(':memory:',check_same_thread=False)
         self.connection.row_factory=sqlite3.Row
-        self.connection.executescript('CREATE TABLE shared_workbench_state(id INTEGER DEFAULT 1,value TEXT,revision INTEGER DEFAULT 1,updated_at TEXT); CREATE TABLE documents(id,title,version,project_id,created_at); CREATE TABLE document_pages(document_id,page,text); CREATE TABLE workspace_artifacts(title,stage_id,revision,content,project_id,created_at);')
+        self.connection.executescript('CREATE TABLE access_projects(id TEXT,name TEXT,archived INTEGER DEFAULT 0); CREATE TABLE shared_workbench_state(id INTEGER DEFAULT 1,value TEXT,revision INTEGER DEFAULT 1,updated_at TEXT); CREATE TABLE documents(id,title,version,project_id,created_at); CREATE TABLE document_pages(document_id,page,text); CREATE TABLE workspace_artifacts(title,stage_id,revision,content,project_id,created_at);')
         self.connection.execute('INSERT INTO shared_workbench_state(value) VALUES (?)',(json.dumps({'projects':[{'id':'A','name':'Project A'},{'id':'B','name':'Private B'}]}),))
         self.connection.execute("INSERT INTO documents VALUES ('a','A list','V1','A','now')")
         self.connection.execute("INSERT INTO documents VALUES ('b','Private B document','V1','B','now')")
@@ -52,3 +52,11 @@ class ProjectAssistantTests(unittest.TestCase):
         with patch.object(project_assistant,'check_project',side_effect=HTTPException(403,'禁止')):
             result=self.client.post('/api/project-assistant/records',json={'id':'msg2','project_id':'B','title':'变更','owner':'销售'})
             self.assertEqual(result.status_code,403)
+
+    def test_registered_project_works_before_shared_snapshot_is_saved(self):
+        self.connection.execute("INSERT INTO access_projects VALUES ('C','New Project C',0)")
+        with patch.object(project_assistant,'check_project'),patch.object(project_assistant,'filter_shared',side_effect=lambda s,a:s),patch.object(project_assistant,'request_chat',return_value='{"answer":"New Project C","proposal":null}') as model:
+            response=self.client.post('/api/project-assistant',json={'project_id':'C','question':'项目状态'})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertIn('New Project C',model.call_args.args[0][1]['content'])
+        self.assertNotIn('Private B',model.call_args.args[0][1]['content'])

@@ -4,8 +4,8 @@ from datetime import datetime,timezone
 from fastapi import Depends,HTTPException
 from pydantic import BaseModel,Field
 _db=None
-ROLES={'sales':'销售','solution':'解决方案','hardware':'硬件产品','software':'软件产品','commercial':'商务支持','finance':'财务 / 风控','logistics':'货运关务','dev':'研发','legal':'认证 / 法务','admin':'系统管理员'}
-STAGES={'F1':{'sales','commercial'},'F2':{'solution','software'},'F3':{'solution'},'F4':{'hardware'},'F5':{'software','solution'},'F6':{'logistics','legal'},'F7':{'sales','finance'},'F8':{'sales','solution'},'F9':{'commercial','finance'},'F10':{'sales','commercial'},'F11':{'sales','commercial'},'F12':{'legal'},'F13':{'finance'}}
+ROLES={'sales':'销售','marketing':'市场','solution':'解决方案','hardware':'硬件产品','software':'软件产品','commercial':'商务支持','finance':'财务 / 风控','logistics':'货运关务','dev':'研发','legal':'认证 / 法务','admin':'系统管理员'}
+STAGES={'F1':{'sales','marketing','commercial'},'F2':{'solution','software'},'F3':{'solution'},'F4':{'hardware'},'F5':{'software','solution'},'F6':{'logistics','legal'},'F7':{'sales','finance'},'F8':{'sales','solution'},'F9':{'commercial','finance'},'F10':{'sales','commercial'},'F11':{'sales','commercial'},'F12':{'legal'},'F13':{'finance'}}
 def stamp():return datetime.now(timezone.utc).isoformat()
 def password_hash(value):
  salt=secrets.token_hex(16);return salt+':'+hashlib.pbkdf2_hmac('sha256',value.encode(),bytes.fromhex(salt),260000).hex()
@@ -20,24 +20,28 @@ def init(db,password):
   CREATE TABLE IF NOT EXISTS project_members(project_id TEXT NOT NULL,user_id TEXT NOT NULL,PRIMARY KEY(project_id,user_id),FOREIGN KEY(project_id) REFERENCES access_projects(id),FOREIGN KEY(user_id) REFERENCES users(id));
   CREATE TABLE IF NOT EXISTS auth_sessions(token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL,expires REAL NOT NULL);
   CREATE TABLE IF NOT EXISTS access_events(id TEXT PRIMARY KEY,actor TEXT NOT NULL,action TEXT NOT NULL,detail TEXT NOT NULL,created_at TEXT NOT NULL);''')
+  project_columns={row[1] for row in c.execute('PRAGMA table_info(access_projects)')}
+  additions={'scope':"TEXT NOT NULL DEFAULT ''",'owner_role':"TEXT NOT NULL DEFAULT ''",'created_at':"TEXT NOT NULL DEFAULT ''",'archived':'INTEGER NOT NULL DEFAULT 0'}
+  for column,definition in additions.items():
+   if column not in project_columns:c.execute(f'ALTER TABLE access_projects ADD COLUMN {column} {definition}')
   first=c.execute('SELECT count(*) FROM users').fetchone()[0]==0
   if first:
    for role,name in ROLES.items():c.execute('INSERT INTO users VALUES (?,?,?,?,?,1,?)',('pm' if role=='admin' else role,'系统管理员' if role=='admin' else name+'（原演示账号）',password_hash(password),role,int(role=='admin'),stamp()))
    for project,name in [('GSA02','泰国 GSA02'),('RCJM1','Racks Central'),('DEMO-026','数据中心二期')]:
-    c.execute('INSERT OR IGNORE INTO access_projects VALUES (?,?)',(project,name))
+    c.execute('INSERT OR IGNORE INTO access_projects(id,name) VALUES (?,?)',(project,name))
     for role in ROLES:
      if role!='admin':c.execute('INSERT OR IGNORE INTO project_owners VALUES (?,?,?,1)',(project,role,role))
   if first:
-   for row in c.execute('SELECT DISTINCT project_id FROM documents').fetchall():c.execute('INSERT OR IGNORE INTO access_projects VALUES (?,?)',(row[0],row[0]))
+   for row in c.execute('SELECT DISTINCT project_id FROM documents').fetchall():c.execute('INSERT OR IGNORE INTO access_projects(id,name) VALUES (?,?)',(row[0],row[0]))
    if c.execute("SELECT 1 FROM sqlite_master WHERE name='workspace_sessions'").fetchone():
-    for row in c.execute('SELECT DISTINCT project_id FROM workspace_sessions').fetchall():c.execute('INSERT OR IGNORE INTO access_projects VALUES (?,?)',(row[0],row[0]))
+    for row in c.execute('SELECT DISTINCT project_id FROM workspace_sessions').fetchall():c.execute('INSERT OR IGNORE INTO access_projects(id,name) VALUES (?,?)',(row[0],row[0]))
   c.execute("UPDATE users SET role='admin',is_admin=1,display_name=CASE WHEN id='pm' THEN '系统管理员' ELSE display_name END WHERE role='pm'")
   c.execute("DELETE FROM project_owners WHERE role='pm'")
 def profile(user):
  with _db() as c:
   r=c.execute('SELECT id,display_name,role,is_admin,active FROM users WHERE id=?',(str(user),)).fetchone()
   if not r or not r['active']:raise HTTPException(401,'账号已停用，请重新登录')
-  projects=c.execute('SELECT id,name FROM access_projects' if r['is_admin'] else 'SELECT DISTINCT p.id,p.name FROM access_projects p WHERE p.id IN (SELECT project_id FROM project_owners WHERE user_id=? UNION SELECT project_id FROM project_members WHERE user_id=?) ORDER BY p.id',() if r['is_admin'] else (str(user),str(user))).fetchall()
+  projects=c.execute('SELECT id,name FROM access_projects WHERE archived=0' if r['is_admin'] else 'SELECT DISTINCT p.id,p.name FROM access_projects p WHERE p.archived=0 AND p.id IN (SELECT project_id FROM project_owners WHERE user_id=? UNION SELECT project_id FROM project_members WHERE user_id=?) ORDER BY p.id',() if r['is_admin'] else (str(user),str(user))).fetchall()
   link=c.execute('SELECT external_name FROM identity_links WHERE user_id=? LIMIT 1',(str(user),)).fetchone() if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='identity_links'").fetchone() else None
   username=link['external_name'] if link else (r['display_name'] if r['id'].startswith('identity_') else r['id'])
   return {**dict(r),'username':username,'role_name':ROLES[r['role']],'projects':[dict(p) for p in projects]}
@@ -81,14 +85,16 @@ def authorize(user,request):
   if r:project=r[0]
  if path.startswith('/api/documents/'):
   identifier=path.split('/')[3]
-  with _db() as c:r=c.execute('SELECT project_id FROM documents WHERE id=?',(identifier,)).fetchone()
-  if r:project=r[0]
+  with _db() as c:r=c.execute("SELECT d.project_id,d.actor,COALESCE(r.category,'input') category FROM documents d LEFT JOIN document_registry r ON r.document_id=d.id WHERE d.id=?",(identifier,)).fetchone()
+  if r:
+   if r['category']=='temporary' and r['actor']!=str(user):raise HTTPException(403,'无权读取其他账号的私人附件')
+   project=r['project_id']
  if not project:return
  # Existing local intake can create a new empty project, never take over an existing one.
  with _db() as c:exists=c.execute('SELECT 1 FROM access_projects WHERE id=?',(project,)).fetchone()
- if not exists and request.method=='POST' and path.endswith('/documents') and role_of(user) in {'sales','software','admin'}:
+ if not exists and request.method=='POST' and path.endswith('/documents') and role_of(user) in {'sales','marketing','software','admin'}:
   with _db() as c:
-   c.execute('INSERT OR IGNORE INTO access_projects VALUES (?,?)',(project,project));c.execute('INSERT OR IGNORE INTO project_owners VALUES (?,?,?,1)',(project,role_of(user),user))
+   c.execute('INSERT OR IGNORE INTO access_projects(id,name) VALUES (?,?)',(project,project));c.execute('INSERT OR IGNORE INTO project_owners VALUES (?,?,?,1)',(project,role_of(user),user))
  check_project(user,project)
  if request.method!='GET' and not request.path_params.get('stage_id') and not path.endswith('/read'):
   check_owner(user,project,role_of(user))
@@ -119,6 +125,12 @@ class UserProfile(BaseModel):
 class NewProject(BaseModel):
  id:str=Field(pattern=r'^[A-Za-z0-9_-]{1,60}$')
  name:str=Field(min_length=1,max_length=100)
+ scope:str=Field(default='监控与软件集成',max_length=200)
+ owner_role:str=Field(default='',max_length=40)
+class ProjectUpdate(BaseModel):
+ name:str=Field(min_length=1,max_length=100)
+ scope:str=Field(default='监控与软件集成',max_length=200)
+ owner_role:str=Field(default='',max_length=40)
 def effective_project_access(user,project,owners,members):
  owned=[o['role'] for o in owners if o['project_id']==project and o['user_id']==user['id']]
  direct=any(m['project_id']==project and m['user_id']==user['id'] for m in members)
@@ -139,7 +151,7 @@ def install(app,actor):
   admin(user)
   with _db() as c:
    people=[dict(r) for r in c.execute('SELECT id,display_name,role,is_admin,active FROM users ORDER BY created_at')]
-   projects=[dict(r) for r in c.execute('SELECT id,name FROM access_projects ORDER BY name')]
+   projects=[dict(r) for r in c.execute('SELECT id,name FROM access_projects WHERE archived=0 ORDER BY name')]
    owners=[dict(r) for r in c.execute('SELECT * FROM project_owners')]
    members=[dict(r) for r in c.execute('SELECT * FROM project_members')]
    permissions={u['id']:{p['id']:effective_project_access(u,p['id'],owners,members) for p in projects} for u in people}
@@ -213,11 +225,37 @@ def install(app,actor):
   return {'active':payload.active}
  @app.post('/api/access/projects')
  def create_project(payload:NewProject,user:str=Depends(actor)):
+  if not is_admin(user) and role_of(user) not in {'sales','marketing','commercial'}:raise HTTPException(403,'当前岗位不能创建项目')
+  if payload.owner_role and payload.owner_role not in ROLES:raise HTTPException(422,'协调岗位不存在')
+  with _db() as c:
+   if c.execute('SELECT 1 FROM access_projects WHERE id=?',(payload.id,)).fetchone():raise HTTPException(409,'项目编号已存在')
+   if c.execute('SELECT 1 FROM access_projects WHERE lower(trim(name))=lower(trim(?))',(payload.name,)).fetchone():raise HTTPException(409,'项目名称已存在，请使用其他名称')
+   c.execute('INSERT INTO access_projects(id,name,scope,owner_role,created_at,archived) VALUES (?,?,?,?,?,0)',(payload.id,payload.name.strip(),payload.scope.strip(),payload.owner_role or role_of(user),stamp()))
+   if not is_admin(user):c.execute('INSERT INTO project_owners VALUES (?,?,?,1)',(payload.id,role_of(user),str(user)))
+   event(c,user,'project_created',payload.model_dump())
+  return payload.model_dump()
+ @app.get('/api/access/projects/{project_id}')
+ def project_detail(project_id:str,user:str=Depends(actor)):
+  admin(user)
+  with _db() as c:row=c.execute('SELECT * FROM access_projects WHERE id=? AND archived=0',(project_id,)).fetchone()
+  if not row:raise HTTPException(404,'项目不存在')
+  return dict(row)
+ @app.patch('/api/access/projects/{project_id}')
+ def update_project(project_id:str,payload:ProjectUpdate,user:str=Depends(actor)):
+  admin(user)
+  if payload.owner_role and payload.owner_role not in ROLES:raise HTTPException(422,'协调岗位不存在')
+  with _db() as c:
+   if not c.execute('SELECT 1 FROM access_projects WHERE id=? AND archived=0',(project_id,)).fetchone():raise HTTPException(404,'项目不存在')
+   if c.execute('SELECT 1 FROM access_projects WHERE id<>? AND lower(trim(name))=lower(trim(?))',(project_id,payload.name)).fetchone():raise HTTPException(409,'项目名称已存在，请使用其他名称')
+   c.execute('UPDATE access_projects SET name=?,scope=?,owner_role=? WHERE id=?',(payload.name.strip(),payload.scope.strip(),payload.owner_role or role_of(user),project_id));event(c,user,'project_updated',{'id':project_id,**payload.model_dump()})
+  return {'id':project_id,'name':payload.name.strip(),'scope':payload.scope.strip(),'owner_role':payload.owner_role or role_of(user)}
+ @app.delete('/api/access/projects/{project_id}')
+ def delete_project(project_id:str,user:str=Depends(actor)):
   admin(user)
   with _db() as c:
-   if c.execute('SELECT 1 FROM access_projects WHERE id=?',(payload.id,)).fetchone():raise HTTPException(409,'项目已存在')
-   c.execute('INSERT INTO access_projects VALUES (?,?)',(payload.id,payload.name));event(c,user,'project_created',payload.model_dump())
-  return payload.model_dump()
+   if not c.execute('SELECT 1 FROM access_projects WHERE id=? AND archived=0',(project_id,)).fetchone():raise HTTPException(404,'项目不存在')
+   c.execute('UPDATE access_projects SET archived=1 WHERE id=?',(project_id,));event(c,user,'project_deleted',{'id':project_id,'originals_retained':True})
+  return {'id':project_id,'deleted':True,'originals_retained':True}
  @app.get('/api/projects/{project_id}/owners')
  def owners(project_id:str,user:str=Depends(actor)):
   admin(user)
@@ -261,7 +299,7 @@ def merge_shared(old,proposed,user,connection=None):
  if is_admin(user):
   c=connection
   if c is not None:
-   for p in proposed.get('projects',[]):c.execute('INSERT OR IGNORE INTO access_projects VALUES (?,?)',(p['id'],p.get('name',p['id'])))
+   for p in proposed.get('projects',[]):c.execute('INSERT OR IGNORE INTO access_projects(id,name) VALUES (?,?)',(p['id'],p.get('name',p['id'])))
   return proposed
  allowed=allowed_projects(user);old=old or {};merged=dict(old)
  for key,items in proposed.items():

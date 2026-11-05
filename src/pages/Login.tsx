@@ -1,7 +1,9 @@
+import {FloatingNotice} from "@/components/FloatingNotice";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { toast, Toaster } from "sonner";
+import { toast } from "sonner";
 import { ArrowRight, Eye, EyeOff, LoaderCircle } from "lucide-react";
+import { claimLoginRecovery, clearLoginRecovery, identityLoginUrl } from "@/lib/loginRecovery";
 import { BrandMark } from "@/components/BrandMark";
 import { useWorkbench } from "@/state/workbench";
 import { connectLocalApi, connectCasdoorApi, localApiBase, clearLocalApiSession } from "@/lib/localApi";
@@ -15,8 +17,8 @@ export default function Login() {
   const [error,setError]=useState("");
   const [identity,setIdentity]=useState<{enabled:boolean;login_url:string}|null>(null);
   useEffect(()=>{if(error)toast.error(error,{id:"signin-error"});},[error]);
-  function startIdentityLogin(loginUrl:string){
-    window.location.replace(localApiBase+loginUrl+(localStorage.getItem("presales-require-login")?"?fresh=1":""));
+  function startIdentityLogin(loginUrl:string,recover=false){
+    window.location.replace(identityLoginUrl(localApiBase,loginUrl,!!localStorage.getItem("presales-require-login"),recover));
   }
   useEffect(()=>{
     let cancelled=false;
@@ -31,17 +33,25 @@ export default function Login() {
         const config=await response.json();
         if(cancelled)return;
         setIdentity(config);
-        if(failure){clearLocalApiSession();setError(messages[failure]||messages.failed);window.history.replaceState(null,"","/");return;}
-        if(!config.enabled)return;
+        if(failure && failure!=="expired"){clearLocalApiSession();setError(messages[failure]||messages.failed);window.history.replaceState(null,"","/");return;}
+        if(!config.enabled){if(failure)setError(messages[failure]||messages.failed);return;}
         setSubmitting(true);
-        if(finish||!localStorage.getItem("presales-require-login")){
+        if(finish||failure==="expired"||!localStorage.getItem("presales-require-login")){
           try {
             const account=await connectCasdoorApi();
             if(cancelled)return;
+            clearLoginRecovery(sessionStorage);
             dispatch({type:"login",username:account,password:"",serverVerified:true});navigate("/",{replace:true});return;
           } catch(error){if(finish)throw error;}
         }
-        if(!cancelled)startIdentityLogin(config.login_url);
+        if(!cancelled){
+          if(failure==="expired" && !claimLoginRecovery(sessionStorage)){
+            setError("登录未能恢复，请重试或选择其他账号");
+            window.history.replaceState(null,"","/");return;
+          }
+          window.history.replaceState(null,"","/");
+          startIdentityLogin(config.login_url,failure==="expired");
+        }
       } catch(error){if(!cancelled){setError(error instanceof Error?error.message:"登录失败，请重试");window.history.replaceState(null,"","/");}}
       finally {if(!cancelled)setSubmitting(false);}
     }
@@ -49,14 +59,12 @@ export default function Login() {
     return()=>{cancelled=true;};
   },[dispatch,navigate]);
   if(!identity || identity.enabled) return <>
-    <Toaster position="top-center" richColors closeButton duration={5000}/>
     <main className="signin"><div className="signin-logo"><BrandMark size={40}/><span>售前工作台</span></div>
-      {error?<section><h1>登录暂未完成</h1><p>{error}</p><button className="btn primary full" onClick={()=>identity?.enabled?startIdentityLogin(identity.login_url):window.location.reload()}>重新登录<ArrowRight size={17}/></button></section>:<p role="status">正在登录…</p>}
+      {error?<section><h1>登录暂未完成</h1><button className="btn primary full" onClick={()=>{clearLoginRecovery(sessionStorage);if(identity?.enabled)startIdentityLogin(identity.login_url);else window.location.reload();}}>重新登录<ArrowRight size={17}/></button></section>:<p role="status">正在登录…</p>}
     </main>
   </>;
   return (
     <>
-      <Toaster position="top-center" richColors closeButton duration={5000} />
     <main className="signin">
 
       <div className="signin-logo">
@@ -104,7 +112,7 @@ export default function Login() {
           </label>
 
           {state.permissionNotice && (
-            <p role="alert">{state.permissionNotice}</p>
+            <FloatingNotice role="alert">{state.permissionNotice}</FloatingNotice>
           )}
           <button className="btn primary full" type="submit" disabled={submitting}>
             {submitting?<LoaderCircle size={17} className="spin"/>:"进入工作空间"}{!submitting&&<ArrowRight size={17}/>}

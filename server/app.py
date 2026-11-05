@@ -7,13 +7,14 @@ import object_storage
 import access_control
 import identity_provider
 import agent_runtime
+import document_lifecycle
 import csv
 import json
 import os
 import re
 import secrets
 import sqlite3
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -40,7 +41,8 @@ def load_local_env() -> None:
                     "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "DEEPSEEK_BASE_URL",
                     "ZHIPU_API_KEY", "ZHIPU_MODEL", "ZHIPU_BASE_URL",
                     "SILICONFLOW_API_KEY", "SILICONFLOW_MODEL", "SILICONFLOW_BASE_URL",
-                    "PRESALES_MODEL_PROVIDER"}:
+                    "PRESALES_MODEL_PROVIDER", "PRESALES_DATABASE_URL", "GLOBAL_BUSINESS_DATABASE_URL",
+                    "PRESALES_DB_POOL_SIZE", "PRESALES_PG_DUMP"}:
             os.environ.setdefault(name, value.strip().strip('"').strip("'"))
 
 
@@ -53,6 +55,7 @@ FILES_DIR.mkdir(exist_ok=True)
 
 ROLE_BY_ACCOUNT = {
     "sales": "销售",
+    "marketing": "市场",
     "solution": "解决方案",
     "hardware": "硬件产品",
     "software": "软件产品",
@@ -73,7 +76,8 @@ app.add_middleware(
     allow_origins=["http://127.0.0.1:3000", "http://localhost:3000", "http://127.0.0.1:7100", "http://localhost:7100", "http://localhost:7101", "http://127.0.0.1:7101"],
     allow_methods=["GET", "POST", "DELETE", "PUT", "PATCH"],
     allow_credentials=True,
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Model-Task-Id", "X-Conversation-Id"],
+    expose_headers=["X-Model-Task-Id"],
 )
 
 
@@ -81,19 +85,9 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-@contextmanager
 def db():
-    connection = sqlite3.connect(DB_PATH, timeout=10)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys=ON")
-    try:
-        yield connection
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
+    from database import connect
+    return connect(DB_PATH)
 
 
 def init_db() -> None:
@@ -170,12 +164,22 @@ init_db()
 access_control.init(db,DEMO_PASSWORD)
 
 
-def actor(request: Request, authorization: str = Header(default="")) -> str:
-    token = authorization.removeprefix("Bearer ")
-    identity_provider.check_session(token)
-    account = access_control.session(token)
-    access_control.authorize(account,request)
+async def actor(request: Request, authorization: str = Header(default="")) -> str:
+    import anyio
+    def authenticate_request():
+        token = authorization.removeprefix('Bearer ')
+        identity_provider.check_session(token)
+        account = access_control.session(token)
+        access_control.authorize(account,request)
+        return account
+    account = await anyio.to_thread.run_sync(authenticate_request)
+    from execution_control import bind_request
+    await bind_request(request,account)
     return account
+
+
+import execution_control
+execution_control.install(app,db,actor)
 
 
 
@@ -227,6 +231,14 @@ def model_status(account: str = Depends(actor)):
             "model": config.model}
 
 
+@app.get('/api/access/database/metrics')
+def database_metrics(account: str = Depends(actor)):
+    if not access_control.is_admin(account):
+        raise HTTPException(403,'仅管理员可查看数据库运行指标')
+    from database import metrics, postgres_enabled
+    return {'backend':'postgresql' if postgres_enabled() else 'sqlite',**metrics()}
+
+
 @app.post("/api/model/test")
 def model_test(account: str = Depends(actor)):
     try:
@@ -238,6 +250,10 @@ def model_test(account: str = Depends(actor)):
 
 
 def pages(path: Path) -> list[str]:
+    if path.suffix.lower() == '.pptx':
+        from file_formats import read_presentation
+        try:return read_presentation(path)
+        except Exception as error:raise HTTPException(422,'PPTX 无法读取，请检查文件是否完整') from error
     if path.suffix.lower() in {'.docx','.xlsx'}:
         from file_formats import read_office
         try:return read_office(path)
@@ -308,8 +324,14 @@ async def upload_document(
     version: str = Form(...),
     file: UploadFile = File(...),
     account: str = Depends(actor),
+    business_type: str = Form(default=""),
 ):
+    return await store_document(project_id,title,version,file,account,business_type)
+
+
+async def store_document(project_id,title,version,file,account,business_type="",allow_existing=False):
     require_account(account, set(access_control.ROLES))
+    business_type = business_type if isinstance(business_type, str) else ""
     suffix = Path(file.filename or "").suffix.lower()
     if not title.strip() or not version.strip():
         raise HTTPException(status_code=422, detail="支持带标题和版本的 PDF、Word (.docx)、Excel (.xlsx)、Markdown/文本")
@@ -328,21 +350,37 @@ async def upload_document(
         if not size:
             raise HTTPException(status_code=422, detail="空文件")
         with db() as connection:
-            existing=connection.execute("SELECT d.*, (SELECT count(*) FROM document_pages p WHERE p.document_id=d.id) page_count FROM documents d WHERE d.project_id=? AND d.sha256=? ORDER BY d.created_at DESC LIMIT 1",(project_id,digest.hexdigest())).fetchone()
+            existing=connection.execute("SELECT d.*,COALESCE(r.category,'input') existing_category, (SELECT count(*) FROM document_pages p WHERE p.document_id=d.id) page_count FROM documents d LEFT JOIN document_registry r ON r.document_id=d.id WHERE d.project_id=? AND d.sha256=? ORDER BY d.created_at DESC LIMIT 1",(project_id,digest.hexdigest())).fetchone()
             latest_title=connection.execute('SELECT id FROM documents WHERE project_id=? AND title=? ORDER BY created_at DESC LIMIT 1',(project_id,title.strip())).fetchone()
         explicit_version_change = existing and __import__('re').fullmatch(r'[vV]\d+(?:\.\d+)*',version.strip()) and (existing['version'] != version.strip() or latest_title and latest_title['id'] != existing['id'])
-        if existing and title.strip()==existing['title'] and not explicit_version_change:
+        if existing and existing['existing_category']!='disabled' and title.strip()==existing['title'] and not explicit_version_change:
             destination.unlink(missing_ok=True)
             image=Path(existing['filename']).suffix.lower() in {'.png','.jpg','.jpeg','.webp','.gif','.bmp','.tif','.tiff'}
             return {'id':existing['id'],'version':existing['version'],'sha256':existing['sha256'],'page_count':existing['page_count'],'is_image':image,'parse_status':'text' if existing['page_count'] else 'image' if image else 'unparsed','duplicate':True}
+        if not allow_existing:
+            with db() as connection:
+                current=connection.execute("SELECT d.id,d.sha256 FROM documents d LEFT JOIN document_registry r ON r.document_id=d.id WHERE d.project_id=? AND trim(d.title)=? AND COALESCE(r.category,'input') NOT IN ('disabled','temporary') ORDER BY d.created_at DESC LIMIT 1",(project_id,title.strip())).fetchone()
+            if current:
+                if current['sha256'] != digest.hexdigest():
+                    raise HTTPException(409,'同名资料已存在，请在资料详情中点击更新')
+                # A repeated import is not a user-requested version update.
+                with db() as connection:
+                    kept=connection.execute('SELECT d.*, (SELECT count(*) FROM document_pages p WHERE p.document_id=d.id) page_count FROM documents d WHERE d.id=?',(current['id'],)).fetchone()
+                destination.unlink(missing_ok=True)
+                return {'id':kept['id'],'version':kept['version'],'sha256':kept['sha256'],'page_count':kept['page_count'],'duplicate':True}
+        parse_error=""
         try:
-            parsed_pages = pages(destination) if suffix in {'.pdf','.txt','.md','.docx','.xlsx','.xls','.csv','.json','.xml','.yaml','.yml','.log'} else []
-        except HTTPException:
+            parsed_pages = pages(destination) if suffix in {'.pdf','.txt','.md','.docx','.pptx','.xlsx','.xls','.csv','.json','.xml','.yaml','.yml','.log'} else []
+        except HTTPException as error:
             parsed_pages = []
+            parse_error=str(error.detail)
         stored_location = existing['path'] if existing else object_storage.save(destination, object_storage.key_for(project_id, identifier, suffix))
         if existing:destination.unlink(missing_ok=True)
         new_text = " ".join("\n".join(parsed_pages).split())
         with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if not allow_existing and connection.execute("SELECT 1 FROM documents d LEFT JOIN document_registry r ON r.document_id=d.id WHERE d.project_id=? AND trim(d.title)=? AND COALESCE(r.category,'input') NOT IN ('disabled','temporary')",(project_id,title.strip())).fetchone():
+                raise HTTPException(409,'同名资料已存在，请在资料详情中点击更新')
             previous = connection.execute(
                 "SELECT id FROM documents WHERE project_id=? AND title=? ORDER BY created_at DESC LIMIT 1",
                 (project_id, title.strip()),
@@ -379,8 +417,15 @@ async def upload_document(
                             (requirement["id"],),
                         )
                         stale += 1
+            if business_type.strip():
+                connection.execute("INSERT INTO document_registry(document_id,category,reason,registered_by,updated_at,business_type) VALUES (?,?,?,?,?,?) ON CONFLICT(document_id) DO UPDATE SET business_type=excluded.business_type",(identifier,'template' if business_type.strip()=='工件模板' else 'input','用户选择资料类型',account,now(),business_type.strip()))
             log(connection, project_id, account, "document_uploaded", identifier,
                 f"{title.strip()} {version.strip()}; 失效要求 {stale} 条")
+        with db() as connection:
+            readable=any(text.strip() for text in parsed_pages)
+            connection.execute('INSERT OR REPLACE INTO document_parse VALUES (?,?,?)',(identifier,'ready' if readable else 'unparsed',parse_error or ('' if readable else '原件已保存，当前没有可解析正文；图片需要支持图片的模型读取，不得声称已读')))
+        project_retrieval.index_document(db, identifier)
+        document_lifecycle.schedule(identifier)
         if object_storage.enabled(): destination.unlink(missing_ok=True)
         return {"id": identifier, "version": version.strip(),
                 "sha256": digest.hexdigest(), "invalidated": stale, "page_count":len(parsed_pages), "is_image":suffix in {".png",".jpg",".jpeg",".webp",".gif",".bmp",".tif",".tiff"}, "parse_status":"text" if parsed_pages else "image" if suffix in {".png",".jpg",".jpeg",".webp",".gif",".bmp",".tif",".tiff"} else "unparsed"}
@@ -453,7 +498,10 @@ def sync_project_sources():
             if c.execute("SELECT 1 FROM documents WHERE id=?", (identifier,)).fetchone(): continue
         original = FILES_DIR / "GSA02" / entry["snapshot_name"]
         if not original.exists(): continue
-        parsed = [] if original.suffix.lower() in {".png", ".jpg"} else pages(original)
+        try:
+            parsed=pages(original) if original.suffix.lower() in {'.pdf','.txt','.md','.docx','.pptx','.xlsx','.xls','.csv','.json','.xml','.yaml','.yml','.log'} else []
+        except HTTPException:
+            parsed=[]
         with db() as c:
             c.execute("INSERT OR IGNORE INTO documents VALUES (?,?,?,?,?,?,?,?,?)", (identifier,"GSA02",entry["title"],"SHA-"+entry["sha256"][:8],entry["title"],str(original),entry["sha256"],"system",now()))
             c.executemany("INSERT OR IGNORE INTO document_pages VALUES (?,?,?)", [(identifier,i+1,text) for i,text in enumerate(parsed)])
@@ -471,7 +519,8 @@ def sync_project_sources():
             with db() as c:
                 if c.execute("SELECT 1 FROM documents WHERE id=?",(identifier,)).fetchone():continue
                 # Reuse registered snapshot; don't duplicate the original file.
-                content=pages(path)
+                try:content=pages(path)
+                except HTTPException:content=[]
                 c.execute("INSERT INTO documents VALUES (?,?,?,?,?,?,?,?,?)",(identifier,"GSA02",label,"清单 V"+str(flow['equipment_revision']),path.name,str(path),digest,"solution",now()))
                 c.executemany("INSERT INTO document_pages VALUES (?,?,?)",[(identifier,i+1,text) for i,text in enumerate(content)])
 
@@ -490,8 +539,9 @@ def list_documents(project_id: str, account: str = Depends(actor)):
     with db() as connection:
         return [dict(row) for row in connection.execute(
             "SELECT d.id, d.title, d.version, d.filename, d.sha256, d.actor, d.created_at, COALESCE(r.category, 'input') AS category, CASE WHEN d.id LIKE 'gsa-f7-reference-%' THEN 'F7' ELSE NULL END AS stage_id, "
-            "(SELECT COUNT(*) FROM document_pages p WHERE p.document_id=d.id) AS page_count "
-            "FROM documents d LEFT JOIN document_registry r ON r.document_id=d.id WHERE d.project_id=? AND COALESCE(r.category, 'input')!='temporary' ORDER BY d.created_at DESC", (project_id,),
+            "(SELECT COUNT(*) FROM document_pages p WHERE p.document_id=d.id) AS page_count, "
+            "COALESCE(a.status,'missing') AS analysis_status,COALESCE(a.summary,'') AS analysis_summary,COALESCE(a.error,'') AS analysis_error,COALESCE(r.business_type,'') AS business_type,o.stage_id origin_stage "
+            "FROM documents d LEFT JOIN document_origins o ON o.document_id=d.id LEFT JOIN document_registry r ON r.document_id=d.id LEFT JOIN document_analysis a ON a.document_id=d.id WHERE d.project_id=? AND COALESCE(r.category, 'input')!='temporary' ORDER BY d.created_at DESC", (project_id,),
         )]
 
 
@@ -1162,3 +1212,16 @@ user_guides.install(app, db, actor, now)
 
 import document_registry
 document_registry.install(app, db, actor, now)
+document_lifecycle.install(app, db, actor, now)
+
+import project_retrieval
+project_retrieval.install(app, db, actor)
+
+import document_import
+document_import.install(app, db, actor)
+
+import skill_learning
+skill_learning.install(app, db, actor)
+
+import global_business
+global_business.install(app, actor)

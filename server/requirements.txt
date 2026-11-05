@@ -19,3 +19,9 @@ langchain==1.4.6
 langchain-openai==1.7.2
 
 Pillow>=10,<13
+
+openai==3.31.0
+
+psycopg[binary,pool]>=3.2,<4
+langgraph-checkpoint-postgres>=3,<4
+sqlparse>=0.5,<1

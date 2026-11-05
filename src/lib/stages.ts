@@ -15,7 +15,7 @@ export const stages: StageDefinition[] = [
   {
     id: 'F1',
     title: '项目建立与资料归集',
-    owner: '销售 / 商务支持',
+    owner: '市场 / 销售 / 商务支持',
     goal: '归集项目资料，维护提供人与有效版本。',
     input:
       '合成项目档案：DEMO-026；软件监控范围；技术规格书 V6、演示点表 V1、BOQ V1。',

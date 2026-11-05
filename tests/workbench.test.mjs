@@ -479,7 +479,7 @@ test("本机原始点表：四分表合计与单元格计算一致，未解释�
 const { accounts, demoPassword, stageReviewers, stageRowOwner } = await import(
   moduleUrl("src/lib/accounts.ts", { "@/lib/workspace": workspaceUrl })
 );
-test("十个账号：登录身份固定，非负责岗位不能修改或批准同一工件", () => {
+test("各岗位账号：登录身份固定，非负责岗位不能修改或批准同一工件", () => {
   for (const account of accounts) {
     let s = authenticatedReducer(initialState(defaultSettings), {
       type: "login",
@@ -509,7 +509,7 @@ test("十个账号：登录身份固定，非负责岗位不能修改或批准�
           actor: "x",
           note: "x",
         }),
-        account.role === "系统管理员" || stageRowOwner(stage, 0) === account.role,
+        account.role === "系统管理员" || stageRowOwner(stage, 0) === account.role || account.role === "市场" && stage === "F1",
       );
     s = authenticatedReducer(s, { type: "role", role: "系统管理员" });
     assert.equal(s.role, account.role);
@@ -1571,4 +1571,137 @@ test('delivery progress separates archive stage from accepted deliverables',asyn
  stages.F1.change=true;
  assert.equal(deliveryProgress({stageStates:stages}).changed,1);
  assert.equal(deliveryProgress({stageStates:stages}).done,5);
+});
+
+test("explicit Skill updates are distinguished from questions and negations",async()=>{
+ const {isSkillUpdateRequest}=await import(moduleUrl("src/lib/skillLearning.ts"));
+ for(const text of ["把刚才的做法更新到skill里","请把这份输出沉淀到 Skill","修改成本表的技能","能不能帮我把刚才的方法更新到skill里？"])assert.equal(isSkillUpdateRequest(text),true,text);
+ for(const text of ["如何更新Skill？","不要修改Skill","帮我计算成本","Skill可以更新吗"])assert.equal(isSkillUpdateRequest(text),false,text);
+});
+
+test("interaction requests can change a popup without being confused with a negation",async()=>{
+ const {isSkillUpdateRequest}=await import(moduleUrl("src/lib/skillLearning.ts"));
+ for(const text of ["修改F7流程，不要参数弹窗，改成聊天确认","把参数确认方式改为聊天卡片","请调整交互流程，缺回价时等待上传"])assert.equal(isSkillUpdateRequest(text),true,text);
+ for(const text of ["不要更新流程","怎么才能修改流程","不要修改Skill"])assert.equal(isSkillUpdateRequest(text),false,text);
+});
+
+
+test("expired login restarts once, stops repeated callbacks, and resets after success", async () => {
+  const {claimLoginRecovery, clearLoginRecovery} = await import(moduleUrl("src/lib/loginRecovery.ts"));
+  const values = new Map();
+  const storage = {getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};
+  assert.equal(claimLoginRecovery(storage, 1000), true);
+  assert.equal(claimLoginRecovery(storage, 2000), false);
+  assert.equal(claimLoginRecovery(storage, 121000), true);
+  clearLoginRecovery(storage);
+  assert.equal(claimLoginRecovery(storage, 122000), true);
+});
+
+
+test("marketing can create projects and handle F1 without sales downstream privileges", async () => {
+ const {canCreateProject,stagePermission,canEditStageRow}=await import(accountsUrl);
+ assert.equal(canCreateProject("市场"),true);
+ assert.equal(stagePermission("市场","F1"),true);
+ assert.equal(canEditStageRow("市场","F1",0),true);
+ for(const stage of ["F7","F8","F10","F11"])assert.equal(stagePermission("市场",stage),false);
+});
+
+test("expired identity recovery is silent while explicit sign-in stays fresh", async () => {
+ const {identityLoginUrl,requiresIdentityCompletion}=await import(moduleUrl("src/lib/loginRecovery.ts"));
+ assert.equal(identityLoginUrl("","/api/auth/casdoor/login",false,true),"/api/auth/casdoor/login?recover=1");
+ assert.equal(identityLoginUrl("","/api/auth/casdoor/login",true,true),"/api/auth/casdoor/login?fresh=1");
+ assert.equal(identityLoginUrl("","/api/auth/casdoor/login",false),"/api/auth/casdoor/login");
+ assert.equal(requiresIdentityCompletion("?casdoor=1"),true);
+ assert.equal(requiresIdentityCompletion("?login_error=expired"),true);
+ assert.equal(requiresIdentityCompletion("?view=materials"),false);
+});
+
+
+test("new and customer projects never inherit another project's demo facts", async () => {
+ const {stagesForProject}=await import(moduleUrl("src/lib/projectStages.ts",{"./stages":stagesUrl,"./portfolio":portfolioUrl}));
+ for(const id of ["RTEST-PRIVATE-00","GSA02","DEMO-NEW-PROJECT","PORT-MY-01"]){
+  const content=JSON.stringify(stagesForProject(id));
+  assert.equal(content.includes("DEMO-026"),false);
+  assert.equal(content.includes("595,644"),false);
+  assert.equal(stagesForProject(id)[0].input,"本项目已登记资料与有效版本");
+ }
+ assert.ok(JSON.stringify(stagesForProject("DEMO-026")).includes("DEMO-026"));
+});
+
+test('identity scoping removes other project collections and keeps newly registered projects', async()=>{
+ const {scopeToProjects}=await import(sharedUrl);
+ const state=initialState(defaultSettings);
+ state.projects=[{id:'A',name:'Allowed',owner:'市场',updated:''},{id:'B',name:'Other',owner:'销售',updated:''}];
+ for(const key of ['activity','resources','followups','deliveries','knowledge'])state[key]=[{id:'a',projectId:'A'},{id:'b',projectId:'B'},{id:'global'}];
+ const scoped=scopeToProjects(state,[{id:'A',name:'Allowed'},{id:'C',name:'New'}]);
+ assert.deepEqual(scoped.projects.map(p=>p.id),['A','C']);
+ for(const key of ['activity','resources','followups','deliveries','knowledge'])assert.deepEqual(scoped[key].map(r=>r.id),['a','global']);
+ assert.equal(state.projects.length,2);
+ assert.deepEqual(scopeToProjects(state,[]).projects,[]);
+});
+
+
+test("stopping waits through running and cancelling until actual completion",async()=>{
+ const {waitForTaskEnd}=await import(moduleUrl("src/lib/taskStatus.ts"));
+ const statuses=["running","cancelling","cancelling","cancelled"];let calls=0;
+ const result=await waitForTaskEnd(async()=>({status:statuses[calls++]}),new AbortController().signal,1);
+ assert.equal(result,"cancelled");assert.equal(calls,4);
+});
+test("failed status reads do not pretend cancellation has finished",async()=>{
+ const {waitForTaskEnd}=await import(moduleUrl("src/lib/taskStatus.ts"));let calls=0;
+ await assert.rejects(()=>waitForTaskEnd(async()=>{calls++;throw new Error("offline");},new AbortController().signal,1),/offline/);
+ assert.equal(calls,3);
+});
+test("status polling ends when its page is closed",async()=>{
+ const {waitForTaskEnd}=await import(moduleUrl("src/lib/taskStatus.ts"));const c=new AbortController();c.abort();
+ await assert.rejects(()=>waitForTaskEnd(async()=>({status:"running"}),c.signal,1),{name:"AbortError"});
+});
+
+
+test("expected workflow guidance is separate from technical failures",async()=>{
+ const {ConversationPrompt,responseIssue}=await import(moduleUrl("src/lib/conversationFeedback.ts"));
+ const guide=responseIssue({detail:{kind:"prompt",message:"请先完成流程"}});
+ assert.ok(guide instanceof ConversationPrompt);assert.equal(guide.message,"请先完成流程");
+ const failure=responseIssue({detail:"模型连接超时"});assert.equal(failure instanceof ConversationPrompt,false);assert.equal(failure.message,"模型连接超时");
+});
+
+
+test("stop sends its reason before closing the response connection",async()=>{
+ const {cancelBeforeDisconnect}=await import(moduleUrl("src/lib/taskStatus.ts"));
+ const order=[];let finish;
+ const done=cancelBeforeDisconnect(()=>new Promise(resolve=>{order.push("send");finish=resolve;}),()=>order.push("disconnect"));
+ assert.deepEqual(order,["send"]);finish();await done;assert.deepEqual(order,["send","disconnect"]);
+});
+test("an unavailable cancel endpoint still closes the response connection",async()=>{
+ const {cancelBeforeDisconnect}=await import(moduleUrl("src/lib/taskStatus.ts"));let disconnected=false;
+ await assert.rejects(()=>cancelBeforeDisconnect(async()=>{throw new Error("offline");},()=>{disconnected=true;}),/offline/);
+ assert.equal(disconnected,true);
+});
+
+test('workspace refresh shares only in-flight reads within the same account and workspace', async () => {
+  const {shareWorkspaceRefresh}=await import(moduleUrl('src/lib/workspaceRefresh.ts'));
+  let calls=0,finish;
+  const read=()=>{calls++;return new Promise(resolve=>{finish=resolve;});};
+  const a=shareWorkspaceRefresh('alice:P:F1',read),b=shareWorkspaceRefresh('alice:P:F1',read);
+  await Promise.resolve();assert.equal(calls,1);finish(34);assert.deepEqual(await Promise.all([a,b]),[34,34]);
+  assert.equal(await shareWorkspaceRefresh('alice:P:F1',async()=>{calls++;return 35;}),35);
+  await Promise.all([shareWorkspaceRefresh('alice:P:F1',async()=>{calls++;}),shareWorkspaceRefresh('bob:P:F1',async()=>{calls++;})]);
+  assert.equal(calls,4);
+});
+test('workspace metadata polling slows while generating and task monitoring stays independent', async () => {
+  const {workspaceRefreshPeriod}=await import(moduleUrl('src/lib/workspaceRefresh.ts'));
+  assert.equal(60000/workspaceRefreshPeriod(false),15);
+  assert.equal(60000/workspaceRefreshPeriod(true),5);
+});
+
+
+test('project creation replay and shared hydration keep one row per project id', () => {
+ const state={...initialState(defaultSettings),role:'系统管理员',accountId:'pm',running:false};
+ const action={type:'projectCreate',createdId:'NOV05-UNIQUE',name:'独立复测',owner:'系统管理员'};
+ const once=authenticatedReducer(state,action);
+ const twice=authenticatedReducer(once,action);
+ assert.equal(twice.projects.filter(p=>p.id===action.createdId).length,1);
+ const duplicated={...twice,projects:[...twice.projects,twice.projects.find(p=>p.id===action.createdId)]};
+ const hydrated=authenticatedReducer(state,{type:'hydrateShared',state:duplicated});
+ assert.equal(hydrated.projects.filter(p=>p.id===action.createdId).length,1);
 });

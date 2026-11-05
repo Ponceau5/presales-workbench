@@ -61,7 +61,7 @@ def install(app,db,data_dir,actor):
  async def start(request:Request):
   if not enabled():raise HTTPException(404,'未配置统一登录')
   fresh=request.query_params.get('fresh')=='1' or request.cookies.get('presales_reauth')=='1'
-  options={'prompt':'login','max_age':0} if fresh else {}
+  options={'prompt':'login','max_age':0} if fresh else {'prompt':'none'} if request.query_params.get('recover')=='1' else {}
   try:return await _oauth.casdoor.authorize_redirect(request,_config['callback_url'],**options)
   except Exception:return login_failure(request,'unavailable')
  @app.get('/api/auth/casdoor/callback')
@@ -91,7 +91,19 @@ def install(app,db,data_dir,actor):
     with db() as c:
      c.execute('DELETE FROM identity_sessions WHERE token_hash=?',(digest,))
      c.execute('DELETE FROM auth_sessions WHERE token_hash=?',(digest,))
-   code='unavailable' if isinstance(error,HTTPException) and error.status_code==503 else 'unassigned' if isinstance(error,HTTPException) and error.status_code==403 else 'expired' if type(error).__name__ in {'MismatchingStateError','InvalidClaimError','ExpiredTokenError'} else 'failed'
+   expired=type(error).__name__ in {'MismatchingStateError','InvalidClaimError','ExpiredTokenError'}
+   if expired:
+    # An old callback must not log out a separately established, valid session.
+    existing=request.cookies.get('presales_source_session','')
+    if existing:
+     try:
+      check_session(existing);access_control.session(existing)
+     except HTTPException:pass
+     else:
+      response=RedirectResponse(_config['frontend_url'].rstrip('/')+'/?casdoor=1',303)
+      response.headers['Cache-Control']='no-store'
+      return response
+   code='unavailable' if isinstance(error,HTTPException) and error.status_code==503 else 'unassigned' if isinstance(error,HTTPException) and error.status_code==403 else 'expired' if expired else 'failed'
    return login_failure(request,code)
   response=RedirectResponse(_config['frontend_url'].rstrip('/')+'/?casdoor=1',303)
   response.set_cookie('presales_source_session',value,httponly=True,samesite='lax',secure=_config['frontend_url'].startswith('https://'),max_age=28800,path='/');response.delete_cookie('presales_reauth',path='/');response.headers['Cache-Control']='no-store';return response

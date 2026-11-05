@@ -1,5 +1,7 @@
+import GlobalBusiness from "./pages/GlobalBusiness";
+import { requiresIdentityCompletion } from "@/lib/loginRecovery";
+import {FloatingNotice} from "@/components/FloatingNotice";
 import { QuickGuide } from "@/components/QuickGuide";
-import AccessManagement from "@/pages/AccessManagement";
 import { BrandMark } from "@/components/BrandMark";
 import {
   loadShared,
@@ -7,21 +9,18 @@ import {
   saveShared,
   sharedKey,
   sharedWorkspace,
+  scopeToProjects,
 } from "@/lib/sharedWorkspace";
-import type { Action } from "@/state/workbench";
-import { PersonalTasks } from "@/components/PersonalTasks";
+import type { Action, State } from "@/state/workbench";
 import Login from "@/pages/Login";
 import Signup from "@/pages/Signup";
-import Activity from "@/pages/Activity";
 import { accounts, registerAccount } from "@/lib/accounts";
 import { localApi, localApiReady, logoutLocalApi, currentPerson } from "@/lib/localApi";
-import KnowledgeLibrary from "@/pages/KnowledgeLibrary";
-import Resources from "@/pages/Resources";
 import { ProjectAssistant } from "@/components/ProjectAssistant";
 import "./workspace.css";
 import "./workbench-refinement.css";
 import "./page-layout.css";
-import { useEffect, useCallback, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useCallback, useRef, useState } from "react";
 import {
   NavLink,
   Route,
@@ -45,17 +44,25 @@ import {
 } from "lucide-react";
 import { pipelineSteps, loadSettings } from "@/lib/presales";
 import { roles } from "@/lib/workspace";
-import Home from "@/pages/Home";
-import Portal from "@/pages/Portal";
-import Projects from "@/pages/Projects";
-import ChangeImpact from "@/pages/ChangeImpact";
-import RoleConfig from "@/pages/RoleConfig";
 import {
   WorkbenchContext,
   initialState,
   reducer,
   useWorkbench,
 } from "@/state/workbench";
+const AccessManagement = lazy(() => import("@/pages/AccessManagement"));
+const Activity = lazy(() => import("@/pages/Activity"));
+const KnowledgeLibrary = lazy(() => import("@/pages/KnowledgeLibrary"));
+const Resources = lazy(() => import("@/pages/Resources"));
+const Home = lazy(() => import("@/pages/Home"));
+const Portal = lazy(() => import("@/pages/Portal"));
+const Projects = lazy(() => import("@/pages/Projects"));
+const ChangeImpact = lazy(() => import("@/pages/ChangeImpact"));
+const RoleConfig = lazy(() => import("@/pages/RoleConfig"));
+const PersonalTasks = lazy(() => import("@/components/PersonalTasks").then(module => ({ default: module.PersonalTasks })));
+function mergeAuthorized(state: State, shared: ReturnType<typeof sharedWorkspace>|null|undefined) {
+  return scopeToProjects(mergeShared(state,shared),currentPerson()?.projects);
+}
 function StageRedirect() {
   const { id } = useParams();
   const { state } = useWorkbench();
@@ -97,19 +104,20 @@ export default function App() {
     } catch {
       /* Use the local baseline. */
     }
-    const merged = mergeShared(s, loadShared());
+    const merged = mergeAuthorized(s, loadShared());
     if (!merged.projects.some(p => p.id === "GSA02")) merged.projects.push({ id: "GSA02", name: "泰国 GSA02", owner: "软件产品", updated: "2026-10-10" });
     const person=currentPerson();
     if(person){const permitted=new Set(person.projects.map(p=>p.id));merged.projects=merged.projects.filter(p=>permitted.has(p.id));if(!permitted.has(merged.currentProjectId))merged.currentProjectId=merged.projects[0]?.id||"";}
-    if(new URLSearchParams(window.location.search).has("login_error")) merged.accountId=null;
+    if(requiresIdentityCompletion(window.location.search)) merged.accountId=null;
     return merged;
   });
   const stateRef = useRef(state);
   const sharedQueue=useRef(Promise.resolve());
   const [persistenceError,setPersistenceError]=useState("");
-  const [sharedReady,setSharedReady]=useState(false);
+  const [sharedAccount,setSharedAccount]=useState<string|null>(null);
+  const sharedReady=sharedAccount===state.accountId;
   useEffect(()=>{
-   if(!state.accountId||!localApiReady(state.accountId)){setSharedReady(false);return;}
+   if(!state.accountId||!localApiReady(state.accountId))return;
    let cancelled=false;
    void localApi<{revision:number;value:ReturnType<typeof sharedWorkspace>|null}>("/api/workbench/state").then(async remote=>{
     if(cancelled)return;
@@ -117,15 +125,16 @@ export default function App() {
     if(remote.value&&remote.revision===1&&(legacy.activity?.length||0)>(remote.value.activity?.length||0)){
      await localApi("/api/workbench/state",{method:"POST",body:JSON.stringify({expected_revision:remote.revision,value:legacy})});remote.value=legacy;
     }
-    if(remote.value){saveShared(mergeShared(stateRef.current,remote.value));const next=mergeShared(stateRef.current,remote.value);stateRef.current=next;setState(next);}
+    if(remote.value){saveShared(mergeAuthorized(stateRef.current,remote.value));const next=mergeAuthorized(stateRef.current,remote.value);stateRef.current=next;setState(next);}
     else await localApi("/api/workbench/state",{method:"POST",body:JSON.stringify({expected_revision:0,value:sharedWorkspace(stateRef.current)})});
-    if(!cancelled){setSharedReady(true);setPersistenceError("");}
+    if(!cancelled){setSharedAccount(state.accountId);setPersistenceError("");}
    }).catch(e=>{if(!cancelled)setPersistenceError("工作台状态同步失败："+e.message);});
    return()=>{cancelled=true;};
   },[state.accountId]);
   const dispatch = useCallback((action: Action) => {
+    if(action.type==="login"||action.type==="logout")setSharedAccount(null);
     if (action.type === "logout" && !stateRef.current.running) void logoutLocalApi();
-    const current = mergeShared(stateRef.current, loadShared());
+    const current = mergeAuthorized(stateRef.current, loadShared());
     const person=currentPerson();if(person){const permitted=new Set(person.projects.map(p=>p.id));current.projects=current.projects.filter(p=>permitted.has(p.id));}
     const next = reducer(current, action);
     if(action.type==="login"){
@@ -151,12 +160,12 @@ export default function App() {
          sharedQueue.current=sharedQueue.current.then(async()=>{
           for(let attempt=0;attempt<3;attempt++){
            const remote=await localApi<{revision:number;value:ReturnType<typeof sharedWorkspace>|null}>("/api/workbench/state");
-           const merged=mergeShared(current,remote.value);
+           const merged=mergeAuthorized(current,remote.value);
            const applied=reducer(merged,action);
            try{
             await localApi("/api/workbench/state",{method:"POST",body:JSON.stringify({expected_revision:remote.revision,value:sharedWorkspace(applied)})});
             // Merge business state only; account and current navigation stay local.
-            const synchronized=mergeShared(stateRef.current,sharedWorkspace(applied));saveShared(synchronized);stateRef.current=synchronized;setState(synchronized);setPersistenceError("");return;
+            const synchronized=mergeAuthorized(stateRef.current,sharedWorkspace(applied));saveShared(synchronized);stateRef.current=synchronized;setState(synchronized);setPersistenceError("");return;
            }catch(e){if(!(e instanceof Error)||!e.message.includes("已更新")||attempt===2)throw e;}
           }
          }).catch(e=>setPersistenceError("状态未保存到服务端，请保留当前页面并重试："+e.message));
@@ -171,7 +180,7 @@ export default function App() {
     if (!loadShared()) saveShared(stateRef.current);
     const update = (event: StorageEvent) => {
       if (event.key !== sharedKey) return;
-      const next = mergeShared(stateRef.current, loadShared());
+      const next = mergeAuthorized(stateRef.current, loadShared());
       stateRef.current = next;
       setState(next);
     };
@@ -229,6 +238,7 @@ export default function App() {
     { to: "/tasks", label: "我的任务", icon: UsersRound },
     { to: "/projects", label: "项目", icon: FolderOpen },
     { to: "/library", label: "公共资料", icon: Files },
+    { to: "/global-business", label: "全球业务看板", icon: LayoutDashboard },
     { to: "/access", label: "权限管理", icon: UsersRound },
   ];
   const inProject = ![
@@ -238,6 +248,7 @@ export default function App() {
     "/settings",
     "/role-config",
     "/library",
+    "/global-business",
     "/methods",
     "/activity",
     "/tasks",
@@ -479,9 +490,9 @@ export default function App() {
                 }
               >
                 {state.theme === "light" ? (
-                  <Moon size={17} />
+                  <><Moon size={17}/><span>深色</span></>
                 ) : (
-                  <Sun size={17} />
+                  <><Sun size={17}/><span>浅色</span></>
                 )}
               </button>
             </div>
@@ -499,23 +510,25 @@ export default function App() {
                 </NavLink>
               ))}
           </div>
-          <main className={inProject ? "page-content project-content" : ["/tasks","/projects","/library","/access"].includes(location.pathname) ? "page-content register-content" : "page-content"} data-page={location.pathname}>
+          <main className={inProject ? "page-content project-content" : ["/tasks","/projects","/library","/access","/global-business"].includes(location.pathname) ? "page-content register-content" : "page-content"} data-page={location.pathname}>
             {state.permissionNotice && (
-              <div className="permission-notice" role="alert">
+              <FloatingNotice className="permission-notice" role="alert">
                 {state.permissionNotice}
                 <button onClick={() => dispatch({ type: "dismissPermission" })}>
                   关闭
                 </button>
-              </div>
+              </FloatingNotice>
             )}
-            {persistenceError&&<div role="alert" className="gsa-chat-error">{persistenceError}</div>}
+            {persistenceError&&<FloatingNotice role="alert" className="gsa-chat-error">{persistenceError}</FloatingNotice>}
         {!sharedReady&&state.accountId&&localApiReady(state.accountId)&&<div role="status" className="muted">正在同步工作台…</div>}
+        <Suspense fallback={<div role="status" className="muted">正在打开页面…</div>}>
         <Routes>
               <Route path="/activity" element={<Activity />} />
               <Route path="/tasks" element={<PersonalTasks />} />
 
               <Route path="/" element={<Portal key={location.search} />} />
               <Route path="/library" element={<Resources />} />
+              <Route path="/global-business" element={<GlobalBusiness />} />
               <Route
                 path="/methods"
                 element={<KnowledgeLibrary key={location.search} />}
@@ -542,6 +555,7 @@ export default function App() {
               <Route path="/settings" element={<Navigate to="/" replace />} />
               <Route path="*" element={<Portal key={location.search} />} />
             </Routes>
+        </Suspense>
           </main>
         </div>
       </div>

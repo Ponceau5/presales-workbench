@@ -1,3 +1,4 @@
+import {FloatingNotice} from '@/components/FloatingNotice';
 import { useCallback, useEffect, useState } from "react";
 import { useWorkbench } from "@/state/workbench";
 import { localApi, localApiReady } from "@/lib/localApi";
@@ -179,7 +180,8 @@ export function LocalSourceReview({ projectId }: { projectId: string }) {
           <span>已写回 {progress.counts.published}</span>
           {progress.stale_count > 0 && <span>版本失效 {progress.stale_count}</span>}
         </div>
-        {progress.last_run && <small>最近执行：{progress.last_run.model} · 第 {progress.last_run.pages} 页 · {progress.last_run.status === "completed" ? `原文匹配 ${progress.last_run.candidate_count} 条，跳过 ${progress.last_run.skipped_count} 条` : progress.last_run.error || "处理中"}</small>}
+        {progress.last_run && <small>最近执行：{progress.last_run.model} · 第 {progress.last_run.pages} 页 · {progress.last_run.status === "completed" ? `原文匹配 ${progress.last_run.candidate_count} 条，跳过 ${progress.last_run.skipped_count} 条` : progress.last_run.error ? "失败" : "处理中"}</small>}
+        {progress.last_run?.error&&<FloatingNotice>{progress.last_run.error}</FloatingNotice>}
       </div>}
       {account === "software" && <nav className="software-workspace-tabs" aria-label="软件工作方式">
         <button type="button" className={mode === "ask" ? "active" : ""} onClick={() => setMode("ask")}>询问 Agent</button>

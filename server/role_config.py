@@ -178,7 +178,6 @@ def install(app,db,actor,now,files_dir):
         with db() as c:
             cfg=config(c,payload.config_id);task=next((t for t in cfg["tasks"] if t["id"]==payload.task_id),None)
             if not task:raise HTTPException(422,"任务不在该配置版本中")
-            if c.execute("SELECT 1 FROM config_validation_runs WHERE actor=? AND status='running'",(account,)).fetchone():raise HTTPException(409,"请等待当前试运行结束")
             sources=load_samples(c,payload.sample_ids,payload.project_id,payload.task_id)
             for page in payload.selected_pages:
                 row=c.execute("SELECT d.id,d.title,d.version,d.sha256,p.page,p.text FROM documents d JOIN document_pages p ON p.document_id=d.id WHERE d.project_id=? AND d.id=? AND p.page=?",(payload.project_id,page.get("document_id"),page.get("page"))).fetchone()
@@ -224,10 +223,13 @@ def install(app,db,actor,now,files_dir):
                 record("complete",label="生成完成，等待人工验证")
                 with db() as c:c.execute("UPDATE config_validation_runs SET status='completed',output=?,finished_at=? WHERE id=?",(output,now(),identifier))
             except Exception as e:
+                from execution_control import current
+                if current():current().fail(e)
                 message=str(e) if isinstance(e,(ModelError,ValueError)) else "试运行失败，请检查本机服务日志"
                 record("error",message=message)
                 with db() as c:c.execute("UPDATE config_validation_runs SET status='failed',note=?,output=?,finished_at=? WHERE id=?",(message,output,now(),identifier))
-        POOL.submit(execute)
+        from execution_control import background
+        POOL.submit(background(execute,project=payload.project_id,actor=account))
         return {"id":identifier}
 
     @router.get("/trials/{identifier}/cost-sheet")

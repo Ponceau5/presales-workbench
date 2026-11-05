@@ -1,3 +1,4 @@
+import {FloatingNotice} from '@/components/FloatingNotice';
 import { useProjectSource } from "@/lib/sourceData";
 import { useState } from "react";
 import { ExternalLink, Search, ChevronDown } from "lucide-react";
@@ -34,9 +35,7 @@ export function PointReader() {
   const [expanded, setExpanded] = useState<number | null>(null);
   if (!data)
     return (
-      <p className="source-loading" role="status">
-        {error || "正在读取点表…"}
-      </p>
+      error ? <FloatingNotice>{error}</FloatingNotice> : <p className="source-loading" role="status">正在读取点表…</p>
     );
   const active = data.sheets.find((s) => s.name === sheet);
   const rows =
@@ -243,7 +242,7 @@ export function DocumentReader({
   const [query, setQuery] = useState("");
   const [original, setOriginal] = useState(false);
   const [focused, setFocused] = useState(!!initialParagraph || !!focusTerm);
-  if (!data) return <p role="status">{error || "正在读取资料…"}</p>;
+  if (!data) return error ? <FloatingNotice>{error}</FloatingNotice> : <p role="status">正在读取资料…</p>;
   const pages = data.pages || [
     {
       page: 1,

@@ -1,0 +1,289 @@
+[
+  {
+    "query": "请找楼宇自控点位表",
+    "document": "bms-current",
+    "version": "V1",
+    "page": 2,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "BMS IO清单",
+    "document": "bms-current",
+    "version": "V1",
+    "page": 2,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "查电力监控资料",
+    "document": "epms-current",
+    "version": "V0",
+    "page": 1,
+    "forbidden": [
+      "private-bms"
+    ]
+  },
+  {
+    "query": "BOQ",
+    "document": "boq-current",
+    "version": "V0",
+    "page": 3,
+    "forbidden": [
+      "private-bms"
+    ]
+  },
+  {
+    "query": "请查找控制序列",
+    "document": "soo-current",
+    "version": "V0",
+    "page": 4,
+    "forbidden": [
+      "private-bms"
+    ]
+  },
+  {
+    "query": "BMS",
+    "document": "bms-current",
+    "version": "V1",
+    "page": 2,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "bms",
+    "document": "bms-current",
+    "version": "V1",
+    "page": 2,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "楼控",
+    "document": "bms-current",
+    "version": "V1",
+    "page": 2,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "楼宇自控",
+    "document": "bms-current",
+    "version": "V1",
+    "page": 2,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "楼宇控制",
+    "document": "bms-current",
+    "version": "V1",
+    "page": 2,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "点表",
+    "document": "bms-current",
+    "version": "V1",
+    "page": 2,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "点位表",
+    "document": "bms-current",
+    "version": "V1",
+    "page": 2,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "IO清单",
+    "document": "bms-current",
+    "version": "V1",
+    "page": 2,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "IO 清单",
+    "document": "bms-current",
+    "version": "V1",
+    "page": 2,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "请查询本项目的楼控点表",
+    "document": "bms-current",
+    "version": "V1",
+    "page": 2,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "EPMS",
+    "document": "epms-current",
+    "version": "V0",
+    "page": 1,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "epms",
+    "document": "epms-current",
+    "version": "V0",
+    "page": 1,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "电力管理",
+    "document": "epms-current",
+    "version": "V0",
+    "page": 1,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "电力监控",
+    "document": "epms-current",
+    "version": "V0",
+    "page": 1,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "请找电力管理相关资料",
+    "document": "epms-current",
+    "version": "V0",
+    "page": 1,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "boq",
+    "document": "boq-current",
+    "version": "V0",
+    "page": 3,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "工程量清单",
+    "document": "boq-current",
+    "version": "V0",
+    "page": 3,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "报价清单",
+    "document": "boq-current",
+    "version": "V0",
+    "page": 3,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "请查找本项目的BOQ",
+    "document": "boq-current",
+    "version": "V0",
+    "page": 3,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "SOO",
+    "document": "soo-current",
+    "version": "V0",
+    "page": 4,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "soo",
+    "document": "soo-current",
+    "version": "V0",
+    "page": 4,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "控制要求",
+    "document": "soo-current",
+    "version": "V0",
+    "page": 4,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "控制序列",
+    "document": "soo-current",
+    "version": "V0",
+    "page": 4,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  },
+  {
+    "query": "请查询本项目的SOO",
+    "document": "soo-current",
+    "version": "V0",
+    "page": 4,
+    "forbidden": [
+      "bms-old",
+      "private-bms"
+    ]
+  }
+]

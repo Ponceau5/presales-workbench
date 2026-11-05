@@ -9,7 +9,7 @@ for prefix in ('ZHIPU','DEEPSEEK','MOONSHOT','SILICONFLOW'):os.environ[prefix+'_
 from fastapi.testclient import TestClient
 from app import app,db
 from model_gateway import ModelConfig
-class AccessWorkflowTests(unittest.TestCase):
+class AccessFixture:
  def setUp(self):
   self.c=TestClient(app);self.admin=self.auth('pm','demo2026');tag=uuid4().hex[:8];self.a='alice_'+tag;self.b='bob_'+tag;self.p='A-'+tag;self.q='B-'+tag
   for user in (self.a,self.b):
@@ -20,6 +20,33 @@ class AccessWorkflowTests(unittest.TestCase):
   self.ah=self.auth(self.a,'testpass2026');self.bh=self.auth(self.b,'testpass2026');self.base='/api/projects/'+self.p+'/workspaces/F7';self.flow=self.base+'/flows'
  def auth(self,user,password):
   r=self.c.post('/api/session',json={'username':user,'password':password});self.assertEqual(r.status_code,200,r.text);return {'Authorization':'Bearer '+r.json()['token']}
+
+class AccessWorkflowTests(AccessFixture,unittest.TestCase):
+ def test_marketing_creates_project_and_operates_only_f1(self):
+  user='market_'+uuid4().hex[:8];project='MARKET-'+uuid4().hex[:8]
+  response=self.c.post('/api/access/users',headers=self.admin,json={'username':user,'display_name':'市场测试','role':'marketing','password':'testpass2026'})
+  self.assertEqual(response.status_code,200,response.text)
+  headers=self.auth(user,'testpass2026')
+  response=self.c.post('/api/access/projects',headers=headers,json={'id':project,'name':'市场建项测试-'+uuid4().hex[:8]})
+  self.assertEqual(response.status_code,200,response.text)
+  self.assertEqual(self.c.post('/api/access/projects',headers=headers,json={'id':project,'name':'不可覆盖'}).status_code,409)
+  self.assertIn(project,{p['id'] for p in self.c.get('/api/me',headers=headers).json()['projects']})
+  uploaded=self.c.post('/api/projects/'+project+'/documents',headers=headers,data={'title':'客户需求','version':'V1'},files={'file':('requirements.md',b'# ALPHA project requirements','text/markdown')})
+  self.assertEqual(uploaded.status_code,200,uploaded.text)
+  f1=self.c.get('/api/projects/'+project+'/workspaces/F1/flows',headers=headers)
+  self.assertEqual(f1.status_code,200,f1.text);self.assertTrue(f1.json()['can_edit']);self.assertTrue(f1.json()['can_apply'])
+  f7=self.c.get('/api/projects/'+project+'/workspaces/F7/flows',headers=headers)
+  self.assertFalse(f7.json()['can_edit']);self.assertFalse(f7.json()['can_apply'])
+  self.assertEqual(self.c.post('/api/projects/'+project+'/workspaces/F7/cost-parameters',headers=headers,json={}).status_code,403)
+  self.assertEqual(self.c.get('/api/projects/'+self.q+'/documents',headers=headers).status_code,403)
+  with patch('workspace_router.model_config',return_value=ModelConfig('deepseek','test','mock','key')),patch('workspace_router.request_agent_stream',return_value=iter(['资料已登记，待补BOQ'])):
+   reply=self.c.post('/api/projects/'+project+'/workspaces/F1/ask-stream',headers=headers,json={'question':'摸排资料','turn_id':uuid4().hex})
+  self.assertEqual(reply.status_code,200,reply.text);self.assertIn('"type": "done"',reply.text)
+ def test_sales_creates_project_with_own_responsibility(self):
+  project='SALES-'+uuid4().hex[:8]
+  response=self.c.post('/api/access/projects',headers=self.ah,json={'id':project,'name':'销售建项测试-'+uuid4().hex[:8]})
+  self.assertEqual(response.status_code,200,response.text)
+  with db() as c:self.assertEqual(c.execute('SELECT user_id FROM project_owners WHERE project_id=? AND role=?',(project,'sales')).fetchone()[0],self.a)
  def test_markdown_skill_is_saved_and_used_without_auto_application(self):
   cfg=self.c.get(self.flow,headers=self.ah).json();task=cfg['active']['definition']['tasks'][0]
   self.assertEqual(self.c.post(self.flow+'/taskbook-stream',headers=self.ah,json={}).status_code,404)
@@ -175,9 +202,8 @@ class AccessWorkflowTests(unittest.TestCase):
  def test_disable_account_revokes_sessions(self):
   self.assertEqual(self.c.patch('/api/access/users/'+self.a,headers=self.admin,json={'active':False}).status_code,200)
   self.assertEqual(self.c.get('/api/me',headers=self.ah).status_code,401)
-if __name__=='__main__':unittest.main()
 
-class AccessManagementTests(AccessWorkflowTests):
+class AccessManagementTests(AccessFixture,unittest.TestCase):
  def test_admin_overview_rules_and_event_access(self):
   view=self.c.get('/api/access/overview',headers=self.admin).json()
   self.assertIn('F7',view['role_stages']['sales']);self.assertNotIn('F5',view['role_stages']['sales'])
@@ -243,3 +269,5 @@ class AccessManagementTests(AccessWorkflowTests):
    response=self.c.post(base+'/ask-stream',headers=self.admin,json={'question':'检查点表','task_id':task['id'],'turn_id':'trial-'+uuid4().hex,'test_run':True,'flow_draft_id':saved.json()['id']})
   self.assertIn('"type": "done"',response.text,response.text)
   self.assertIn('只输出重复点位',model.call_args.args[0][0]['content'])
+
+if __name__=='__main__':unittest.main()

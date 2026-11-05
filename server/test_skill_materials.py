@@ -13,8 +13,8 @@ class SkillMaterialsTests(unittest.TestCase):
   self.c=TestClient(app)
   token=self.c.post('/api/session',json={'username':'pm','password':'demo2026'}).json()['token'];self.h={'Authorization':'Bearer '+token};self.p='T-'+uuid4().hex[:8]
   self.c.post('/api/access/projects',headers=self.h,json={'id':self.p,'name':self.p})
- def upload(self,body=b'project device list',project=None):
-  r=self.c.post('/api/projects/'+(project or self.p)+'/documents',headers=self.h,data={'title':'设备清单','version':'V1'},files={'file':('list.txt',body,'text/plain')});self.assertEqual(r.status_code,200,r.text);return r.json()
+ def upload(self,body=b'project device list',project=None,title='设备清单'):
+  r=self.c.post('/api/projects/'+(project or self.p)+'/documents',headers=self.h,data={'title':title,'version':'V1'},files={'file':('list.txt',body,'text/plain')});self.assertEqual(r.status_code,200,r.text);return r.json()
  def test_digest_dedup_and_template_discovery(self):
   first=self.upload();second=self.upload();self.assertEqual(first['id'],second['id']);self.assertTrue(second['duplicate'])
   base='/api/projects/'+self.p
@@ -52,7 +52,7 @@ class SkillMaterialsTests(unittest.TestCase):
   from model_gateway import ModelConfig
   doc=self.upload('|设备|数量|\n|---|---|'.encode())
   self.c.post('/api/projects/'+self.p+'/documents/'+doc['id']+'/register',headers=self.h,json={'mode':'template'})
-  self.upload(b'Confirmed project input: gateways 2')
+  self.upload(b'Confirmed project input: gateways 2',title='已确认项目输入')
   with patch('workspace_router.model_config',return_value=ModelConfig('zhipu','test','https://example.invalid','test')),patch('workspace_router.request_agent_stream',return_value=iter(['请确认设备数量'])) as model:
    r=self.c.post('/api/projects/'+self.p+'/workspaces/F5/ask-stream',headers=self.h,json={'question':'按设备清单模板输出功能清单','task_id':'functions','turn_id':uuid4().hex})
   self.assertEqual(r.status_code,200,r.text);self.assertNotIn('"type": "error"',r.text)

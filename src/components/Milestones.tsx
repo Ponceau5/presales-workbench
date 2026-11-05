@@ -4,6 +4,7 @@ import { useWorkbench } from '@/state/workbench'
 import { CalendarDays, ChevronDown, Diamond } from 'lucide-react'
 export function Milestones({ reference = false }: { reference?: boolean }) {
   const [view, setView] = useState('gantt')
+  const [openedAt] = useState(() => Date.now())
   const {state}=useWorkbench();
   const [selected,setSelected]=useState<string|null>(null)
   const fallbackRows = reference
@@ -70,7 +71,7 @@ export function Milestones({ reference = false }: { reference?: boolean }) {
   const rows=demoMilestones[state.currentProjectId] || fallbackRows.map(r=>({...r,lane:'项目计划',progress:0,owner:'待分配',summary:r.source,tone:'planned',deliverables:[]}));
   const active=rows.find(r=>r.phase===selected)||rows.find(r=>r.tone==='active')||rows[0];
   const dates = rows.filter(r=>r.date).map(r=>Date.parse(r.date+'T00:00:00Z'));
-  const first = dates.length ? Math.min(...dates) : Date.now();
+  const first = dates.length ? Math.min(...dates) : openedAt;
   const last = dates.length ? Math.max(...dates) : first;
   const start = Date.UTC(new Date(first).getUTCFullYear(),new Date(first).getUTCMonth(),1);
   const end = Date.UTC(new Date(last).getUTCFullYear(),new Date(last).getUTCMonth()+1,1);

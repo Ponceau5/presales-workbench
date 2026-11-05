@@ -42,7 +42,7 @@ def install(app,db,identity):
         if request.headers.get('origin')!=config['frontend_url'].rstrip('/'):raise HTTPException(403,'无效注册来源')
         if payload.password!=payload.confirm_password:raise HTTPException(422,'两次输入的密码不一致')
         if payload.role not in access_control.ROLES:raise HTTPException(422,'请选择有效角色')
-        body={'application':config.get('application','presales-workbench'),'organization':config['organization'],'username':payload.username,'name':payload.username,'password':payload.password,'confirm':payload.confirm_password,'tag':access_control.ROLES[payload.role],'agreement':True}
+        body={'application':config.get('application','presales-workbench'),'organization':config['organization'],'username':payload.username,'name':payload.username,'password':payload.password,'confirm':payload.confirm_password,'agreement':True}
         try:
             result=httpx.post(config['issuer'].rstrip('/')+'/api/signup',json=body,timeout=15,trust_env=False)
             result.raise_for_status();result=result.json()

@@ -1,3 +1,4 @@
+import {responseIssue} from "./conversationFeedback";
 import {registerAccount} from "@/lib/accounts";
 export const localApiBase = import.meta.env.VITE_API_BASE_URL || "";
 async function serviceFetch(url: string, init: RequestInit) {
@@ -93,7 +94,7 @@ export async function localApi<T>(path: string, init: RequestInit = {}): Promise
   }
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body.detail || `请求失败 (${response.status})`);
+    throw responseIssue(body,response.status>=500?"协作服务暂时不可用，请稍后重试。输入内容已保留。":`请求失败 (${response.status})`);
   }
   return finishUpload(await response.json());
 }

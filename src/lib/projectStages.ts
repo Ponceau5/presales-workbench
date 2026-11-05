@@ -65,7 +65,7 @@ const confirmations: Record<string, string> = {
   F13: "补齐付款比例、回款日期、采购支出计划、币种与税费输入，再进行现金流测算。",
 };
 export function stagesForProject(projectId: string) {
-  if(projectId.startsWith('PORT-')) return stages.map(d=>({...d,input:'尚未关联本项目资料',source:'项目资料待补充',question:'请核对本项目资料、有效版本和责任岗位，缺项由负责人确认。',outputs:d.outputs.map(r=>({...r,text:'尚无已确认成果',evidence:'待提供项目资料',status:'waiting' as const})),changedText:'根据本项目的版本变化核对影响范围。'}));
+  if(projectId!=="RCJM1"&&!['DEMO-026','F7-DEMO','F8-DEMO'].includes(projectId)) return stages.map(d=>({...d,input:'本项目已登记资料与有效版本',source:projectId.startsWith('PORT-')?'待提供项目资料':'本项目资料与已确认工件',question:'请核对本项目资料、有效版本和责任岗位，缺项由负责人确认。',outputs:d.outputs.map(r=>({...r,text:projectId.startsWith('PORT-')?'尚无已确认成果':'以本项目已采纳工件为准',evidence:projectId.startsWith('PORT-')?'待提供项目资料':'本项目资料',status:'waiting' as const})),changedText:'根据本项目的版本变化核对影响范围。'}));
   return projectId !== "RCJM1"
     ? stages
     : stages.map((d) => {

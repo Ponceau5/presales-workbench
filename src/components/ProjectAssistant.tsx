@@ -1,8 +1,10 @@
+import {toast} from "sonner";
+import {FloatingNotice} from "@/components/FloatingNotice";
 import { randomId } from "@/lib/id";
 import { type AgentArtifact } from "@/lib/agentTasks";
 import { localApi } from "@/lib/localApi";
 import { MarkdownReply } from "@/features/software/MarkdownReply";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router";
 import {
   X,
@@ -32,11 +34,27 @@ type Message = {
 export function ProjectAssistant() {
   const { state, dispatch } = useWorkbench();
   const location = useLocation();
-  const [open, setOpen] = useState(false);
+  const [open, setIsOpen] = useState(false);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [project, setProject] = useState("RCJM1");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   const end = useRef<HTMLDivElement>(null);
+  const conversationId=useRef(randomId());
+  const pending=useRef<AbortController|null>(null);
+  const scope=project+":"+state.accountId;
+  const [messageScope,setMessageScope]=useState(scope);
+  if(messageScope!==scope){setMessageScope(scope);setMessages([]);setBusy(false);setError('');}
+  useEffect(()=>{
+    pending.current?.abort();pending.current=null;conversationId.current=randomId();
+    return()=>{pending.current?.abort();pending.current=null;};
+  },[scope]);
+  const setOpen=useCallback((value:boolean|((previous:boolean)=>boolean))=>{
+    const next=typeof value==='function'?value(open):value;
+    if(!next){pending.current?.abort();pending.current=null;setBusy(false);setMessages([]);setInput("");setError("");}
+    setIsOpen(next);
+  },[open]);
   useEffect(() => {
     function shortcut(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "j") {
@@ -50,9 +68,7 @@ export function ProjectAssistant() {
     }
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
-  }, [open, location.pathname, state.currentProjectId]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  }, [open, location.pathname, state.currentProjectId, setOpen]);
   const [stageContext, setStageContext] = useState("");
   const [, setArtifactContext] = useState<AgentArtifact | null>(
     null,
@@ -77,7 +93,7 @@ export function ProjectAssistant() {
     window.addEventListener("presales-assistant-open", openNode);
     return () =>
       window.removeEventListener("presales-assistant-open", openNode);
-  }, []);
+  }, [setOpen]);
   useEffect(() => {
     end.current?.scrollIntoView({ block: "nearest" });
   }, [messages, open]);
@@ -93,14 +109,16 @@ export function ProjectAssistant() {
   async function send(text = input) {
     if (!text.trim() || busy) return;
     const value = text.trim();
+    const controller=new AbortController();pending.current=controller;
     const history = messages.slice(-10).map(({role,text})=>({role,text}));
     setMessages(prev=>[...prev,{id:randomId(),role:"user",text:value}]);
     setInput("");setBusy(true);setError("");
     try {
-      const result = await localApi<{answer:string;proposal:null|{title:string;kind:string}}>("/api/project-assistant",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({project_id:project,question:value,history})});
+      const result = await localApi<{answer:string;proposal:null|{title:string;kind:string}}>("/api/project-assistant",{method:"POST",headers:{"Content-Type":"application/json"},signal:controller.signal,body:JSON.stringify({project_id:project,conversation_id:conversationId.current,turn_id:randomId(),question:value,history})});
+      if(controller.signal.aborted||pending.current!==controller)return;
       setMessages(prev=>[...prev,{id:randomId(),role:"assistant",text:result.answer,...(result.proposal?{proposal:{...result.proposal,projectId:project,owner:state.role}}:{})}]);
-    } catch(e) {setError(e instanceof Error?e.message:"发送失败，请重试");setInput(value);}
-    finally {setBusy(false);}
+    } catch(e) {if(controller.signal.aborted||pending.current!==controller)return;setError(e instanceof Error?e.message:"发送失败，请重试");setInput(value);}
+    finally {if(pending.current===controller){pending.current=null;setBusy(false);}}
   }
   return (
     <>
@@ -289,7 +307,7 @@ export function ProjectAssistant() {
                 )}
               </article>
             ))}
-            {busy && <p role="status">正在查询项目资料…</p>}{error && <p role="alert">{error}</p>}<div ref={end} />
+            {busy && <p role="status">正在查询项目资料…</p>}{error && <><FloatingNotice role="alert">{error}</FloatingNotice><div role="status">本次查询未完成 <button type="button" className="btn secondary" onClick={()=>toast.error(error,{id:"assistant-failure"})}>查看原因</button></div></>}<div ref={end} />
           </div>
           <form
             className="assistant-compose"

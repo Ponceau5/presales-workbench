@@ -1,9 +1,11 @@
-import { marked, type Token } from "@/lib/vendor/marked";
+import { marked, type Token, type MarkedToken } from "@/lib/vendor/marked";
 import {useEffect,useState,type ReactNode} from "react";
 import {localApiBase} from "@/lib/localApi";
 export function SourceFigure({src,label}:{src:string;label:string}){const [url,setUrl]=useState('');useEffect(()=>{if(!/^\/api\/documents\/[a-zA-Z0-9_-]+\/figures\/[1-4]$/.test(src))return;const controller=new AbortController();let objectUrl='';void fetch(localApiBase+src,{headers:{Authorization:'Bearer '+sessionStorage.getItem('presales-local-api-token')},signal:controller.signal}).then(async response=>{if(response.ok){objectUrl=URL.createObjectURL(await response.blob());setUrl(objectUrl);}}).catch(()=>{});return()=>{controller.abort();if(objectUrl)URL.revokeObjectURL(objectUrl);};},[src]);return url?<figure className="source-figure"><a href={url} target="_blank" rel="noreferrer"><img src={url} alt={label}/></a><figcaption>{label}</figcaption></figure>:null;}
 type InlineTokens={tokens?:Token[]};
-function nodes(tokens:Token[]|undefined):ReactNode {return (tokens??[]).map((t,i)=>{switch(t.type){
+function nodes(tokens:Token[]|undefined):ReactNode {return (tokens??[]).map((token,i)=>{
+// This lexer has no extensions; standard token shapes are defined by marked.
+const t=token as MarkedToken;switch(t.type){
 case "heading":return <div key={i} className={"gsa-md-heading level-"+t.depth}>{nodes(t.tokens)}</div>;
 case "paragraph":return t.tokens?.some(v=>v.type==="image")?<div key={i}>{nodes(t.tokens)}</div>:<p key={i}>{nodes(t.tokens)}</p>;
 case "text":return <span key={i}>{"tokens" in t&&t.tokens?nodes(t.tokens):t.text}</span>;

@@ -35,7 +35,8 @@ class TrialTests(unittest.TestCase):
  def test_tool_loop_runs_in_sdk(self):
   model=ScriptedModel();events=list(stream_trial(model,list(self.tools.values()),'# Skill\n只给小计和版本。','核对材料小计',self.trace))
   self.assertEqual(model.calls,4);self.assertEqual(events[-1]['type'],'result');self.assertIn('195.00',events[-1]['answer'])
-  self.assertEqual([x['tool'] for x in self.trace],['list_selected_materials','read_material_page','calculate_line_totals'])
+  self.assertEqual([x['tool'] for x in self.trace if 'tool' in x],['list_selected_materials','read_material_source','calculate_line_totals'])
+  timings=[x for x in self.trace if x.get('metric')=='tool'];self.assertEqual(len(timings),3);self.assertTrue(all(x['seconds']>=0 for x in timings))
  def test_trial_endpoint_uses_current_skill_without_adopting(self):
   client=TestClient(app);token=client.post('/api/session',json={'username':'sales','password':'demo2026'}).json()['token'];headers={'Authorization':'Bearer '+token}
   with db() as c:before=c.execute('SELECT count(*) FROM workspace_artifacts').fetchone()[0]

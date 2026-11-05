@@ -37,11 +37,14 @@ def document_figures(document,limit=4):
   except (ValueError,zipfile.BadZipFile,OSError,PdfReadError):pass
  return result
 
-def attachment_snapshot(connection,project,identifiers):
+def attachment_snapshot(connection,project,identifiers,account=None):
  sources=[];blocks=[]
  for identifier in dict.fromkeys(identifiers):
   row=connection.execute('SELECT * FROM documents WHERE id=? AND project_id=?',(identifier,project)).fetchone()
   if not row:raise HTTPException(403,'附件不属于当前项目')
+  if connection.execute("SELECT 1 FROM document_registry WHERE document_id=? AND category='disabled'",(identifier,)).fetchone():raise HTTPException(409,'附件已停用，请选择当前版本')
+  registry=connection.execute('SELECT category FROM document_registry WHERE document_id=?',(identifier,)).fetchone()
+  if registry and registry['category']=='temporary' and row['actor']!=str(account):raise HTTPException(403,'无权读取其他账号的私人附件')
   doc=dict(row);texts=[r[0] for r in connection.execute('SELECT text FROM document_pages WHERE document_id=? ORDER BY page',(identifier,))]
   images=document_figures(doc,limit=2) if len(blocks)<4 else []
   source={'id':identifier,'title':doc['title'],'version':doc['version'],'purpose':'input','text':'\n\n'.join(texts)[:16000],'figures':[{'url':i['url'],'label':i['label']} for i in images],'read_status':'正文已提取' if texts else '图像已提供' if images else '仅原件已保存，当前无法解析正文，不得声称已读'}

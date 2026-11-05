@@ -1,3 +1,4 @@
+import {FloatingNotice} from "@/components/FloatingNotice";
 import { randomId } from "@/lib/id";
 import { useState } from "react";
 import { DocumentReader } from "@/components/SourceReader";
@@ -180,7 +181,7 @@ export function SoftwareIntake({
               : "读取并提取要求"}
         </button>
       </div>
-      {error && <p role="alert">{error}</p>}
+      {error && <FloatingNotice role="alert">{error}</FloatingNotice>}
       {executionLog.length > 0 && (
         <details className="intake-run" open={phase === 1}>
           <summary>执行记录</summary>

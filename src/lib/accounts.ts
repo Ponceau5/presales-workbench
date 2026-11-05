@@ -11,6 +11,7 @@ const usernames = [
   "dev",
   "legal",
   "pm",
+  "marketing",
 ];
 export const accounts = roles.map((role, index) => ({
   id: usernames[index],
@@ -26,7 +27,7 @@ export function stagePermission(role: Role, stage: string) {
   return role === "系统管理员" || stageReviewers[stage]?.includes(role) || false;
 }
 export const stageRowOwners: Record<string, Role[]> = {
-  F1: ["销售", "商务支持"],
+  F1: ["销售", "商务支持", "市场"],
   F2: ["解决方案", "软件产品"],
   F3: ["解决方案", "解决方案"],
   F4: ["硬件产品", "硬件产品"],
@@ -43,10 +44,10 @@ export function stageRowOwner(stage: string, index = 0) {
   return stageRowOwners[stage]?.[index];
 }
 export function canEditStageRow(role: Role, stage: string, index = 0) {
-  return role === "系统管理员" || stageRowOwner(stage, index) === role;
+  return role === "系统管理员" || (stageRowOwner(stage, index) === role || role === "市场" && stage === "F1" && index === 0);
 }
 export const stageReviewers: Record<string, Role[]> = {
-  F1: ["销售", "商务支持"],
+  F1: ["销售", "商务支持", "市场"],
   F2: ["软件产品", "解决方案"],
   F3: ["解决方案"],
   F4: ["硬件产品"],
@@ -63,7 +64,7 @@ export function canReviewStage(role: Role, stage: string) {
   return role === "系统管理员" || stageReviewers[stage]?.includes(role) || false;
 }
 export function canCreateProject(role: Role) {
-  return ["销售", "商务支持", "系统管理员"].includes(role);
+  return ["销售", "市场", "商务支持", "系统管理员"].includes(role);
 }
 export function canManageConnection(role: Role) {
   return role === "系统管理员";

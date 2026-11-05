@@ -1,6 +1,5 @@
 """Bounded, read-only LangChain Agent pilot; no manual workflow/checkpointer."""
-import json,threading
-from decimal import Decimal,ROUND_HALF_UP
+import json
 from uuid import uuid4
 from fastapi import Depends,HTTPException
 from fastapi.responses import StreamingResponse
@@ -9,6 +8,9 @@ from langchain.tools import tool
 from langchain_core.tools import ToolException
 import access_control,workflow_studio
 from model_gateway import model_config
+from agent_engine import chat_model,stream_agent,snapshot_tools
+from execution_control import model_slot
+from streaming import heartbeat_stream
 
 class Page(BaseModel):
  document_id:str=Field(min_length=1,max_length=100)
@@ -18,51 +20,23 @@ class TrialInput(BaseModel):
  task_id:str=Field(min_length=1,max_length=60)
  flow_draft_id:str|None=Field(default=None,max_length=100)
  selected_pages:list[Page]=Field(default_factory=list,max_length=10)
-class Line(BaseModel):
- quantity:Decimal=Field(ge=0,le=1000000,allow_inf_nan=False)
- unit_cost:Decimal=Field(ge=0,le=100000000,allow_inf_nan=False)
-
 def tools_for(db,user,project,pages,parameters,trace):
- allowed={(p.document_id,p.page) for p in pages};count=0;lock=threading.Lock()
- def guard(name):
-  nonlocal count
-  access_control.check_project(user,project)
-  with lock:
-   count+=1
-   if count>8:raise ToolException('工具调用达到本次上限')
-   trace.append({'tool':name,'call':count})
- @tool
- def list_selected_materials()->str:
-  """列出本次已选项目资料的标题、版本、文档ID和允许读取的页码。不会读取未选原文。"""
-  guard('list_selected_materials');result=[]
-  with db() as c:
-   for identifier,page in sorted(allowed):
-    r=c.execute('SELECT id,title,version FROM documents WHERE id=? AND project_id=?',(identifier,project)).fetchone()
-    if r:result.append({**dict(r),'page':page})
-  return json.dumps(result,ensure_ascii=False)
+ sources=[]
+ with db() as c:
+  for identifier,page in sorted({(p.document_id,p.page) for p in pages}):
+   row=c.execute('SELECT d.id,d.title,d.version,p.page,p.text FROM documents d JOIN document_pages p ON p.document_id=d.id WHERE d.id=? AND d.project_id=? AND p.page=?',(identifier,project,page)).fetchone()
+   if row:sources.append(dict(row))
+ shared=snapshot_tools(user,project,sources,parameters,trace)
+ reader=next(t for t in shared if t.name=='read_material_source')
  @tool
  def read_material_page(document_id:str,page:int)->str:
-  """读取已选资料的指定页正文。先用资料目录获取文档ID和允许页码。"""
-  guard('read_material_page')
-  if (document_id,page) not in allowed:raise ToolException('此页未选入本次任务')
-  with db() as c:r=c.execute('SELECT d.title,d.version,p.text FROM documents d JOIN document_pages p ON p.document_id=d.id WHERE d.id=? AND d.project_id=? AND p.page=?',(document_id,project,page)).fetchone()
-  if not r:raise ToolException('资料不属于当前项目或正文未解析')
-  if len(r['text'])>12000:raise ToolException('该页内容过长，请缩小资料范围')
-  return json.dumps(dict(r),ensure_ascii=False)
- @tool
- def get_task_parameters()->str:
-  """查看当前 Skill 的默认业务参数，只读，不修改项目参数。"""
-  guard('get_task_parameters');return json.dumps(parameters,ensure_ascii=False)
- @tool
- def calculate_line_totals(lines:list[Line])->str:
-  """根据已有依据中的数量和成本单价计算各行金额及合计，不估计或编造价格。只接受同一币种的非负数。"""
-  guard('calculate_line_totals')
-  if not 1<=len(lines)<=100:raise ToolException('只支持1至100行')
-  amounts=[(r.quantity*r.unit_cost).quantize(Decimal('.01'),rounding=ROUND_HALF_UP) for r in lines]
-  return json.dumps({'amounts':[str(a) for a in amounts],'total':str(sum(amounts,Decimal('0.00')))})
- return [list_selected_materials,read_material_page,get_task_parameters,calculate_line_totals]
-
-from agent_engine import chat_model, stream_agent
+  """读取本次已选且属于当前项目的资料页；保留旧试运行接口的参数格式。"""
+  index=next((i for i,s in enumerate(sources) if s['id']==document_id and s['page']==page),None)
+  if index is None:raise ToolException('此页未选入本次任务或不属于当前项目')
+  if len(sources[index]['text'])>12000:raise ToolException('该页内容过长，请缩小资料范围')
+  result=reader.invoke({'source_index':index})
+  return result
+ return [read_material_page if t.name=='read_material_source' else t for t in shared]
 
 
 def stream_trial(model,tools,skill,question,trace):
@@ -72,7 +46,6 @@ def stream_trial(model,tools,skill,question,trace):
 
 def install(app,db,actor,now):
  with db() as c:c.execute('CREATE TABLE IF NOT EXISTS sdk_trials(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,stage_id TEXT NOT NULL,actor TEXT NOT NULL,skill_id TEXT NOT NULL,task_id TEXT NOT NULL,status TEXT NOT NULL,output TEXT NOT NULL,metrics TEXT NOT NULL,created_at TEXT NOT NULL)')
- slots=threading.BoundedSemaphore(1)
  @app.post('/api/projects/{project_id}/workspaces/{stage_id}/flows/sdk-trial-stream')
  def trial(project_id:str,stage_id:str,payload:TrialInput,user:str=Depends(actor)):
   access_control.check_project(user,project_id)
@@ -87,9 +60,9 @@ def install(app,db,actor,now):
   tools=tools_for(db,user,project_id,payload.selected_pages,{p['key']:p['default'] for p in task['parameters']},trace)
   skill=workflow_studio.instructions(cfg,payload.task_id,payload.question)
   def events():
-   if not slots.acquire(blocking=False):yield 'data: '+json.dumps({'type':'error','message':'已有试运行任务，请稍后重试'},ensure_ascii=False)+'\n\n';return
    try:
     with db() as c:c.execute('INSERT INTO sdk_trials VALUES (?,?,?,?,?,?,?,?,?,?)',(identifier,project_id,stage_id,user,cfg['id'],payload.task_id,'running','','{}',now()))
+    admission=model_slot();admission.__enter__()
     for event in stream_trial(model,tools,skill,payload.question,trace):
      if event['type']=='result':
       access_control.check_project(user,project_id)
@@ -102,5 +75,5 @@ def install(app,db,actor,now):
     yield 'data: '+json.dumps({'type':'error','message':'试运行失败，请稍后重试'},ensure_ascii=False)+'\n\n'
    finally:
     with db() as c:c.execute("UPDATE sdk_trials SET status='stopped' WHERE id=? AND status='running'",(identifier,))
-    slots.release()
-  return StreamingResponse(events(),media_type='text/event-stream',headers={'Cache-Control':'no-cache','X-Accel-Buffering':'no'})
+    if 'admission' in locals():admission.__exit__(None,None,None)
+  return StreamingResponse(heartbeat_stream(events()),media_type='text/event-stream',headers={'Cache-Control':'no-cache','X-Accel-Buffering':'no'})

@@ -8,6 +8,8 @@ from access_control import check_project, filter_shared, role_of, ROLES
 from model_gateway import request_chat, parse_json, ModelError
 class Question(BaseModel):
     project_id:str=Field(min_length=1,max_length=100)
+    conversation_id:str=Field(default="",max_length=100)
+    turn_id:str=Field(default="",max_length=100)
     question:str=Field(min_length=1,max_length=2000)
     history:list[dict[str,str]]=Field(default_factory=list,max_length=12)
 class Record(BaseModel):
@@ -31,6 +33,9 @@ def install(app,db,actor):
             row=c.execute('SELECT value FROM shared_workbench_state WHERE id=1').fetchone()
             state=filter_shared(json.loads(row[0]),account) if row else {}
             project=next((p for p in state.get('projects',[]) if p['id']==payload.project_id),None)
+            if not project:
+                registered=c.execute('SELECT id,name FROM access_projects WHERE id=? AND archived=0',(payload.project_id,)).fetchone()
+                project=dict(registered) if registered else None
             if not project:raise HTTPException(404,'项目不存在')
             context={'project':project}
             context['documents']=[dict(r) for r in c.execute('SELECT id,title,version FROM documents WHERE project_id=? ORDER BY created_at DESC LIMIT 40',(payload.project_id,))]

@@ -32,6 +32,28 @@ def read_office(path):
     finally:book.close()
     return result
 
+def read_presentation(path):
+    """Read slide text in presentation order; image-only slides stay empty."""
+    import zipfile,posixpath
+    from xml.etree import ElementTree as ET
+    ns={'p':'http://schemas.openxmlformats.org/presentationml/2006/main',
+        'a':'http://schemas.openxmlformats.org/drawingml/2006/main',
+        'r':'http://schemas.openxmlformats.org/officeDocument/2006/relationships'}
+    with zipfile.ZipFile(path) as archive:
+        presentation=ET.fromstring(archive.read('ppt/presentation.xml'))
+        relationships=ET.fromstring(archive.read('ppt/_rels/presentation.xml.rels'))
+        targets={rel.get('Id'):rel.get('Target') for rel in relationships
+                 if rel.get('Type','').endswith('/slide') and rel.get('TargetMode')!='External'}
+        result=[]
+        for slide in presentation.findall('p:sldIdLst/p:sldId',ns):
+            target=targets.get(slide.get('{'+ns['r']+'}id'))
+            if not target:raise ValueError('幻灯片内容缺失')
+            name=target.lstrip('/') if target.startswith('/') else posixpath.normpath('ppt/'+target)
+            content=ET.fromstring(archive.read(name))
+            paragraphs=[''.join(node.itertext()).strip() for node in content.findall('.//a:p',ns)]
+            result.append('\n'.join(value for value in paragraphs if value))
+        return result
+
 def blocks(text):
     lines=text.splitlines();i=0
     while i<len(lines):

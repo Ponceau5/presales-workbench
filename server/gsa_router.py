@@ -1,7 +1,9 @@
 """GSA02 软件岗位：固定任务路由、真实计算、模型草稿与方案审核。"""
 from agent_engine import request_agent_stream
+from streaming import heartbeat_stream
 from access_control import role_of
 import json
+import os
 import object_storage
 import sqlite3
 from datetime import datetime, timezone
@@ -18,28 +20,20 @@ from sizing_tools import SizingInputs, calculate_server_sizing
 
 def request_proposal(messages, max_tokens, config=None, json_mode=True, on_delta=None, on_wait=None, on_provider=None):
     config = config or model_config()
-    import time
-    for attempt in range(3):
-        try:
-            if on_delta is None:return request_chat(messages,max_tokens,config=config,json_mode=json_mode)
-            pieces=[]
-            for piece in request_chat_stream(messages,max_tokens,config=config,json_mode=json_mode,on_provider=on_provider):
-                pieces.append(piece);on_delta("".join(pieces))
-            return "".join(pieces)
-        except ModelError as error:
-            if "1305" not in str(error) or attempt == 2:
-                raise
-            if on_wait:on_wait(f"模型访问繁忙，{20*(attempt+1)} 秒后重试（{attempt+1}/2）")
-            time.sleep(20 * (attempt + 1))
-            if on_wait:on_wait("正在等待模型输出")
+    if on_delta is None:
+        return request_chat(messages,max_tokens,config=config,json_mode=json_mode)
+    pieces=[]
+    for piece in request_chat_stream(messages,max_tokens,config=config,json_mode=json_mode,on_provider=on_provider):
+        pieces.append(piece);on_delta(''.join(pieces))
+    return ''.join(pieces)
 
 
 def install(app, db_path: Path, files_dir: Path, actor, require_account):
     router = APIRouter(prefix="/api/projects/GSA02/software")
-    pool = ThreadPoolExecutor(max_workers=1)
+    pool = ThreadPoolExecutor(max_workers=max(1,min(40,int(os.getenv("PRESALES_AGENT_CONCURRENCY","20")))))
     def db():
-        c=sqlite3.connect(db_path,timeout=10);c.row_factory=sqlite3.Row
-        return c
+        from database import connect
+        return connect(db_path)
     with db() as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS sizing_runs (
@@ -153,8 +147,11 @@ def install(app, db_path: Path, files_dir: Path, actor, require_account):
         context+="\n已选文件样本："+json.dumps(selected_samples,ensure_ascii=False)
         with db() as c:
             from document_media import attachment_snapshot
-            selected_sources,image_blocks=attachment_snapshot(c,'GSA02',payload.attachment_ids)
+            selected_sources,image_blocks=attachment_snapshot(c,'GSA02',payload.attachment_ids,account)
             for page in payload.selected_pages:
+                scope=c.execute("SELECT d.actor,COALESCE(r.category,'input') category FROM documents d LEFT JOIN document_registry r ON r.document_id=d.id WHERE d.id=? AND d.project_id='GSA02'",(page.get('document_id'),)).fetchone()
+                if scope and scope['category']=='disabled':raise HTTPException(409,'所选资料已停用，请选择当前版本')
+                if scope and scope['category']=='temporary' and scope['actor']!=str(account):raise HTTPException(403,'无权读取其他账号的私人附件')
                 row=c.execute('SELECT d.id,d.title,d.version,p.page,p.text FROM documents d JOIN document_pages p ON p.document_id=d.id WHERE d.id=? AND d.project_id=? AND p.page=?',(page.get('document_id'),'GSA02',page.get('page'))).fetchone()
                 if not row:raise HTTPException(400,'所选资料页不属于当前项目')
                 value=dict(row)
@@ -196,7 +193,7 @@ def install(app, db_path: Path, files_dir: Path, actor, require_account):
                 yield event("step",label="生成回复",state="done")
                 yield event("done")
             except ModelError as e:yield event("error",message=str(e))
-        return StreamingResponse(stream(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
+        return StreamingResponse(heartbeat_stream(stream()),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
 
     class ArtifactDecision(BaseModel):
         source_id:str=Field(min_length=1,max_length=100)
@@ -207,7 +204,7 @@ def install(app, db_path: Path, files_dir: Path, actor, require_account):
     @router.get("/artifacts")
     def artifacts(account:str=Depends(actor)):
         require_account(account,{"software","solution","pm"})
-        with db() as c:return [dict(r) for r in c.execute("SELECT * FROM software_artifacts ORDER BY created_at DESC").fetchall()]
+        with db() as c:return [dict(r) for r in c.execute("SELECT * FROM software_artifacts WHERE id NOT IN (SELECT artifact_id FROM artifact_lifecycle WHERE disabled=1) ORDER BY created_at DESC").fetchall()]
 
     @router.post("/artifacts/adopt")
     def adopt_artifact(payload:ArtifactDecision,account:str=Depends(actor)):
@@ -397,7 +394,8 @@ def install(app, db_path: Path, files_dir: Path, actor, require_account):
             m["role_configuration"]=runtime_config(c,"GSA02")
             m["generation_samples"]=load_samples(c,payload.sample_ids,"GSA02","server")
             if m["role_configuration"]:c.execute("UPDATE sizing_runs SET role_config_id=? WHERE id=?",(m["role_configuration"]["id"],identifier))
-        pool.submit(generate,identifier,m,calculation,config,payload.change_note,"\n".join(filter(None,[previous,payload.favorite_context,payload.conversation_context])))
+        from execution_control import background
+        pool.submit(background(generate,identifier,m,calculation,config,payload.change_note,"\n".join(filter(None,[previous,payload.favorite_context,payload.conversation_context])),project="GSA02",actor=account))
         return {"id":identifier,"status":"running"}
 
     @router.get("/runs")
@@ -416,7 +414,10 @@ def install(app, db_path: Path, files_dir: Path, actor, require_account):
         with db() as c:row=c.execute('SELECT * FROM sizing_runs WHERE id=?',(identifier,)).fetchone()
         if not row:raise HTTPException(404,'方案不存在')
         if row['status']!='approved':raise HTTPException(409,'请先采纳此方案版本')
-        if format not in {'docx','xlsx'}:raise HTTPException(422,'请选择 Word 或 Excel')
+        if format=='md':
+            from fastapi.responses import Response
+            return Response(row['narrative'] or '',media_type='text/markdown; charset=utf-8')
+        if format not in {'docx','xlsx'}:raise HTTPException(422,'请选择 Word、Excel 或 Markdown')
         from file_formats import export_content
         from fastapi.responses import Response
         data,mime=export_content(row['narrative'] or '',format,'GSA02 服务器规格方案 V'+str(row['revision']))

@@ -1,3 +1,4 @@
+import {FloatingNotice} from '@/components/FloatingNotice';
 import { NodeAgent } from "@/components/NodeAgent";
 import { readProjectReview } from "@/lib/projectReview";
 import { stageGuide } from "@/lib/stageGuide";
@@ -282,7 +283,8 @@ export function ProjectFlow({
               <span>已写回 <b>{serviceProgress.counts.published}</b></span>
             </div>
             <p>{serviceProgress.next_action}</p>
-            {serviceProgress.last_run && <small>最近提取：{serviceProgress.last_run.model} · 第 {serviceProgress.last_run.pages} 页 · {serviceProgress.last_run.status === "completed" ? `${serviceProgress.last_run.candidate_count} 条原文匹配` : serviceProgress.last_run.error || "处理中"}</small>}
+            {serviceProgress.last_run && <small>最近提取：{serviceProgress.last_run.model} · 第 {serviceProgress.last_run.pages} 页 · {serviceProgress.last_run.status === "completed" ? `${serviceProgress.last_run.candidate_count} 条原文匹配` : serviceProgress.last_run.error ? "失败" : "处理中"}</small>}
+        {serviceProgress.last_run?.error&&<FloatingNotice>{serviceProgress.last_run.error}</FloatingNotice>}
           </div>
         ) : <NodeAgent
           key={selected}

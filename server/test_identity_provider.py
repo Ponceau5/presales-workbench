@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from fastapi import HTTPException
 from app import app,db
 import access_control,identity_provider as identity
-class IdentityTests(unittest.TestCase):
+class IdentityFixture:
  def setUp(self):
   self.c=TestClient(app);self.config={'issuer':'http://identity.invalid','organization':'test','frontend_url':'http://127.0.0.1:7101'}
   self.patch=patch.object(identity,'_config',self.config);self.patch.start();identity._checked.clear()
@@ -17,6 +17,15 @@ class IdentityTests(unittest.TestCase):
   self.token,self.person=access_control.issue_session('sales')
   with db() as c:c.execute('INSERT INTO identity_sessions VALUES (?,?)',(hashlib.sha256(self.token.encode()).hexdigest(),'sales-subject'))
  def tearDown(self):self.patch.stop();identity._checked.clear()
+
+ def make_client(self):
+  import json
+  from fastapi import FastAPI
+  full={**self.config,'client_id':'test-client','client_secret':'test-secret','session_secret':'y'*40,'callback_url':'http://testserver/api/auth/casdoor/callback'}
+  directory=Path(root.name)/'error-config';directory.mkdir(exist_ok=True);(directory/'casdoor-connection.json').write_text(json.dumps(full))
+  standalone=FastAPI();identity.install(standalone,db,directory,lambda:'pm');return TestClient(standalone)
+
+class IdentityTests(IdentityFixture,unittest.TestCase):
  def test_profile_exposes_username_and_keeps_internal_identity(self):
   person=access_control.profile('sales')
   self.assertEqual(person['username'],'external-sales')
@@ -42,9 +51,8 @@ class IdentityTests(unittest.TestCase):
  def test_logout_revokes_session(self):
   self.assertEqual(self.c.post('/api/auth/logout',headers={'Authorization':'Bearer '+self.token}).status_code,200)
   with self.assertRaises(HTTPException):access_control.session(self.token)
-if __name__=='__main__':unittest.main()
 
-class LogoutFlowTests(IdentityTests):
+class LogoutFlowTests(IdentityFixture,unittest.TestCase):
  def test_unified_logout_callback_and_fresh_login(self):
   import json
   from urllib.parse import urlsplit,parse_qs
@@ -75,13 +83,7 @@ class LogoutFlowTests(IdentityTests):
   self.assertEqual(self.c.post('/api/auth/logout',headers={'Origin':'http://other.invalid'}).status_code,403)
   access_control.session(self.token)
 
-class LoginFailureTests(IdentityTests):
- def make_client(self):
-  import json
-  from fastapi import FastAPI
-  full={**self.config,'client_id':'test-client','client_secret':'test-secret','session_secret':'y'*40,'callback_url':'http://testserver/api/auth/casdoor/callback'}
-  directory=Path(root.name)/'error-config';directory.mkdir(exist_ok=True);(directory/'casdoor-connection.json').write_text(json.dumps(full))
-  standalone=FastAPI();identity.install(standalone,db,directory,lambda:'pm');return TestClient(standalone)
+class LoginFailureTests(IdentityFixture,unittest.TestCase):
  def test_unassigned_account_returns_to_login_not_blank_error_page(self):
   from unittest.mock import AsyncMock
   with patch.object(identity,'_oauth'):
@@ -118,3 +120,35 @@ class LoginFailureTests(IdentityTests):
     response=c.get('/api/auth/casdoor/callback',follow_redirects=False)
    self.assertEqual(response.status_code,303)
    self.assertTrue(response.headers['location'].endswith('login_error=expired'))
+
+class StaleLoginCallbackTests(IdentityFixture,unittest.TestCase):
+ def test_expired_callback_preserves_already_valid_session(self):
+  from unittest.mock import AsyncMock
+  from authlib.integrations.base_client.errors import MismatchingStateError
+  with patch.object(identity,'_oauth'):
+   client=self.make_client();client.cookies.set('presales_source_session',self.token)
+   with patch.object(identity._oauth.casdoor,'authorize_access_token',new=AsyncMock(side_effect=MismatchingStateError())),patch.object(identity,'provider_get',return_value={'id':'sales-subject'}):
+    response=client.get('/api/auth/casdoor/callback',follow_redirects=False)
+  self.assertTrue(response.headers['location'].endswith('?casdoor=1'))
+  self.assertFalse(any('presales_source_session=' in value for value in response.headers.get_list('set-cookie')))
+  access_control.session(self.token)
+ def test_expired_callback_never_accepts_unverified_identity(self):
+  from unittest.mock import AsyncMock
+  from authlib.integrations.base_client.errors import MismatchingStateError
+  with patch.object(identity,'_oauth'):
+   client=self.make_client();client.cookies.set('presales_source_session','invalid')
+   with patch.object(identity._oauth.casdoor,'authorize_access_token',new=AsyncMock(side_effect=MismatchingStateError())):
+    response=client.get('/api/auth/casdoor/callback',follow_redirects=False)
+  self.assertTrue(response.headers['location'].endswith('login_error=expired'))
+ def test_recovery_uses_provider_session_without_a_second_account_prompt(self):
+  from unittest.mock import AsyncMock
+  from fastapi.responses import RedirectResponse
+  with patch.object(identity,'_oauth'):
+   client=self.make_client()
+   with patch.object(identity._oauth.casdoor,'authorize_redirect',new=AsyncMock(return_value=RedirectResponse('http://identity.invalid/login'))) as start:
+    client.get('/api/auth/casdoor/login?recover=1',follow_redirects=False)
+    self.assertEqual(start.call_args.kwargs,{'prompt':'none'})
+    client.get('/api/auth/casdoor/login?recover=1&fresh=1',follow_redirects=False)
+    self.assertEqual(start.call_args.kwargs,{'prompt':'login','max_age':0})
+
+if __name__=='__main__':unittest.main()

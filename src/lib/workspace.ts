@@ -9,12 +9,19 @@ export const roles = [
   '研发',
   '认证 / 法务',
   '系统管理员',
+  '市场',
 ] as const
 export type Role = (typeof roles)[number]
 export const roleWork: Record<
   Role,
   { title: string; description: string; stages: string[]; tasks: string[] }
 > = {
+  市场: {
+    title: '项目建立与资料归集',
+    description: '建立项目档案、登记客户需求与项目资料',
+    stages: ['F1'],
+    tasks: ['建立项目档案', '归集并核对资料版本', '整理缺失资料和后续交接'],
+  },
   销售: {
     title: '客户与项目跟进',
     description: '客户条件、询价进展和报价准备',
@@ -237,6 +244,7 @@ export const knowledge: Knowledge[] = [
   },
 ]
 export const taskLinks: Record<Role, string[]> = {
+  市场: ['/stages/F1'],
   销售: ['/stages/F1', '/stages/F8', '/stages/F7'],
   解决方案: ['/stages/F3', '/software?artifact=server', '/changes'],
   硬件产品: ['/stages/F4', '/stages/F6', '/changes'],

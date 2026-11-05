@@ -265,7 +265,9 @@ export type Action =
   | { type: "bookmark"; id: string }
   | { type: "knowledge"; item: Knowledge }
   | { type: "knowledgeApprove"; id: string; note: string }
-  | { type: "projectCreate"; name: string; owner: string }
+  | { type: "projectCreate"; createdId?: string; name: string; owner: string }
+  | { type: "projectUpdate"; id: string; name: string; owner: string }
+  | { type: "projectDelete"; id: string }
   | { type: "projectSwitch"; id: string }
   | StageAction
   | { type: "start"; ids?: string[] }
@@ -372,11 +374,12 @@ export function permitted(s: State, a: Action): boolean {
   if (a.type === "settings") return canManageConnection(s.role);
   if (a.type === "reset") return s.role === "系统管理员";
   if (a.type === "projectCreate") return canCreateProject(s.role);
+  if (a.type === "projectUpdate" || a.type === "projectDelete") return s.role === "系统管理员";
   if (a.type === "knowledgeApprove") return s.role === "系统管理员";
   return true;
 }
 export function reducer(s: State, a: Action): State {
-  if (a.type === "hydrateShared") return a.state;
+  if (a.type === "hydrateShared") return { ...a.state, projects: a.state.projects.filter((project, index, rows) => rows.findIndex(item => item.id === project.id) === index) };
   if (a.type === "dismissPermission") return { ...s, permissionNotice: "" };
   if (a.type === "login") {
     const account = authenticate(a.username, a.password, a.serverVerified);
@@ -643,15 +646,22 @@ export function domainReducer(s: State, a: Action): State {
     return {
       ...s,
       projects: [
-        ...s.projects,
         {
-          id: "DEMO-" + randomId().slice(0, 6).toUpperCase(),
+          id: a.createdId || "DEMO-" + randomId().slice(0, 6).toUpperCase(),
           name: a.name.trim(),
           owner: a.owner,
           updated: "刚刚",
         },
+        ...s.projects.filter(project => project.id !== a.createdId),
       ],
     };
+  }
+  if (a.type === "projectUpdate") {
+    return { ...s, projects: s.projects.map((project) => project.id === a.id ? { ...project, name: a.name.trim(), owner: a.owner, updated: "刚刚" } : project) };
+  }
+  if (a.type === "projectDelete") {
+    const projects = s.projects.filter((project) => project.id !== a.id);
+    return { ...s, projects, currentProjectId: s.currentProjectId === a.id ? projects[0]?.id : s.currentProjectId };
   }
   if (a.type === "resource")
     return { ...s, resources: [a.item, ...s.resources] };

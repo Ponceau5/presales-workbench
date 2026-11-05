@@ -2,6 +2,7 @@
 import json
 from fastapi import APIRouter,Depends,HTTPException
 from fastapi.responses import StreamingResponse
+from streaming import heartbeat_stream
 from pydantic import BaseModel,Field
 from model_gateway import request_chat_stream,model_config,ModelError
 class Classification(BaseModel):
@@ -22,22 +23,19 @@ def install(app,db,actor):
    c.execute('ALTER TABLE workspace_material_tags_new RENAME TO workspace_material_tags')
  router=APIRouter(prefix='/api/projects/{project_id}/workspaces/{stage_id}/materials')
  def outputs(c,project,stage):
-  rows=[dict(r) for r in c.execute('SELECT id,title,revision,content,stage_id,created_at FROM workspace_artifacts WHERE project_id=? ORDER BY revision DESC,created_at DESC',(project,))]
-  if project=='GSA02':
-   for r in c.execute('SELECT id,title,revision,content,created_at FROM software_artifacts ORDER BY revision DESC,created_at DESC'):rows.append({**dict(r),'stage_id':'F5','specialized':True})
-   for r in c.execute("SELECT id,revision,narrative,created_at FROM sizing_runs WHERE status='approved' ORDER BY revision DESC"):rows.append({'id':r['id'],'title':'服务器规格方案','revision':r['revision'],'content':r['narrative'] or '', 'stage_id':'F5','created_at':r['created_at'],'sizing':True})
-  return rows
+  from artifact_catalog import all_artifacts
+  return [row for row in all_artifacts(c,project) if not row['disabled']]
  @router.get('')
  def catalog(project_id:str,stage_id:str,user:str=Depends(actor)):
   if stage_id not in {'F'+str(i) for i in range(1,14)}:raise HTTPException(404,'工作区不存在')
   with db() as c:
-   docs=[dict(r) for r in c.execute("SELECT d.id,d.title,d.filename,d.version,d.created_at,t.stage_id,COALESCE(t.category,r.category) category,(SELECT count(*) FROM document_pages p WHERE p.document_id=d.id) page_count FROM documents d LEFT JOIN workspace_material_tags t ON t.document_id=d.id AND t.stage_id=(SELECT stage_id FROM workspace_material_tags WHERE document_id=d.id AND stage_id IN (?, '*') ORDER BY stage_id DESC LIMIT 1) LEFT JOIN document_registry r ON r.document_id=d.id WHERE d.project_id=? AND COALESCE(r.category,'input')!='temporary' ORDER BY d.created_at DESC",(stage_id,project_id))]
+   docs=[dict(r) for r in c.execute("SELECT d.id,d.title,d.filename,d.version,d.created_at,COALESCE(a.status,'missing') analysis_status,a.summary analysis_summary,a.error analysis_error,r.business_type,o.stage_id origin_stage,t.stage_id,COALESCE(t.category,r.category) category,(SELECT count(*) FROM document_pages p WHERE p.document_id=d.id) page_count FROM documents d LEFT JOIN document_origins o ON o.document_id=d.id LEFT JOIN document_analysis a ON a.document_id=d.id LEFT JOIN workspace_material_tags t ON t.document_id=d.id AND t.stage_id=(SELECT stage_id FROM workspace_material_tags WHERE document_id=d.id AND stage_id IN (?, '*') ORDER BY stage_id DESC LIMIT 1) LEFT JOIN document_registry r ON r.document_id=d.id WHERE d.project_id=? AND COALESCE(r.category,'input') NOT IN ('temporary','disabled') ORDER BY d.created_at DESC",(stage_id,project_id))]
    rows=outputs(c,project_id,stage_id)
-  inputs=[{**d,'kind':'document'} for d in docs if d['category']!='template']
+  inputs=[{**d,'kind':'document','stage_id':d.get('origin_stage') or d.get('stage_id')} for d in docs if d['category']!='template' and d.get('origin_stage')!=stage_id]
   inputs += [{**r,'kind':'upstream','version':'V'+str(r['revision'])} for r in rows if r['stage_id']!=stage_id]
   templates=[{**d,'kind':'document'} for d in docs if d['category']=='template']
   if stage_id in {'F7','F8'}:templates.insert(0,{'id':'builtin-template','title':'海外成本估算模板 V6' if stage_id=='F7' else '客户 BOQ 映射与报价模板','version':'默认模板','kind':'builtin','page_count':0})
-  return {'inputs':inputs,'templates':templates,'outputs':[r for r in rows if r['stage_id']==stage_id]}
+  return {'inputs':inputs,'templates':templates,'outputs':[r for r in rows if r['stage_id']==stage_id]+[{**d,'kind':'document','stage_id':d['origin_stage']} for d in docs if d.get('origin_stage')==stage_id]}
  @router.post('/classify')
  def classify(project_id:str,stage_id:str,payload:Classification,user:str=Depends(actor)):
   if stage_id not in {'F'+str(i) for i in range(1,14)}:raise HTTPException(404,'工作区不存在')
@@ -66,5 +64,5 @@ def install(app,db,actor):
     if not ''.join(chunks).strip():raise ModelError('模型未返回差异，请重试')
     yield event('done')
    except ModelError as e:yield event('error',message=str(e))
-  return StreamingResponse(stream(),media_type='text/event-stream',headers={'Cache-Control':'no-cache','X-Accel-Buffering':'no'})
+  return StreamingResponse(heartbeat_stream(stream()),media_type='text/event-stream',headers={'Cache-Control':'no-cache','X-Accel-Buffering':'no'})
  app.include_router(router)

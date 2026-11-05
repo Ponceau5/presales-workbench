@@ -1,3 +1,4 @@
+import {FloatingNotice} from "@/components/FloatingNotice";
 import { useMemo } from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 
@@ -221,14 +222,14 @@ function FieldError({
   }
 
   return (
-    <div
+    <FloatingNotice
       role="alert"
       data-slot="field-error"
       className={cn("text-destructive text-sm font-normal", className)}
       {...props}
     >
       {content}
-    </div>
+    </FloatingNotice>
   )
 }
 

@@ -98,6 +98,7 @@ def install(app,db,actor):
   s.freeze_panes='A2'
   for col,width in [('A',22),('B',28),('C',30),('D',12),('E',16),('F',12),('G',20),('H',32)]:s.column_dimensions[col].width=width
   out=io.BytesIO();w.save(out);return Response(out.getvalue(),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':'attachment; filename="procurement-enquiry.xlsx"'})
+ app.state.f7_cost_readiness=get
  app.include_router(router)
 
 def export_cost_draft(snapshot,project,revision):

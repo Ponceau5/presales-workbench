@@ -52,7 +52,10 @@ def materialize(location):
             return
     with TemporaryDirectory(prefix="presales-", dir=os.getenv("PRESALES_TEMP_DIR")) as directory:
         path = Path(directory) / Path(location).name
-        bucket().get_object_to_file(location[6:], str(path))
+        from execution_control import checkpoint
+        checkpoint()
+        bucket().get_object_to_file(location[6:], str(path),progress_callback=lambda *_:checkpoint())
+        checkpoint()
         yield path
 
 def download(location, filename):

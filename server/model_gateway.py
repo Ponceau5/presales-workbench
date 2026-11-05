@@ -1,16 +1,14 @@
-"""Server-only OpenAI-compatible gateway for the F5 source review pilot."""
+"""Server-only OpenAI-compatible calls through the installed asynchronous SDK."""
 
 from __future__ import annotations
 
 import json
 import os
 from dataclasses import dataclass
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from openai import AsyncOpenAI, APIError, APITimeoutError, APIConnectionError
+from execution_control import ExecutionError, ExecutionCancelled, current, checkpoint, model_slot, sync_stream
 
-
-class ModelError(Exception):
-    pass
+ModelError = ExecutionError
 
 
 @dataclass(frozen=True)
@@ -51,97 +49,96 @@ def model_config() -> ModelConfig:
                        os.environ.get("MOONSHOT_API_KEY", "").strip())
 
 
-def request_chat(messages: list[dict[str, str]], max_tokens: int,
-                 config: ModelConfig | None = None, json_mode: bool = False) -> str:
-    config = config or model_config()
+def model_options(config, max_tokens, json_mode=False):
+    if current():current().set_phase('model_config')
     if not config.configured:
-        key_name = {"deepseek": "DEEPSEEK_API_KEY", "kimi": "MOONSHOT_API_KEY", "zhipu": "ZHIPU_API_KEY", "siliconflow": "SILICONFLOW_API_KEY"}[config.provider]
-        raise ModelError(f"服务端尚未配置 {key_name}")
-    if not config.base_url.startswith("https://"):
-        raise ModelError("模型接口必须使用 HTTPS")
-    payload: dict[str, object] = {"model": config.model, "messages": messages,
-                                  "max_tokens": max_tokens, "stream": False}
-    if config.provider in {"deepseek", "zhipu"}:
-        if not (config.provider == "zhipu" and config.model.startswith("glm-5.3")):
-            payload["thinking"] = {"type": "disabled"}
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
-    if config.provider == "zhipu" and config.model.startswith("glm-5.3"):
-        payload["reasoning_effort"] = "low"
-        payload["max_tokens"] = max(max_tokens, 16384)
-    if config.provider == "siliconflow" and json_mode:
-        payload["response_format"] = {"type": "json_object"}
-    request = Request(
-        config.base_url + "/chat/completions",
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Authorization": "Bearer " + config.api_key, "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urlopen(request, timeout=90) as response:
-            result = json.load(response)
-    except HTTPError as error:
-        # 只解释已知错误码，避免把供应商原始响应或密钥写进日志。
-        code = ""
+        raise ModelError('服务端尚未配置模型 Key')
+    if not config.base_url.startswith('https://'):
+        raise ModelError('模型接口必须使用 HTTPS')
+    extra = {}
+    if config.provider in {'deepseek', 'zhipu'}:
+        if config.provider == 'zhipu' and config.model.startswith('glm-5.3'):
+            extra['reasoning_effort'] = 'low'
+            max_tokens = max(max_tokens, 16384)
+        else:
+            extra['thinking'] = {'type': 'disabled'}
+    options = {'model': config.model, 'max_tokens': max_tokens, 'extra_body': extra}
+    if json_mode:
+        options['response_format'] = {'type': 'json_object'}
+    if current():current().set_phase('model_wait')
+    return options
+
+
+def provider_error(error, config):
+    if isinstance(error, APITimeoutError):
+        return ModelError('模型等待响应超时，请重试')
+    if isinstance(error, APIConnectionError):
+        return ModelError('模型网络连接失败，请重试')
+    body = getattr(error, 'body', {}) or {}
+    code = str(body.get('code', '') if isinstance(body, dict) else '')
+    if config.provider == 'zhipu' and code == '1113':
+        return ModelError('智谱账户余额不足（HTTP 429 / 1113），请检查当前模型的 API 余额或可用资源包；重试无法解决')
+    if config.provider == 'zhipu' and code == '1305':
+        return ModelError('智谱模型当前访问量过大（HTTP 429 / 1305），请稍后重试或在服务端选择额度支持的其他模型')
+    return ModelError(f'{config.provider} 接口返回 HTTP {getattr(error, "status_code", "未知")}；请检查模型及请求参数')
+
+
+async def _sdk_response(messages, max_tokens, config, json_mode, stream):
+    options = model_options(config, max_tokens, json_mode)
+    async with AsyncOpenAI(api_key=config.api_key, base_url=config.base_url,
+                           timeout=90, max_retries=0) as client:
+        result = await client.chat.completions.create(messages=messages, stream=stream, **options)
+        if not stream:
+            if not result.choices or not result.choices[0].message.content:
+                raise ModelError('模型没有返回可读取的内容')
+            if result.choices[0].finish_reason == 'length':
+                raise ModelError('模型达到生成长度上限，回复未完成；请缩小任务范围后重试')
+            yield result.choices[0].message.content
+            return
+        received = completed = False
+        async with result:
+            async for chunk in result:
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                if choice.finish_reason == 'length':
+                    raise ModelError('模型达到生成长度上限，回复未完成；请缩小任务范围后重试')
+                if choice.finish_reason:
+                    completed = True
+                if choice.delta.content:
+                    received = True
+                    yield choice.delta.content
+        if not received:
+            raise ModelError('模型没有返回可读取的内容')
+        if not completed:
+            raise ModelError('模型连接中断，当前结果未完成')
+
+
+def _request(messages, max_tokens, config, json_mode, stream):
+    with model_slot():
         try:
-            code = str(json.loads(error.read()).get("error", {}).get("code", ""))
-        except (ValueError, AttributeError):
-            pass
-        if config.provider == "zhipu" and code == "1113":
-            raise ModelError("智谱账户余额不足（HTTP 429 / 1113），请检查当前模型的 API 余额或可用资源包；重试无法解决") from error
-        if config.provider == "zhipu" and code == "1305":
-            raise ModelError("智谱模型当前访问量过大（HTTP 429 / 1305），请稍后重试或在服务端选择额度支持的其他模型") from error
-        raise ModelError(f"{config.provider} 接口返回 HTTP {error.code} / {code or '未知错误码'}；请检查模型及请求参数" if error.code == 400 else f"{config.provider} 接口返回 HTTP {error.code} / {code or '未知错误码'}") from error
-    except (URLError, TimeoutError) as error:
-        raise ModelError(f"{config.provider} 连接失败或超时，请检查网络和接口地址") from error
-    try:
-        content = result["choices"][0]["message"]["content"]
-        if not isinstance(content, str) or not content.strip():
-            raise ValueError("empty content")
-        return content
-    except (KeyError, IndexError, TypeError, ValueError) as error:
-        raise ModelError("模型没有返回可读取的内容") from error
+            for text in sync_stream(_sdk_response(messages, max_tokens, config, json_mode, stream)):
+                checkpoint()
+                if current():
+                    current().set_phase('model_stream' if stream else 'model_parse')
+                yield text
+        except APIError as error:
+            converted = provider_error(error, config)
+            if current():
+                current().fail(converted)
+            raise converted from None
+        except ModelError as error:
+            if current():
+                current().fail(error)
+            raise
+
+
+def request_chat(messages, max_tokens, config=None, json_mode=False):
+    return ''.join(_request(messages, max_tokens, config or model_config(), json_mode, False))
 
 
 def _request_chat_stream(messages, max_tokens=2400, config=None, json_mode=False):
-    """Forward visible content deltas only, never hidden reasoning."""
-    config=config or model_config()
-    if not config.configured:raise ModelError("服务端尚未配置模型 Key")
-    if not config.base_url.startswith("https://"):raise ModelError("模型接口必须使用 HTTPS")
-    payload={"model":config.model,"messages":messages,"max_tokens":max_tokens,"stream":True}
-    if config.provider in {"deepseek","zhipu"} and not (config.provider=="zhipu" and config.model.startswith("glm-5.3")):payload["thinking"]={"type":"disabled"}
-    if config.provider=="zhipu" and config.model.startswith("glm-5.3"):
-        payload["reasoning_effort"]="low"
-        payload["max_tokens"]=max(max_tokens,16384)
-    if json_mode:payload["response_format"]={"type":"json_object"}
-    request=Request(config.base_url+"/chat/completions",data=json.dumps(payload,ensure_ascii=False).encode(),headers={"Authorization":"Bearer "+config.api_key,"Content-Type":"application/json"},method="POST")
-    received=completed=False
-    try:
-        with urlopen(request,timeout=90) as response:
-            for raw in response:
-                line=raw.decode("utf-8").strip()
-                if not line.startswith("data:"):continue
-                data=line[5:].strip()
-                if data=="[DONE]":completed=True;break
-                value=json.loads(data)
-                if value.get("error"):raise ModelError("模型流返回错误，请重试")
-                choices=value.get("choices",[])
-                if not choices:continue
-                if choices[0].get("finish_reason")=="length":raise ModelError("模型达到生成长度上限，回复未完成；请缩小任务范围后重试")
-                if choices[0].get("finish_reason"):completed=True
-                delta=choices[0].get("delta",{}).get("content")
-                if isinstance(delta,str) and delta:received=True;yield delta
-        if not received:raise ModelError("模型没有返回可读取的内容")
-        if not completed:raise ModelError("模型连接中断，当前结果未完成")
-    except HTTPError as e:
-        code=""
-        try:code=str(json.loads(e.read()).get("error",{}).get("code",""))
-        except (ValueError,AttributeError):pass
-        if config.provider=="zhipu" and code=="1113":raise ModelError("智谱账户余额不足（HTTP 429 / 1113），请检查当前模型的 API 余额或可用资源包；重试无法解决") from e
-        if config.provider=="zhipu" and code=="1305":raise ModelError("智谱访问繁忙（429 / 1305），请稍后重试") from e
-        raise ModelError(f"{config.provider} 接口返回 HTTP {e.code} / {code or '未知错误码'}；请检查模型及请求参数" if e.code == 400 else f"{config.provider} 接口返回 HTTP {e.code} / {code or '未知错误码'}") from e
-    except (URLError,TimeoutError) as e:raise ModelError("模型连接失败或超时，请重试") from e
-    except (ValueError,UnicodeError) as e:raise ModelError("模型流格式异常，请重试") from e
+    yield from _request(messages, max_tokens, config or model_config(), json_mode, True)
 
 
 def request_chat_stream(messages, max_tokens=2400, config=None, json_mode=False, on_provider=None):
@@ -151,6 +148,8 @@ def request_chat_stream(messages, max_tokens=2400, config=None, json_mode=False,
         for piece in _request_chat_stream(messages,max_tokens,config,json_mode):
             received=True
             yield piece
+    except ExecutionCancelled:
+        raise
     except ModelError as error:
         eligible=any(word in str(error) for word in ("1305", "超时", "连接失败", "HTTP 503", "HTTP 502"))
         key=os.environ.get("DEEPSEEK_API_KEY", "").strip()
@@ -159,9 +158,12 @@ def request_chat_stream(messages, max_tokens=2400, config=None, json_mode=False,
                              os.environ.get("DEEPSEEK_BASE_URL","https://api.deepseek.com").rstrip("/"),key)
         if on_provider:on_provider(fallback)
         yield from _request_chat_stream(messages,max_tokens,fallback,json_mode)
+        if current():current().error='';current().failed_phase=''
 
 
 def parse_json(content: str) -> dict:
+    checkpoint()
+    if current():current().set_phase('model_parse')
     try:
         if content.strip().startswith("```"):
             content = content.strip().split("\n", 1)[1].rsplit("```", 1)[0]
@@ -170,7 +172,9 @@ def parse_json(content: str) -> dict:
             raise ValueError("not object")
         return value
     except (ValueError, IndexError) as error:
-        raise ModelError("模型未返回可解析的结构化结果") from error
+        failure=ModelError("模型未返回可解析的结构化结果")
+        if current():current().fail(failure)
+        raise failure from error
 
 
 def test_connection() -> None:

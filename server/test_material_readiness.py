@@ -1,7 +1,9 @@
 """Cross-workspace references, history and human publication."""
-from test_access_workflows import AccessWorkflowTests,db
+import unittest
+from test_access_workflows import AccessFixture,db
 from uuid import uuid4
-class MaterialReadinessTests(AccessWorkflowTests):
+import json
+class MaterialReadinessTests(AccessFixture,unittest.TestCase):
  def test_shared_template_and_history(self):
   r=self.c.post('/api/projects/'+self.p+'/documents',headers=self.ah,data={'title':'共享模板','version':'V1'},files={'file':('template.md',b'# layout','text/markdown')});self.assertEqual(r.status_code,200,r.text);identifier=r.json()['id']
   for stage in ('F7','F8'):
@@ -15,7 +17,7 @@ class MaterialReadinessTests(AccessWorkflowTests):
   self.assertEqual([r['revision'] for r in rows if r['title']=='配置清单'],[2,1])
  def test_human_publication_notifies_once(self):
   identifier=uuid4().hex
-  with db() as c:c.execute('INSERT INTO workspace_replies VALUES (?,?,?,?,?,?,?,?,?)',(identifier,self.p,'F3','pm','已核对设备清单','[]','2026-10-16',None,None))
+  with db() as c:c.execute('INSERT INTO workspace_replies VALUES (?,?,?,?,?,?,?,?,?)',(identifier,self.p,'F3','pm','已核对设备清单',json.dumps([{'id':'solution-result','workflow':{'status':'draft','review':True}}]),'2026-10-16',None,None))
   body={'source_id':identifier,'title':'配置清单','content':'已核对设备清单','conversation_id':'test'};endpoint='/api/projects/'+self.p+'/workspaces/F3/artifacts/adopt'
   first=self.c.post(endpoint,headers=self.admin,json=body);self.assertEqual(first.status_code,200,first.text)
   self.assertEqual(self.c.post(endpoint,headers=self.admin,json=body).json()['id'],first.json()['id'])
@@ -23,3 +25,10 @@ class MaterialReadinessTests(AccessWorkflowTests):
    r=self.c.get('/api/projects/'+self.p+'/workspaces/'+stage+'/collaboration',headers=self.ah);self.assertEqual(r.status_code,200,r.text)
    self.assertEqual(sum(m['artifact_id']==first.json()['id'] for m in r.json()),1)
   with db() as c:self.assertEqual(c.execute('SELECT count(*) FROM workspace_replies WHERE project_id=?',(self.p,)).fetchone()[0],1)
+
+ def test_f3_f4_unverified_reply_is_not_publishable(self):
+  for stage in ('F3','F4'):
+   identifier=uuid4().hex
+   with db() as c:c.execute('INSERT INTO workspace_replies VALUES (?,?,?,?,?,?,?,?,?)',(identifier,self.p,stage,'pm','未核对清单','[]','2026-10-16',None,None))
+   response=self.c.post(f'/api/projects/{self.p}/workspaces/{stage}/artifacts/adopt',headers=self.admin,json={'source_id':identifier,'title':'待核对','content':'未核对清单','conversation_id':'test'})
+   self.assertEqual(response.status_code,409,response.text)
