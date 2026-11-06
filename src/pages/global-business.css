@@ -7,3 +7,6 @@
 .gb-pagination{display:flex;justify-content:flex-end;align-items:center;gap:12px;padding:12px 14px;border-top:1px solid var(--line);font-size:12px;color:var(--text-secondary)}.gb-pagination>span:first-child{margin-right:auto}
 
 .global-business{min-height:0;flex:1}.gb-layout{min-height:0}.gb-content{min-height:0;overflow:auto;padding:0;margin:0;max-width:none}.gb-chart-grid{flex-shrink:0}.gb-attention{flex-shrink:0}
+
+/* Business registers use explicit column widths rather than library catalog defaults. */
+.gb-table-scroll .gb-data-table{table-layout:auto;width:max-content;min-width:100%}.gb-table-scroll .gb-data-table th,.gb-table-scroll .gb-data-table td{width:170px;min-width:170px;max-width:300px}.gb-table-scroll .gb-data-table th:first-child,.gb-table-scroll .gb-data-table td:first-child{width:250px;min-width:250px}.gb-table-scroll .gb-data-knowledge th:first-child,.gb-table-scroll .gb-data-knowledge td:first-child{width:130px;min-width:130px}.gb-table-scroll .gb-data-knowledge th:nth-child(2),.gb-table-scroll .gb-data-knowledge td:nth-child(2){width:290px;min-width:290px}.gb-table-scroll .gb-data-knowledge th:nth-child(4),.gb-table-scroll .gb-data-knowledge td:nth-child(4){width:430px;min-width:430px}
