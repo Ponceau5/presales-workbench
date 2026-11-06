@@ -305,7 +305,8 @@ def install(app,actor,db=None):
         if re.search(r'认证|证书|报告|合规|\bul\b|\bce\b|emc|fcc|iec',question):intents.add('认证报告')
         if re.search(r'案例|业绩|客户|项目|应用',question):intents.add('项目案例')
         if re.search(r'对比|比较|差异|区别|janitza|umg|参数|精度|采样',question):intents.add('竞品对比')
-        rows.sort(key=lambda r:100*(r['kind'] in intents)+sum(3*int(term in (r['title']+' '+r['kind']).lower())+int(term in r['content'].lower()) for term in terms),reverse=True)
+        normalized_question=re.sub(r'[^a-z0-9]', '',question)
+        rows.sort(key=lambda r:1000*int(bool(re.sub(r'[^a-z0-9]', '',r['product'].lower())) and re.sub(r'[^a-z0-9]', '',r['product'].lower()) in normalized_question)+100*(r['kind'] in intents)+sum(3*int(term in (r['title']+' '+r['kind']).lower())+int(term in r['content'].lower()) for term in terms),reverse=True)
         for row in rows[:12]:
             item={**row,'content':row['content'][:6000]}
             if size+len(json.dumps(item,ensure_ascii=False))>40000:break

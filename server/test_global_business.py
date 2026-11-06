@@ -114,3 +114,10 @@ class GlobalBusinessTests(unittest.TestCase):
         self.assertEqual(self.load()['operations'][0]['location'],'吉隆坡')
         self.assertEqual(self.client.post(endpoint,headers=self.headers,json={'revision':2}).status_code,409)
         self.assertEqual(self.client.get('/api/global-business/archives',headers={'Authorization':'dev'}).status_code,403)
+
+    def test_all_products_question_prefers_named_model(self):
+        self.save('knowledge',{'product':'iMeter 7A','title':'7A认证依据','kind':'认证报告','content':'7A演示证据','status':'已确认'})
+        for i in range(14):self.save('knowledge',{'product':'iMeter 5','title':'5认证 '+str(i),'kind':'认证报告','content':'5演示证据','status':'已确认'})
+        with patch('global_business.request_chat',return_value='7A依据'):
+            reply=self.client.post('/api/global-business/imeter/ask',headers=self.headers,json={'question':'iMeter 7A有哪些认证？'})
+            self.assertEqual(reply.json()['sources'][0]['product'],'iMeter 7A')
