@@ -1,4 +1,20 @@
 <!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>2027 全球市场活动与展会计划</title>
+<script>
+(() => {
+  const apply = theme => { const value = theme === 'dark' ? 'dark' : 'light'; if (document.documentElement.dataset.theme !== value) document.documentElement.dataset.theme = value; };
+  try {
+    const root = window.parent.document.documentElement;
+    apply(root.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+    const observer = new MutationObserver(() => apply(root.dataset.theme));
+    observer.observe(root, {attributes:true, attributeFilter:['data-theme']});
+    window.addEventListener('pagehide', () => observer.disconnect(), {once:true});
+  } catch {
+    const preference = matchMedia('(prefers-color-scheme: dark)');
+    apply(preference.matches ? 'dark' : 'light');
+    preference.addEventListener('change', event => apply(event.matches ? 'dark' : 'light'));
+  }
+})();
+</script>
 <style>
 html{scrollbar-gutter:stable both-edges;scrollbar-width:thin}
 :root{--ink:#182338;--muted:#778195;--line:#e7ebf1;--blue:#3867e8;--bg:#f4f6fa;--white:#fff}
@@ -31,6 +47,33 @@ td{padding:12px;border-bottom:1px solid #edf0f4;vertical-align:top;font-size:11p
 a{color:#3867e8;text-decoration:none}a:hover{text-decoration:underline}.hint{font-size:11px;color:#818b9c;margin:12px 0 0}.empty{text-align:center;padding:38px;color:#8a93a3}.footer{font-size:10px;color:#8a93a3;padding:15px 2px 28px}
 @media(max-width:980px){.overview{grid-template-columns:1fr 1fr}.overview .panel:last-child{grid-column:span 2}.stats{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:650px){.overview{grid-template-columns:1fr}.overview .panel:last-child{grid-column:auto}.stats{grid-template-columns:repeat(2,1fr)}main{padding:0 12px}header{padding:24px 16px}.month-overview{grid-template-columns:repeat(3,1fr)}}
+
+html{color-scheme:light;scrollbar-color:#bac2d1 var(--bg)}
+:root[data-theme="dark"]{color-scheme:dark;--ink:#e8ecf5;--muted:#a7b1c4;--line:#344056;--blue:#94b4ff;--bg:#121822;--white:#1c2432}
+[data-theme="dark"] header{background:linear-gradient(115deg,#1a2942,#273f64)}
+[data-theme="dark"] :is(.section-note,.sub,.hint,.empty,.footer){color:#a7b1c4}
+[data-theme="dark"] :is(.dist-name,.status-row,.filter-state){color:#c0cadd}
+[data-theme="dark"] :is(.dist-count,.country-chip b,.month-item b,.event-name){color:#e8ecf5}
+[data-theme="dark"] :is(.country-chip,.month-item){background:#222d3e;border-color:var(--line)}
+[data-theme="dark"] :is(.country-chip span:first-child,.month-item span){color:#bac6db}
+[data-theme="dark"] .track{background:#354156}
+[data-theme="dark"] .fill{background:#8da8f1}
+[data-theme="dark"] :is(.country-chip.selected,.month-item.selected){background:#2a4267;border-color:#91b3fb}
+[data-theme="dark"] :is(.country-chip.selected span,.country-chip.selected b,.month-item.selected span,.month-item.selected b){color:#d5e5ff}
+[data-theme="dark"] :is(.tab,.clear-filter,select,input){background:var(--white);border-color:var(--line);color:var(--ink)}
+[data-theme="dark"] input::placeholder{color:#a7b1c4}
+[data-theme="dark"] .tab.active{background:#355985;border-color:#7fa4df;color:#fff}
+[data-theme="dark"] .active-filter{background:#293e60;color:#c0d5ff}
+[data-theme="dark"] table{background:var(--white)}
+[data-theme="dark"] th{background:#263246;color:#cad4e5}
+[data-theme="dark"] td{color:#d0d9e8;border-color:var(--line)}
+[data-theme="dark"] tr:hover td{background:#283449}
+[data-theme="dark"] .p-confirm{background:#4d3b1b;color:#f6d884}
+[data-theme="dark"] .p-intent{background:#203d57;color:#a2d3ff}
+[data-theme="dark"] .p-focus{background:#392f57;color:#cebdff}
+[data-theme="dark"] .p-pending{background:#303b4e;color:#c3ccdb}
+[data-theme="dark"] a{color:#a6c1ff}
+:is(button,input,select,a):focus-visible{outline:2px solid var(--blue);outline-offset:3px}
 </style></head><body>
 <header><div class="eyebrow">GLOBAL MARKET EVENTS · 2027</div><h1>2027 全球市场活动与展会计划</h1><div class="subtitle">全球数据中心展会、行业会议及市场活动汇总 · 活动区域与国家分布总览<br>基于 Excel 原始清单自动统计，帮助快速了解年度市场活动布局与参展计划。</div></header>
 <main>

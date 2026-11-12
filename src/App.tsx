@@ -540,7 +540,7 @@ export default function App() {
               <Route path="/" element={<Portal key={location.search} />} />
               <Route path="/library" element={<Resources />} />
               <Route path="/global-business" element={<GlobalBusiness />} />
-              <Route path="/brand-promotion" element={<iframe className="brand-promotion-frame" title="展会信息：2027 全球市场活动与展会计划" src="/brand-promotion/2027-events.html?layout=20261112-3" />} />
+              <Route path="/brand-promotion" element={<iframe className="brand-promotion-frame" title="展会信息：2027 全球市场活动与展会计划" src="/brand-promotion/2027-events.html?layout=20261112-theme1" />} />
               <Route
                 path="/methods"
                 element={<KnowledgeLibrary key={location.search} />}
