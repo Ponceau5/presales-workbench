@@ -174,7 +174,6 @@ def install(app,db,actor,now,files_dir):
     def trial(payload:Trial,account:str=Depends(actor)):
         owner(account)
         check_project(account,payload.project_id)
-        if payload.use_gsa_excerpt:check_project(account,"GSA02")
         with db() as c:
             cfg=config(c,payload.config_id);task=next((t for t in cfg["tasks"] if t["id"]==payload.task_id),None)
             if not task:raise HTTPException(422,"任务不在该配置版本中")
@@ -185,12 +184,11 @@ def install(app,db,actor,now,files_dir):
                 sources.append(dict(row))
         materials=None
         if payload.use_gsa_excerpt:
-            if payload.project_id!="GSA02":raise HTTPException(422,"不能将 GSA02 资料用于其他项目")
-            path=files_dir/"GSA02"/"materials.json"
-            if not path.exists():raise HTTPException(409,"请先导入 GSA02 资料")
+            path=files_dir/payload.project_id/"materials.json"
+            if not path.exists():raise HTTPException(409,f"请先导入 {payload.project_id} 资料")
             materials=json.loads(path.read_text());sources.extend([{"title":"CMMS 规格摘录","pages":materials["spec_pages"],"versions":[{k:s[k] for k in ["id","title","sha256"]} for s in materials["manifest"]]},{"schedule":materials["schedule"],"phases":materials["phases"],"warnings":materials["warnings"]}])
         if sum(len(json.dumps(s,ensure_ascii=False)) for s in sources)>60000:raise HTTPException(422,"请缩小资料选择范围")
-        if "server_sizing" in task["tools"] and (not materials or payload.parameters is None):raise HTTPException(422,"测点计算需要 GSA02 估算资料及确认后的参数")
+        if "server_sizing" in task["tools"] and (not materials or payload.parameters is None):raise HTTPException(422,"测点计算需要项目估算资料及确认后的参数")
         if "quote_sheet" in task["tools"] and not payload.quote_rows:raise HTTPException(422,"请添加本次成本计算的条目；未知价格可留空")
         selected=ModelConfig("zhipu",os.environ.get("ZHIPU_MODEL","glm-4.7-flash"),os.environ.get("ZHIPU_BASE_URL","https://open.bigmodel.cn/api/paas/v4").rstrip("/"),os.environ.get("ZHIPU_API_KEY","").strip())
         if not selected.configured:raise HTTPException(409,"本机尚未配置 ZHIPU_API_KEY")

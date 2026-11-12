@@ -8,7 +8,7 @@ export function CostReviewEditor({base,sourceId,scenario,onSaved}:{base:string;s
  async function download(){
   if(Object.keys(cells).length){setNotice('请先保存修改');return;}
   const response=await fetch(localApiBase+base+'/cost-drafts/'+sourceId+'/download',{headers:{Authorization:'Bearer '+sessionStorage.getItem('presales-local-api-token')}});
-  if(!response.ok)throw new Error('模板下载失败');const url=URL.createObjectURL(await response.blob()),a=document.createElement('a');a.href=url;a.download='GSA02_成本模板V6_草稿.xlsx';a.click();URL.revokeObjectURL(url);
+  if(!response.ok)throw new Error('模板下载失败');const url=URL.createObjectURL(await response.blob()),a=document.createElement('a');a.href=url;a.download=`${scenario.project}_成本模板_草稿.xlsx`;a.click();URL.revokeObjectURL(url);
  }
  return <section className="gsa-cost-editor"><F7TableTemplate kind="cost" projectId={scenario.project} demoScenario={preview} onCellEdit={(key,value)=>setCells(v=>({...v,[key]:value}))} onDownload={()=>void download().catch(e=>setError(e.message))}/><footer>{notice&&<span role="status">{notice}</span>}{error&&<FloatingNotice role="alert">{error}</FloatingNotice>}<button className="btn primary" disabled={busy||!Object.keys(cells).length} onClick={()=>{setBusy(true);setError('');setNotice('');void localApi<{id:string;answer:string;scenario:F7DemoScenario;created_at:string}>(base+'/cost-template-revisions',{method:'POST',body:JSON.stringify({source_id:sourceId,cells})}).then(onSaved).catch(e=>setError(e.message)).finally(()=>setBusy(false));}}>保存</button></footer></section>;
 }

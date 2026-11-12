@@ -112,3 +112,18 @@ export async function connectCasdoorApi() {
  sessionStorage.setItem("presales-person",JSON.stringify(session.person));registerAccount(session.person);
  return session.account as string;
 }
+
+/** Downloads use the same authenticated API transport as JSON requests. */
+export async function downloadApiFile(path:string, filename:string) {
+  const token=sessionStorage.getItem(tokenKey);
+  if(!token) throw new Error('请重新登录协作服务');
+  const response=await serviceFetch(`${localApiBase}${path}`,{headers:{Authorization:`Bearer ${token}`}});
+  if(!response.ok){const body=await response.json().catch(()=>({}));throw responseIssue(body,`下载失败 (${response.status})`);}
+  const disposition=response.headers.get('Content-Disposition')||'';
+  const encoded=disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if(encoded){try{filename=decodeURIComponent(encoded[1]);}catch{/* Keep provided filename. */}}
+  else {const plain=disposition.match(/filename="([^"]+)"/i);if(plain)filename=plain[1];}
+  const url=URL.createObjectURL(await response.blob());
+  const link=document.createElement('a');link.href=url;link.download=filename;link.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}

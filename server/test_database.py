@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-from database import Row, parameters, connect, postgres_enabled
+from database import Row, parameters, connect, database_url, postgres_enabled
 
 
 class ParameterTests(unittest.TestCase):
@@ -23,10 +23,10 @@ class PostgresTests(unittest.TestCase):
         import psycopg,uuid
         from psycopg.conninfo import make_conninfo
         from unittest.mock import patch
-        url=os.environ['PRESALES_DATABASE_URL'];schema='pool_scope_'+uuid.uuid4().hex
+        url=database_url();schema='pool_scope_'+uuid.uuid4().hex
         with psycopg.connect(url) as c:c.execute('CREATE SCHEMA '+schema)
         try:
-            with patch.dict(os.environ,{'PRESALES_DATABASE_URL':make_conninfo(url,options='-c search_path='+schema)}):
+            with patch.dict(os.environ,{'PRESALES_TEST_DATABASE_URL':make_conninfo(url,options='-c search_path='+schema),'PRESALES_TEST_SCHEMA':''}):
                 with connect('unused') as c:self.assertEqual(c.execute('SELECT current_schema()').fetchone()[0],schema)
         finally:
             with psycopg.connect(url) as c:c.execute('DROP SCHEMA '+schema)
@@ -34,11 +34,12 @@ class PostgresTests(unittest.TestCase):
     def test_pool_replaces_a_terminated_idle_connection(self):
         import psycopg
         with connect('unused') as c:pid=c.execute('SELECT pg_backend_pid()').fetchone()[0]
-        with psycopg.connect(os.environ['PRESALES_DATABASE_URL']) as c:c.execute('SELECT pg_terminate_backend(%s)',(pid,))
+        with psycopg.connect(database_url()) as c:c.execute('SELECT pg_terminate_backend(%s)',(pid,))
         with connect('unused') as c:self.assertEqual(c.execute('SELECT 1').fetchone()[0],1)
 
     def test_rollback_upsert_and_cross_connection_critical_section(self):
         with connect('unused') as c:
+            c.execute('DROP TABLE IF EXISTS migration_atomic CASCADE')
             c.execute('CREATE TABLE migration_atomic(id TEXT PRIMARY KEY,value INTEGER NOT NULL)')
             c.execute("INSERT INTO migration_atomic VALUES ('same',0)")
         with self.assertRaises(RuntimeError):
@@ -61,15 +62,17 @@ class PostgresTests(unittest.TestCase):
             self.assertEqual(c.execute('SELECT value FROM migration_atomic').fetchone()[0],22)
 
     def test_official_graph_saver_restores_pause_and_prevents_double_execution(self):
+        import uuid
         from agent_runtime import Runtime
         from fastapi import HTTPException
         with tempfile.TemporaryDirectory(dir=os.getenv('PRESALES_TEST_TMP')) as directory:
             runtime=Runtime(lambda:connect('unused'),Path(directory))
             recipe={'synthetic':True}
-            values=list(runtime.execute('SYNTHETIC','F7','pm','database-test-turn',recipe,lambda:iter(['data: {"type":"delta","text":"synthetic"}\n\n']),'confirm_parameters'))
+            turn='database-test-'+uuid.uuid4().hex
+            values=list(runtime.execute('SYNTHETIC','F7','pm',turn,recipe,lambda:iter(['data: {"type":"delta","text":"synthetic"}\n\n']),'confirm_parameters'))
             self.assertTrue(any('waiting' in value for value in values))
             with connect('unused') as c:
-                identifier=c.execute("SELECT id FROM runtime_runs WHERE turn_id='database-test-turn'").fetchone()[0]
+                identifier=c.execute('SELECT id FROM runtime_runs WHERE turn_id=?',(turn,)).fetchone()[0]
             another=Runtime(lambda:connect('unused'),Path(directory))
             with another.graph() as graph:
                 self.assertEqual(graph.get_state({'configurable':{'thread_id':identifier}}).next,('approval',))

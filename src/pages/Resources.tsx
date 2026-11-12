@@ -1,5 +1,8 @@
+import {KnowledgeUpload} from "@/components/PublicKnowledgeCatalog";
+import {localApi, downloadApiFile} from "@/lib/localApi";
+import {toast} from "sonner";
 import { FileFormatIcon } from '@/components/FileFormatIcon';
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Search, Copy, ExternalLink } from "lucide-react";
 import { sharedCatalog } from "@/lib/sharedCatalog";
 import { PdfPreview } from "@/components/PdfPreview";
@@ -26,7 +29,13 @@ const previews: Record<string, { path: string; pages: number }> = {
     pages: 5,
   },
 };
+type Uploaded = {id:string;title:string;category:string;product:string;filename:string;created_at:string;enabled:number};
 export default function Resources() {
+  const [uploaded,setUploaded]=useState<Uploaded[]>([]);
+  const [canManage,setCanManage]=useState(false);
+  const load=()=>localApi<{documents:Uploaded[];can_manage:boolean}>('/api/knowledge/documents').then(data=>{setUploaded(data.documents.filter(d=>d.enabled));setCanManage(data.can_manage);}).catch(e=>toast.error(e instanceof Error?e.message:'资料读取失败'));
+  useEffect(()=>{void load();},[]);
+  const catalog=[...sharedCatalog,...uploaded.map(d=>({id:d.id,title:d.title,category:d.category,product:d.product,format:d.filename.split('.').pop()?.toUpperCase()||'',language:'未标注',path:'',location:'公共资料',updated:new Date(d.created_at).toLocaleDateString('sv-SE')}))];
   const [page, setPage] = useState(0);
   const [category, setCategory] = useState("全部"),
     [query, setQuery] = useState(""),
@@ -34,8 +43,8 @@ export default function Resources() {
     [language, setLanguage] = useState("全部"),
     [opened, setOpened] = useState<(typeof sharedCatalog)[number] | null>(null),
     [copied, setCopied] = useState(false);
-  const categories = ["全部", ...new Set(sharedCatalog.map((r) => r.category))];
-  const visible = sharedCatalog.filter(
+  const categories = ["全部", ...new Set(catalog.map((r) => r.category))];
+  const visible = catalog.filter(
     (r) =>
       (category === "全部" || r.category === category) &&
       (product === "全部" || r.product === product) &&
@@ -52,8 +61,9 @@ export default function Resources() {
     <div className="catalog-page">
       <header className="catalog-heading page-titlebar">
         <h1>
-          公共资料 <small>{sharedCatalog.length}</small>
+          公共资料 <small>{catalog.length}</small>
         </h1>
+        {canManage && <KnowledgeUpload onSaved={load}/>}
       </header>
       <div className="catalog-workspace">
         <aside className="catalog-tree">
@@ -69,7 +79,7 @@ export default function Resources() {
               {c}
               <span>
                 {
-                  sharedCatalog.filter((r) => c === "全部" || r.category === c)
+                  catalog.filter((r) => c === "全部" || r.category === c)
                     .length
                 }
               </span>
@@ -92,7 +102,7 @@ export default function Resources() {
               value={product}
               onChange={(e) => setProduct(e.target.value)}
             >
-              {["全部", ...new Set(sharedCatalog.map((r) => r.product))].map(
+              {["全部", ...new Set(catalog.map((r) => r.product))].map(
                 (p) => (
                   <option key={p}>{p}</option>
                 ),
@@ -128,6 +138,8 @@ export default function Resources() {
                       <button
                         className="file-open"
                         onClick={() => {
+                          const doc=uploaded.find(d=>d.id===r.id);
+                          if(doc){void downloadApiFile('/api/knowledge/documents/'+doc.id+'/download',doc.filename).catch(e=>toast.error(String(e)));return;}
                           setOpened(r);
                           setCopied(false);
                         }}

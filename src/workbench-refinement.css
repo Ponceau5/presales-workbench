@@ -371,16 +371,6 @@
 .mission-collaboration .delivery-empty {
   padding: 25px;
 }
-.assistant-panel > button {
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  bottom: auto !important;
-  left: auto !important;
-}
-.assistant-panel > div:first-child {
-  padding-right: 35px;
-}
 @media (max-width: 700px) {
   .inbox-columns,
   .inbox-row {

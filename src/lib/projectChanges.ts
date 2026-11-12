@@ -30,13 +30,14 @@ export function projectChanges(state: State, projectId: string): LogEntry[] {
   const stages = stagesForProject(projectId);
   const review = readProjectReview(projectId, state);
   const items = projectId === "RCJM1" ? referenceItems : demoReviewItems;
-  const snapshot = (projectId === state.currentProjectId
+  const savedSnapshot = (projectId === state.currentProjectId
     ? state
-    : state.projects.find((p) => p.id === projectId)?.snapshot) || {
-    audit: [],
-    stageStates: {} as State["stageStates"],
-    sourceVersion: 6,
-    changeStatus: {} as State["changeStatus"],
+    : state.projects.find((p) => p.id === projectId)?.snapshot);
+  const snapshot = {
+    audit: savedSnapshot?.audit ?? [],
+    stageStates: savedSnapshot?.stageStates ?? {} as State["stageStates"],
+    sourceVersion: savedSnapshot?.sourceVersion ?? 6,
+    changeStatus: savedSnapshot?.changeStatus ?? {} as State["changeStatus"],
   };
   return [
     ...(demoProjectChanges[projectId] || []),

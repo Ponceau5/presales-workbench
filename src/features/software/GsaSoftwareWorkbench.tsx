@@ -65,10 +65,12 @@ function gapParts(text:string){const found=[...text.matchAll(/^#{1,3}\s*(内部�
 const json=(data:unknown)=>({method:"POST",body:JSON.stringify(data)});
 const fmt=(v:number)=>v.toLocaleString("zh-CN",{maximumFractionDigits:2});
 
-export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId?:string;stageId?:string}){
+export function GsaSoftwareWorkbench({projectId,stageId="F5"}:{projectId:string;stageId?:string}){
  const attachments=useChatAttachments(projectId,{stageId,question:()=>question});
- const specialized=projectId==="GSA02"&&stageId==="F5";
- const base=specialized?"/api/projects/GSA02/software":`/api/projects/${encodeURIComponent(projectId)}/workspaces/${stageId}`;
+ const gsaBase=`/api/projects/${encodeURIComponent(projectId)}/software`;
+ const [gsaReady,setGsaReady]=useState(stageId==="F5");
+ const specialized=stageId==="F5"&&gsaReady;
+ const base=specialized?gsaBase:`/api/projects/${encodeURIComponent(projectId)}/workspaces/${stageId}`;
  const stage=stages.find(s=>s.id===stageId)??(stageId==="F5"?{title:"软件技术支持"}:undefined);
  const durableBase=`/api/projects/${encodeURIComponent(projectId)}/workspaces/${stageId}`;
  const storageScope=projectId+(stageId==="F5"?"":":"+stageId);
@@ -256,17 +258,21 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  async function load(){
    if(!account||!localApiReady(account)){setError("本机服务尚未登录。请重新登录或在设置中连接服务。");return;}
    try{
+    if(stageId==="F5"&&gsaReady){
+      try{setMaterials(await localApi<Material>(gsaBase+"/materials"));}
+      catch{setGsaReady(false);return;}
+    }
     await refresh();
     await loadSalesFlow();
     if(stageId==="F7")setCostParameters(await localApi(base+"/cost-parameters"));
     if(stageId==="F5"){const cfg=await localApi<{tasks:{id:string;name:string;prompt:string}[]}|null>(`/api/projects/${encodeURIComponent(projectId)}/software-config`);setRoleTasks(cfg?.tasks??softwareTasks);}
-    if(specialized){setDocuments(await localApi(`/api/projects/${encodeURIComponent(projectId)}/documents`));const m=await localApi<Material>(base+"/materials");setMaterials(m);}
+    if(specialized)setDocuments(await localApi(`/api/projects/${encodeURIComponent(projectId)}/documents`));
     else if(!isSales)setDocuments(await localApi(`/api/projects/${encodeURIComponent(projectId)}/documents`));
     setError("");
    }catch(e){setError(e instanceof Error?e.message:"资料读取失败");}
  }
  const loadAccount=useEffectEvent(()=>void load());
- useEffect(()=>{loadAccount();},[account]); // 数据由登录账号的服务端会话获取。
+ useEffect(()=>{loadAccount();},[account,gsaReady]); // 数据由登录账号的服务端会话获取。
  useEffect(()=>{if(!isF7||model?.configured!==false)return;let cancelled=false;void localApi<F7DemoScenario>(base+"/demo-scenario").then(data=>{if(!cancelled)setF7Demo(data);}).catch(e=>{if(!cancelled)setError("模拟 CRM 数据读取失败："+e.message);});return()=>{cancelled=true;};},[isF7,model?.configured,base]);
  const refreshLatest=useEffectEvent(()=>void refresh().catch(e=>{const message=e instanceof Error?e.message:String(e);if(message.includes("请先登录"))clearLocalApiSession();setError(message);}));
  useEffect(()=>{
@@ -580,7 +586,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
  async function downloadMerged(){
   const response=await fetch(localApiBase+base+"/workflow/merged-file",{headers:{Authorization:"Bearer "+sessionStorage.getItem("presales-local-api-token")}});
   if(!response.ok)throw new Error("清单下载失败");
-  const url=URL.createObjectURL(await response.blob());const a=document.createElement("a");a.href=url;a.download=flow?.merged_file||"GSA02.xlsx";a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);
+  const url=URL.createObjectURL(await response.blob());const a=document.createElement("a");a.href=url;a.download=flow?.merged_file||`${projectId}_服务器规格清单.xlsx`;a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);
  }
  const timeline: {id:string;at:string;kind:"turn"|"scheme"|"pending"|"notice";turn?:ChatTurn}[]=[
  ...chatTurns.filter(t=>!(showServer&&t.id===current?.id)).map((turn,i)=>({id:turn.id,kind:"turn" as const,turn,at:turn.createdAt||audit.find(a=>{try{return a.action==="ask"&&JSON.parse(a.detail).question===turn.question;}catch{return false;}})?.created_at||runs.find(r=>r.id===turn.id)?.created_at||new Date(i).toISOString()})),
@@ -706,7 +712,7 @@ export function GsaSoftwareWorkbench({projectId="GSA02",stageId="F5"}:{projectId
 
     </>}
     {drawer==="server"&&<>
-     {current&&<div className="gsa-review-summary"><span>{labels[current.status]}</span><strong>GSA02 · 服务器规格方案</strong><p>设备清单 V{flow?.equipment_revision} · {current.inputs.sampling_seconds} 秒采样 · {current.inputs.retention_years} 年保留</p></div>}
+     {current&&<div className="gsa-review-summary"><span>{labels[current.status]}</span><strong>{projectId} · 服务器规格方案</strong><p>设备清单 V{flow?.equipment_revision} · {current.inputs.sampling_seconds} 秒采样 · {current.inputs.retention_years} 年保留</p></div>}
      {result&&<><h4>{fmt(result.points.low)}–{fmt(result.points.high)} 点</h4><p className="gsa-muted">{result.points.source}</p>{dirty&&!calc&&<p className="gsa-reminder">参数已修改，请重新计算。</p>}
       <table><thead><tr><th>指标</th><th>下限</th><th>上限</th></tr></thead><tbody>{([["samples_per_second","采样/秒"],["time_series_gb","时序库 GB"],["pg_gb","业务库 GB"],["cache_gb","缓存 GB"],["backup_gb","备份 GB"],["raw_data_gb","原始数据盘 GB"]] as const).map(([k,label])=><tr key={k}><td>{label}</td><td>{fmt(result.low[k])}</td><td>{fmt(result.high[k])}</td></tr>)}</tbody></table>
       <details><summary>计算边界</summary>{result.limitations.map(l=><p key={l}>{l}</p>)}</details></>}

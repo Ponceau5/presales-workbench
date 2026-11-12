@@ -266,7 +266,7 @@ export type Action =
   | { type: "knowledge"; item: Knowledge }
   | { type: "knowledgeApprove"; id: string; note: string }
   | { type: "projectCreate"; createdId?: string; name: string; owner: string }
-  | { type: "projectUpdate"; id: string; name: string; owner: string }
+  | { type: "projectUpdate"; id: string; name: string; owner: string; portfolio?: Project["portfolio"] }
   | { type: "projectDelete"; id: string }
   | { type: "projectSwitch"; id: string }
   | StageAction
@@ -657,7 +657,7 @@ export function domainReducer(s: State, a: Action): State {
     };
   }
   if (a.type === "projectUpdate") {
-    return { ...s, projects: s.projects.map((project) => project.id === a.id ? { ...project, name: a.name.trim(), owner: a.owner, updated: "刚刚" } : project) };
+    return { ...s, projects: s.projects.map((project) => project.id === a.id ? { ...project, name: a.name.trim(), owner: a.owner, ...(a.portfolio ? {portfolio:a.portfolio} : {}), updated: "刚刚" } : project) };
   }
   if (a.type === "projectDelete") {
     const projects = s.projects.filter((project) => project.id !== a.id);

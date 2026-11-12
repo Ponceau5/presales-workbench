@@ -395,7 +395,7 @@ async def bind_request(request, account):
     task = Task(account, project, stage, str(data.get('conversation_id') or request.headers.get('x-conversation-id') or identifier), identifier, request.url.path)
     request.state.model_task = task
     _current.set(task)
-    if re.search(r'/(ask-stream|compare-stream|learn-stream|sdk-trial-stream|skill|extract-live|ask-live|trials|runs|analysis/retry|suggest-type)$',request.url.path) or request.url.path in {'/api/project-assistant','/api/model/test'}:
+    if re.search(r'/(ask-stream|compare-stream|learn-stream|sdk-trial-stream|skill|extract-live|ask-live|trials|runs|analysis/retry|suggest-type)$',request.url.path) or request.url.path in {'/api/project-assistant','/api/knowledge/ask','/api/model/test'}:
         import anyio
         await anyio.to_thread.run_sync(task.start)
 

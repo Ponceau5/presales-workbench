@@ -1,3 +1,4 @@
+import "./App.css";
 import GlobalBusiness from "./pages/GlobalBusiness";
 import { requiresIdentityCompletion } from "@/lib/loginRecovery";
 import {FloatingNotice} from "@/components/FloatingNotice";
@@ -81,6 +82,7 @@ function StageRedirect() {
 export default function App() {
   const location = useLocation();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [overviewExpanded, setOverviewExpanded] = useState(true);
   const [state, setState] = useState(() => {
     const s = initialState(loadSettings());
     try {
@@ -234,11 +236,9 @@ export default function App() {
     state.projects.find((p) => p.id === location.pathname.split("/")[2]) ||
     state.projects.find((p) => p.id === state.currentProjectId)!;
   const nav = [
-    { to: "/", label: "项目监控", icon: LayoutDashboard },
     { to: "/tasks", label: "我的任务", icon: UsersRound },
     { to: "/projects", label: "项目", icon: FolderOpen },
     { to: "/library", label: "公共资料", icon: Files },
-    { to: "/global-business", label: "全球业务看板", icon: LayoutDashboard },
     { to: "/access", label: "权限管理", icon: UsersRound },
   ];
   const inProject = ![
@@ -249,6 +249,7 @@ export default function App() {
     "/role-config",
     "/library",
     "/global-business",
+    "/brand-promotion",
     "/methods",
     "/activity",
     "/tasks",
@@ -320,6 +321,16 @@ export default function App() {
             <span>售前工作台</span>
           </Link>
           <nav>
+            <button type="button" className="nav-item overview-toggle" title="信息概览" aria-label="信息概览" aria-expanded={overviewExpanded} aria-controls="overview-menu" onClick={() => setOverviewExpanded(value => !value)}>
+              <LayoutDashboard size={18}/><span>信息概览</span><ChevronDown size={14} className={overviewExpanded ? "overview-chevron expanded" : "overview-chevron"}/>
+            </button>
+            {overviewExpanded && <div id="overview-menu" className="overview-menu">
+              <NavLink to="/" end title="项目监控" className={({isActive}) => "nav-item" + (isActive ? " active" : "")}><span>项目监控</span></NavLink>
+              <NavLink to="/brand-promotion" title="展会信息" className={({isActive}) => "nav-item" + (isActive ? " active" : "")}><span>展会信息</span></NavLink>
+              <Link to="/global-business?view=overview" title="全球业务" className={"nav-item" + (location.pathname === "/global-business" && (new URLSearchParams(location.search).get("view") || "overview") === "overview" ? " active" : "")}><span>全球业务</span></Link>
+              <Link to="/global-business?view=ops" title="国家运营" className={"nav-item" + (location.pathname === "/global-business" && (new URLSearchParams(location.search).get("view") || "overview") === "ops" ? " active" : "")}><span>国家运营</span></Link>
+              <Link to="/global-business?view=leads" title="市场机会" className={"nav-item" + (location.pathname === "/global-business" && (new URLSearchParams(location.search).get("view") || "overview") === "leads" ? " active" : "")}><span>市场机会</span></Link>
+            </div>}
             {nav
               .filter((n) => (n.to !== "/access" || !!currentPerson()?.is_admin) && (n.to !== "/role-config" || state.accountId === "software" || state.accountId === "pm"))
               .map((n) => (
@@ -510,7 +521,7 @@ export default function App() {
                 </NavLink>
               ))}
           </div>
-          <main className={inProject ? "page-content project-content" : ["/tasks","/projects","/library","/access","/global-business"].includes(location.pathname) ? "page-content register-content" : "page-content"} data-page={location.pathname}>
+          <main className={inProject ? "page-content project-content" : ["/tasks","/projects","/library","/access","/global-business","/brand-promotion"].includes(location.pathname) ? "page-content register-content" : "page-content"} data-page={location.pathname}>
             {state.permissionNotice && (
               <FloatingNotice className="permission-notice" role="alert">
                 {state.permissionNotice}
@@ -529,6 +540,7 @@ export default function App() {
               <Route path="/" element={<Portal key={location.search} />} />
               <Route path="/library" element={<Resources />} />
               <Route path="/global-business" element={<GlobalBusiness />} />
+              <Route path="/brand-promotion" element={<iframe className="brand-promotion-frame" title="展会信息：2027 全球市场活动与展会计划" src="/brand-promotion/2027-events.html?layout=20261112-3" />} />
               <Route
                 path="/methods"
                 element={<KnowledgeLibrary key={location.search} />}

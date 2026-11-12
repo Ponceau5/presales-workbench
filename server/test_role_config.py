@@ -160,9 +160,10 @@ class RoleConfigTests(unittest.TestCase):
         self.assertNotIn("ZHIPU_API_KEY",result.text)
         self.assertNotIn("sources",exported)
         self.assertEqual(self.client.post(self.base+"/versions/"+self.cfg["id"]+"/github").status_code,409)
-    def test_cross_project_sources_rejected(self):
+    def test_missing_project_excerpt_does_not_fallback(self):
         r=self.client.post(self.base+"/trials",json={"config_id":self.cfg["id"],"task_id":"survey","project_id":"OTHER","question":"测试","use_gsa_excerpt":True})
-        self.assertEqual(r.status_code,422)
+        self.assertEqual(r.status_code,409)
+        self.assertIn("OTHER",r.json()["detail"])
     def test_publish_gate_and_project_pin(self):
         identifiers=[]
         first,_=self.trial(self.cfg["tasks"][0])

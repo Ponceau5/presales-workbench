@@ -94,7 +94,10 @@ def install(app, db, actor, now, log):
         for column in ['config_id','task_id']:
             if column not in columns:c.execute('ALTER TABLE workspace_replies ADD COLUMN '+column+' TEXT')
         c.execute("CREATE TABLE IF NOT EXISTS execution_inputs(id TEXT NOT NULL,project_id TEXT NOT NULL,stage_id TEXT NOT NULL,actor TEXT NOT NULL,request TEXT NOT NULL,sources TEXT NOT NULL,skill_version TEXT NOT NULL,PRIMARY KEY(id,project_id,stage_id,actor))")
-        c.execute("CREATE TABLE IF NOT EXISTS execution_metrics(id TEXT NOT NULL,project_id TEXT NOT NULL,stage_id TEXT NOT NULL,actor TEXT NOT NULL,skill_version TEXT NOT NULL,created_at TEXT NOT NULL,first_token REAL,total_seconds REAL NOT NULL,status TEXT NOT NULL,reason TEXT NOT NULL,retries INTEGER NOT NULL,details TEXT NOT NULL,PRIMARY KEY(id,project_id,stage_id,actor))")
+        c.execute("CREATE TABLE IF NOT EXISTS execution_metrics(id TEXT NOT NULL,project_id TEXT NOT NULL,stage_id TEXT NOT NULL,actor TEXT NOT NULL,skill_version TEXT NOT NULL,created_at TEXT NOT NULL,first_token REAL,total_seconds REAL NOT NULL,status TEXT NOT NULL,reason TEXT NOT NULL,retries INTEGER NOT NULL,details TEXT NOT NULL,model_calls INTEGER,input_tokens INTEGER,output_tokens INTEGER,PRIMARY KEY(id,project_id,stage_id,actor))")
+        metric_columns={r['name'] for r in c.execute('PRAGMA table_info(execution_metrics)')}
+        for column in ['model_calls','input_tokens','output_tokens']:
+            if column not in metric_columns:c.execute('ALTER TABLE execution_metrics ADD COLUMN '+column+' INTEGER')
         c.execute("CREATE TABLE IF NOT EXISTS workspace_artifacts (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, stage_id TEXT NOT NULL, source_id TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL, revision INTEGER NOT NULL, adopted_by TEXT NOT NULL, conversation_id TEXT NOT NULL, sources TEXT NOT NULL, created_at TEXT NOT NULL)")
         c.execute("CREATE TABLE IF NOT EXISTS workspace_sessions (project_id TEXT NOT NULL, stage_id TEXT NOT NULL, actor TEXT NOT NULL, value TEXT NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(project_id,stage_id,actor))")
         c.execute("CREATE TABLE IF NOT EXISTS workspace_dialogues (project_id TEXT NOT NULL, stage_id TEXT NOT NULL, actor TEXT NOT NULL, id TEXT NOT NULL, value TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(project_id,stage_id,actor,id))")
@@ -339,10 +342,10 @@ def install(app, db, actor, now, log):
                 if not bom:report.append('配置清单未识别，采购回价已保存，无法确认数量与总成本。')
                 actual_cost_report='\n'.join(report)
         cost_demo=None
-        if project_id=="GSA02" and stage_id=="F7" and cost_enabled and not actual_cost_sources:
+        from pathlib import Path
+        data_path=Path(os.environ.get("PRESALES_DATA_DIR",Path(__file__).parent/".local"))/"files"/project_id/"f7-demo-data.json"
+        if stage_id=="F7" and cost_enabled and not actual_cost_sources and data_path.exists():
             from f7_project_demo import CostParameters,calculate
-            from pathlib import Path
-            data_path=Path(os.environ.get("PRESALES_DATA_DIR",Path(__file__).parent/".local"))/"files/GSA02/f7-demo-data.json"
             if data_path.exists():
                 with db() as c:equipment=c.execute("SELECT * FROM sizing_workflow WHERE project_id=?",(project_id,)).fetchone()
                 data=json.loads(data_path.read_text())
@@ -383,9 +386,9 @@ def install(app, db, actor, now, log):
                 if c.execute("SELECT 1 FROM artifact_lifecycle WHERE artifact_id=? AND disabled=1", (identifier,)).fetchone():
                     raise HTTPException(409, '该成果已停用，请重新选择当前版本')
                 row=c.execute('SELECT id,title,content,revision,stage_id,source_id,adopted_by FROM workspace_artifacts WHERE id=? AND project_id=? AND stage_id<>?',(identifier,project_id,stage_id)).fetchone()
-                if not row and project_id=='GSA02' and stage_id!='F5':
-                    row=c.execute("SELECT id,title,content,revision,'F5' stage_id FROM software_artifacts WHERE id=?",(identifier,)).fetchone()
-                    if not row:row=c.execute("SELECT id,'服务器规格方案' title,narrative content,revision,'F5' stage_id FROM sizing_runs WHERE id=? AND status='approved'",(identifier,)).fetchone()
+                if not row and stage_id!='F5':
+                    row=c.execute("SELECT id,title,content,revision,'F5' stage_id FROM software_artifacts WHERE id=? AND project_id=?",(identifier,project_id)).fetchone()
+                    if not row:row=c.execute("SELECT id,'服务器规格方案' title,narrative content,revision,'F5' stage_id FROM sizing_runs WHERE id=? AND project_id=? AND status='approved'",(identifier,project_id)).fetchone()
                 if not row:raise HTTPException(400,'上游成果不属于当前项目，或不是其他工作区的成果')
                 if row['stage_id']=='F7':
                     import interactive_flow
@@ -608,14 +611,16 @@ def install(app, db, actor, now, log):
             finally:
                 with db() as c:
                     details=[t if 'metric' in t else {'metric':'tool','name':t.get('tool'),'seconds':t.get('tool_seconds')} for t in execution_trace if 'metric' in t or 'tool_seconds' in t]
-                    c.execute('UPDATE execution_metrics SET details=?,retries=? WHERE id=? AND project_id=? AND stage_id=? AND actor=?',(json.dumps(details),sum(t.get('count',0) for t in execution_trace if t.get('metric')=='retry'),payload.turn_id,project_id,stage_id,account))
+                    calls=[t for t in execution_trace if t.get('metric')=='model']
+                    usage={k:sum(int((t.get('usage') or {}).get(k) or 0) for t in calls) for k in ('input_tokens','output_tokens')}
+                    c.execute('UPDATE execution_metrics SET details=?,retries=?,model_calls=?,input_tokens=?,output_tokens=? WHERE id=? AND project_id=? AND stage_id=? AND actor=?',(json.dumps(details),sum(t.get('count',0) for t in execution_trace if t.get('metric')=='retry'),sum(int(t.get('model_calls') or 0) for t in calls),usage['input_tokens'],usage['output_tokens'],payload.turn_id,project_id,stage_id,account))
                 if frozen:interactive_flow.failed(payload.interaction_run_id,project_id,stage_id,account,payload.turn_id)
                 if trial_id:
                     with db() as c:c.execute("UPDATE flow_trials SET status='stopped' WHERE id=? AND status='running'",(trial_id,))
         def observed(source):
             started=time.monotonic();first=None;status='interrupted';reason='connection_closed'
             with db() as c:
-                c.execute("INSERT OR IGNORE INTO execution_metrics VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",(payload.turn_id,project_id,stage_id,account,flow_config['id'] if flow_config else '',now(),None,0,'running','',0,'{}'))
+                c.execute("INSERT OR IGNORE INTO execution_metrics(id,project_id,stage_id,actor,skill_version,created_at,first_token,total_seconds,status,reason,retries,details,model_calls,input_tokens,output_tokens) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(payload.turn_id,project_id,stage_id,account,flow_config['id'] if flow_config else '',now(),None,0,'running','',0,'{}',0,0,0))
             try:
                 for value in source:
                     item=json.loads(value.removeprefix('data: ').strip())
@@ -640,17 +645,11 @@ def install(app, db, actor, now, log):
                 except HTTPException as error:yield event('error',message=error.detail)
             return StreamingResponse(heartbeat_stream(observed(durable_stream()),on_stop=cancelled.set),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
         def guarded_stream():
-            import hashlib
-            key=hashlib.sha256((project_id+'\0'+stage_id+'\0'+account+'\0'+payload.turn_id).encode()).hexdigest()
             try:
-                import fcntl,tempfile
-                from pathlib import Path
-                directory=agent_runtime._runtime.directory if agent_runtime._runtime else Path(__import__('os').environ.get('PRESALES_TEST_TMP',tempfile.gettempdir()))
-                with (directory/(key+'.lock')).open('a') as lock:
-                    try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-                    except BlockingIOError:raise HTTPException(409,'此任务正在执行，请稍后查看')
-                    try:yield from stream()
-                    finally:fcntl.flock(lock,fcntl.LOCK_UN)
+                runtime=agent_runtime._runtime
+                if runtime is None:yield from stream();return
+                with runtime.locked(project_id+'\0'+stage_id+'\0'+account+'\0'+payload.turn_id):
+                    yield from stream()
             except HTTPException as error:yield event('error',message=error.detail)
         return StreamingResponse(heartbeat_stream(observed(guarded_stream()),on_stop=cancelled.set),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
 
@@ -829,10 +828,10 @@ def install(app, db, actor, now, log):
         from object_storage import generated
         return generated(row["content"].encode(),"text/markdown; charset=utf-8",'projects/'+__import__('urllib.parse',fromlist=['quote']).quote(project_id,safe='')+'/outputs/'+identifier+'.md',row["title"]+".md")
     def ensure_equipment_message(c,project_id,stage_id,account):
-        if project_id!="GSA02" or stage_id!="F7":return
+        if stage_id!="F7":return
         flow=c.execute("SELECT * FROM sizing_workflow WHERE project_id=?",(project_id,)).fetchone()
         if not flow or not flow['equipment_file']:return
-        identifier=f"equipment:GSA02:F7:{flow['equipment_revision']}:{flow['equipment_hash']}"
+        identifier=f"equipment:{project_id}:F7:{flow['equipment_revision']}:{flow['equipment_hash']}"
         c.execute("INSERT OR IGNORE INTO role_config_handoffs VALUES (?,?,?,?,?,?,?,?,?,?)",(identifier,project_id,stage_id,"solution","sales",f"配置清单 V{flow['equipment_revision']} 已就绪",f"解决方案已提供 {flow['equipment_title']}，可确认成本参数并生成成本表。",str(flow['equipment_hash'])+":"+str(flow['equipment_revision']),"equipment",flow['updated_at']))
 
     @router.get("/collaboration")

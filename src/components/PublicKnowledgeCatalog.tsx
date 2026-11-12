@@ -1,0 +1,10 @@
+import {useState} from 'react';
+import {Plus} from 'lucide-react';
+import {toast} from 'sonner';
+import {localApi} from '@/lib/localApi';
+import {Dialog,DialogContent,DialogHeader,DialogTitle,DialogDescription} from '@/components/ui/dialog';
+export function KnowledgeUpload({onSaved}:{onSaved:()=>unknown}){
+ const [open,setOpen]=useState(false),[busy,setBusy]=useState(false),[file,setFile]=useState<File|null>(null),[title,setTitle]=useState(''),[version,setVersion]=useState('V0'),[product,setProduct]=useState('通用'),[kind,setKind]=useState('知识资料');
+ async function upload(){if(!file||busy)return;setBusy(true);try{const form=new FormData();form.set('file',file);form.set('title',title);form.set('version',version);form.set('category',kind);form.set('product',product);await localApi('/api/knowledge/documents',{method:'POST',body:form});setOpen(false);setFile(null);setTitle('');await onSaved();toast.success('资料已保存');}catch(e){toast.error(e instanceof Error?e.message:'上传失败');}finally{setBusy(false);}}
+ return <><button className="btn primary" onClick={()=>setOpen(true)}><Plus size={15}/>上传资料</button><Dialog open={open} onOpenChange={v=>{if(!busy)setOpen(v);}}><DialogContent><DialogHeader><DialogTitle>上传资料</DialogTitle><DialogDescription>公共资料供平台用户查阅和问答引用。</DialogDescription></DialogHeader><label className="form-label">文件<input type="file" disabled={busy} onChange={e=>{const f=e.target.files?.[0]||null;setFile(f);if(f)setTitle(f.name.replace(/\.[^.]+$/,''));}}/></label><label className="form-label">名称<input value={title} onChange={e=>setTitle(e.target.value)}/></label><div className="form-grid"><label className="form-label">版本<input value={version} onChange={e=>setVersion(e.target.value)}/></label><label className="form-label">产品<input value={product} onChange={e=>setProduct(e.target.value)}/></label></div><label className="form-label">分类<input value={kind} onChange={e=>setKind(e.target.value)}/></label><button className="btn primary" disabled={busy||!file||!title.trim()||!version.trim()} onClick={()=>void upload()}>{busy?'上传与解析中…':'保存资料'}</button></DialogContent></Dialog></>;
+}

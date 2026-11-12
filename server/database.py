@@ -18,13 +18,23 @@ _metrics_lock = threading.Lock()
 _metrics = {'queries': 0, 'query_seconds': 0., 'writes': 0, 'write_seconds': 0., 'pool_wait_seconds': 0.}
 
 
+def database_url():
+    """测试进程优先走隔离库/隔离 schema，避免回归测试污染开发数据。"""
+    url = os.getenv('PRESALES_TEST_DATABASE_URL') or os.getenv('PRESALES_DATABASE_URL')
+    schema = os.getenv('PRESALES_TEST_SCHEMA')
+    if url and schema:
+        from psycopg.conninfo import make_conninfo
+        return make_conninfo(url, options='-c search_path=' + schema + ',public')
+    return url
+
+
 def postgres_enabled():
-    return bool(os.getenv('PRESALES_DATABASE_URL'))
+    return bool(database_url())
 
 
 def pool():
     from psycopg_pool import ConnectionPool
-    url = os.environ['PRESALES_DATABASE_URL']
+    url = database_url()
     key = (os.getpid(), url)
     with _pool_lock:
         if key not in _pools:

@@ -1,347 +1,45 @@
-import {toast} from "sonner";
-import {FloatingNotice} from "@/components/FloatingNotice";
-import { randomId } from "@/lib/id";
-import { type AgentArtifact } from "@/lib/agentTasks";
-import { localApi } from "@/lib/localApi";
-import { MarkdownReply } from "@/features/software/MarkdownReply";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useLocation } from "react-router";
-import {
-  X,
-  Sparkles,
-  ArrowUp,
-  Check,
-  MessageSquare,
-  FilePenLine,
-} from "lucide-react";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
-
-
-import { useWorkbench } from "@/state/workbench";
-type Message = {
-  id: string;
-  role: "user" | "assistant";
-  text: string;
-  proposal?: { title: string; projectId: string; owner: string; kind: string };
-  confirmed?: boolean;
-};
-export function ProjectAssistant() {
-  const { state, dispatch } = useWorkbench();
-  const location = useLocation();
-  const [open, setIsOpen] = useState(false);
-  const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [project, setProject] = useState("RCJM1");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const end = useRef<HTMLDivElement>(null);
-  const conversationId=useRef(randomId());
-  const pending=useRef<AbortController|null>(null);
-  const scope=project+":"+state.accountId;
-  const [messageScope,setMessageScope]=useState(scope);
-  if(messageScope!==scope){setMessageScope(scope);setMessages([]);setBusy(false);setError('');}
-  useEffect(()=>{
-    pending.current?.abort();pending.current=null;conversationId.current=randomId();
-    return()=>{pending.current?.abort();pending.current=null;};
-  },[scope]);
-  const setOpen=useCallback((value:boolean|((previous:boolean)=>boolean))=>{
-    const next=typeof value==='function'?value(open):value;
-    if(!next){pending.current?.abort();pending.current=null;setBusy(false);setMessages([]);setInput("");setError("");}
-    setIsOpen(next);
-  },[open]);
-  useEffect(() => {
-    function shortcut(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "j") {
-        e.preventDefault();
-        if (!open)
-          setProject(
-            state.currentProjectId,
-          );
-        setOpen((v) => !v);
-      }
-    }
-    window.addEventListener("keydown", shortcut);
-    return () => window.removeEventListener("keydown", shortcut);
-  }, [open, location.pathname, state.currentProjectId, setOpen]);
-  const [stageContext, setStageContext] = useState("");
-  const [, setArtifactContext] = useState<AgentArtifact | null>(
-    null,
-  );
-  useEffect(() => {
-    function openNode(event: Event) {
-      const detail = (
-        event as CustomEvent<{
-          projectId: string;
-          stage: string;
-          prompt: string;
-          artifact?: AgentArtifact;
-        }>
-      ).detail;
-      setMessages([]);
-      setArtifactContext(detail.artifact || null);
-      setProject(detail.projectId);
-      setStageContext(detail.stage);
-      setInput(detail.prompt);
-      setOpen(true);
-    }
-    window.addEventListener("presales-assistant-open", openNode);
-    return () =>
-      window.removeEventListener("presales-assistant-open", openNode);
-  }, [setOpen]);
-  useEffect(() => {
-    end.current?.scrollIntoView({ block: "nearest" });
-  }, [messages, open]);
-  function show() {
-    setProject(
-      state.currentProjectId,
-    );
-    setStageContext("");
-    setArtifactContext(null);
-    setMessages([]);
-    setOpen(true);
-  }
-  async function send(text = input) {
-    if (!text.trim() || busy) return;
-    const value = text.trim();
-    const controller=new AbortController();pending.current=controller;
-    const history = messages.slice(-10).map(({role,text})=>({role,text}));
-    setMessages(prev=>[...prev,{id:randomId(),role:"user",text:value}]);
-    setInput("");setBusy(true);setError("");
-    try {
-      const result = await localApi<{answer:string;proposal:null|{title:string;kind:string}}>("/api/project-assistant",{method:"POST",headers:{"Content-Type":"application/json"},signal:controller.signal,body:JSON.stringify({project_id:project,conversation_id:conversationId.current,turn_id:randomId(),question:value,history})});
-      if(controller.signal.aborted||pending.current!==controller)return;
-      setMessages(prev=>[...prev,{id:randomId(),role:"assistant",text:result.answer,...(result.proposal?{proposal:{...result.proposal,projectId:project,owner:state.role}}:{})}]);
-    } catch(e) {if(controller.signal.aborted||pending.current!==controller)return;setError(e instanceof Error?e.message:"发送失败，请重试");setInput(value);}
-    finally {if(pending.current===controller){pending.current=null;setBusy(false);}}
-  }
-  return (
-    <>
-      <button
-        className="assistant-launcher"
-        aria-label="打开项目助手"
-        onClick={show}
-      >
-        <Sparkles size={17} />
-        <span>助手</span>
-        <kbd>⌘ J</kbd>
-      </button>
-      <Dialog open={open} onOpenChange={setOpen} modal={false}>
-        <DialogContent
-          className="assistant-panel"
-          showCloseButton={false}
-          onInteractOutside={(e) => e.preventDefault()}
-        >
-          <DialogHeader>
-            <DialogTitle>
-              <Sparkles size={18} />
-              项目助手
-            </DialogTitle>
-            <DialogDescription className="sr-only">
-              查询项目资料和进度，整理客户变更并确认登记。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="assistant-context">
-            <select
-              aria-label="助手当前项目"
-              value={project}
-              disabled={busy}
-              onChange={(e) => {
-                setProject(e.target.value);
-                setStageContext("");
-                setArtifactContext(null);
-                setMessages([]);
-              }}
-            >
-              {state.projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-            <span>
-              {stageContext ? stageContext + " · " : ""}
-              {state.role}
-            </span>
-          </div>
-          <div className="assistant-messages">
-            {!messages.length && (
-              <div className="assistant-empty">
-                <MessageSquare size={30} />
-                <h3>从项目开始</h3>
-                {[
-                  "查看项目当前状态",
-                  "查找技术规格书与点表",
-                  "记录客户要求变更",
-                ].map((text) => (
-                  <button
-                    key={text}
-                    onClick={() =>
-                      text.includes("变更")
-                        ? setInput("客户要求变更：")
-                        : send(text)
-                    }
-                  >
-                    {text}
-                    <ArrowUp size={13} />
-                  </button>
-                ))}
-              </div>
-            )}
-            {messages.map((m) => (
-              <article key={m.id} className={"assistant-message " + m.role}>
-                <MarkdownReply text={m.text}/>
-                {m.proposal && (
-                  <div className="assistant-proposal">
-                    <div>
-                      <FilePenLine size={14} />
-                      <strong>{m.proposal.kind}</strong>
-                    </div>
-                    <label>
-                      项目
-                      <select
-                        value={m.proposal.projectId}
-                        disabled={m.confirmed || busy}
-                        onChange={(e) =>
-                          setMessages((prev) =>
-                            prev.map((item) =>
-                              item.id === m.id
-                                ? {
-                                    ...item,
-                                    proposal: {
-                                      ...item.proposal!,
-                                      projectId: e.target.value,
-                                    },
-                                  }
-                                : item,
-                            ),
-                          )
-                        }
-                      >
-                        {state.projects.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      内容
-                      <textarea
-                        rows={3}
-                        value={m.proposal.title}
-                        disabled={m.confirmed || busy}
-                        onChange={(e) =>
-                          setMessages((prev) =>
-                            prev.map((item) =>
-                              item.id === m.id
-                                ? {
-                                    ...item,
-                                    proposal: {
-                                      ...item.proposal!,
-                                      title: e.target.value,
-                                    },
-                                  }
-                                : item,
-                            ),
-                          )
-                        }
-                      />
-                    </label>
-                    <label>
-                      跟进岗位
-                      <input
-                        value={m.proposal.owner}
-                        disabled={m.confirmed || busy}
-                        onChange={(e) =>
-                          setMessages((prev) =>
-                            prev.map((item) =>
-                              item.id === m.id
-                                ? {
-                                    ...item,
-                                    proposal: {
-                                      ...item.proposal!,
-                                      owner: e.target.value,
-                                    },
-                                  }
-                                : item,
-                            ),
-                          )
-                        }
-                      />
-                    </label>
-                    <button
-                      className="btn primary full"
-                      disabled={
-                        m.confirmed || busy ||
-                        !m.proposal.title.trim() ||
-                        !m.proposal.owner.trim()
-                      }
-                      onClick={async () => {
-                        if (!m.proposal || busy) return;
-                        setBusy(true);setError("");
-                        try {
-                          const entry=await localApi<(typeof state.followups)[number]>("/api/project-assistant/records",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:m.id,project_id:m.proposal.projectId,title:m.proposal.title,owner:m.proposal.owner,kind:m.proposal.kind})});
-                          dispatch({type:"hydrateShared",state:{...state,followups:[entry,...state.followups.filter(f=>f.id!==entry.id)]}});
-                          setMessages(prev=>prev.map(item=>item.id===m.id?{...item,confirmed:true}:item));
-                        } catch(e) {setError(e instanceof Error?e.message:"登记失败，请重试");}
-                        finally {setBusy(false);}
-                      }}
-                    >
-                      {m.confirmed ? (
-                        <>
-                          <Check size={14} />
-                          已登记待跟进
-                        </>
-                      ) : (
-                        "确认登记"
-                      )}
-                    </button>
-                    {m.confirmed && <small>原始资料与已审工件保持原状。</small>}
-                  </div>
-                )}
-              </article>
-            ))}
-            {busy && <p role="status">正在查询项目资料…</p>}{error && <><FloatingNotice role="alert">{error}</FloatingNotice><div role="status">本次查询未完成 <button type="button" className="btn secondary" onClick={()=>toast.error(error,{id:"assistant-failure"})}>查看原因</button></div></>}<div ref={end} />
-          </div>
-          <form
-            className="assistant-compose"
-            onSubmit={(e) => {
-              e.preventDefault();
-              send();
-            }}
-          >
-            <textarea
-              aria-label="向项目助手提问"
-              placeholder="询问项目，或描述希望变更的内容…"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (
-                  e.key === "Enter" &&
-                  !e.shiftKey &&
-                  !e.nativeEvent.isComposing
-                ) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-            />
-            <button aria-label="发送消息" disabled={busy || !input.trim()}>
-              <ArrowUp size={18} />
-            </button>
-            <small>Enter 发送，Shift + Enter 换行 · 变更经确认后登记</small>
-          </form>
-          <button aria-label="关闭项目助手" onClick={() => setOpen(false)}>
-            <X size={16} />
-          </button>
-        </DialogContent>
-      </Dialog>
-    </>
-  );
+import {useCallback,useEffect,useRef,useState} from 'react';
+import {ArrowUp,MessageCircle,Plus,Square,X} from 'lucide-react';
+import {toast} from 'sonner';
+import {randomId} from '@/lib/id';
+import {localApi,downloadApiFile} from '@/lib/localApi';
+import {MarkdownReply} from '@/features/software/MarkdownReply';
+import {useWorkbench} from '@/state/workbench';
+import {Dialog,DialogContent,DialogHeader,DialogTitle,DialogDescription} from '@/components/ui/dialog';
+type Source={id:string;title:string;version:string;page:number;excerpt:string;download_url:string};
+type Message={id:string;role:'user'|'assistant';text:string;sources?:Source[]};
+export function ProjectAssistant(){
+ const {state}=useWorkbench();
+ const [open,setOpen]=useState(false),[input,setInput]=useState(''),[messages,setMessages]=useState<Message[]>([]),[busy,setBusy]=useState(false);
+ const pending=useRef<AbortController|null>(null),end=useRef<HTMLDivElement>(null),textarea=useRef<HTMLTextAreaElement>(null);
+ const reset=useCallback(()=>{pending.current?.abort();pending.current=null;setBusy(false);setMessages([]);setInput('');},[]);
+ const close=useCallback(()=>{reset();setOpen(false);},[reset]);
+ useEffect(()=>{reset();setOpen(false);return()=>{pending.current?.abort();};},[state.accountId,reset]);
+ useEffect(()=>{
+  function shortcut(e:KeyboardEvent){if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='j'){e.preventDefault();if(open)close();else setOpen(true);}}
+  function fromWorkspace(event:Event){const detail=(event as CustomEvent<{prompt?:string}>).detail;reset();setInput(detail?.prompt||'');setOpen(true);}
+  window.addEventListener('keydown',shortcut);window.addEventListener('presales-assistant-open',fromWorkspace);
+  return()=>{window.removeEventListener('keydown',shortcut);window.removeEventListener('presales-assistant-open',fromWorkspace);};
+ },[open,close,reset]);
+ useEffect(()=>{end.current?.scrollIntoView({block:'nearest'});},[messages,busy]);
+ async function send(){
+  const value=input.trim();if(!value||busy)return;
+  const controller=new AbortController();pending.current=controller;
+  const userId=randomId(),history=messages.slice(-10).map(({role,text})=>({role,text}));
+  setMessages(prev=>[...prev,{id:userId,role:'user',text:value}]);setInput('');setBusy(true);
+  try{
+   const result=await localApi<{answer:string;sources:Source[]}>('/api/knowledge/ask',{method:'POST',signal:controller.signal,body:JSON.stringify({question:value,history})});
+   if(pending.current!==controller||controller.signal.aborted)return;
+   setMessages(prev=>[...prev,{id:randomId(),role:'assistant',text:result.answer,sources:result.sources}]);
+  }catch(e){
+   if(pending.current!==controller||controller.signal.aborted)return;
+   setMessages(prev=>prev.filter(m=>m.id!==userId));setInput(value);toast.error(e instanceof Error?e.message:'发送失败，请重试');
+  }finally{if(pending.current===controller){pending.current=null;setBusy(false);textarea.current?.focus();}}
+ }
+ return <><button className="assistant-launcher" aria-label="打开知识助手" onClick={()=>setOpen(true)}><MessageCircle size={17}/><span>知识助手</span><kbd>⌘ J</kbd></button>
+ <Dialog open={open} onOpenChange={value=>value?setOpen(true):close()} modal={false}><DialogContent className="assistant-panel assistant-simple" showCloseButton={false} onInteractOutside={e=>e.preventDefault()} onOpenAutoFocus={e=>{e.preventDefault();textarea.current?.focus();}}>
+ <DialogHeader><DialogTitle>知识助手</DialogTitle><DialogDescription className="sr-only">根据公共资料回答问题并提供出处。</DialogDescription><div className="assistant-header-actions"><button aria-label="新对话" title="新对话" disabled={busy||!messages.length} onClick={()=>{reset();textarea.current?.focus();}}><Plus size={17}/></button><button aria-label="关闭知识助手" title="关闭" onClick={close}><X size={17}/></button></div></DialogHeader>
+ <div className="assistant-messages" aria-live="polite">{!messages.length&&<div className="assistant-empty"><MessageCircle size={28}/><h3>有什么想了解的？</h3><p>直接提问，答案会附上资料出处。</p></div>}{messages.map(m=><article key={m.id} className={'assistant-message '+m.role}><MarkdownReply text={m.text}/>{!!m.sources?.length&&<div className="assistant-sources">{m.sources.map(s=><details key={s.id}><summary>{s.id} · {s.title} · {s.version} · 第 {s.page} 页/节</summary><p>{s.excerpt}</p><button className="file-open" onClick={()=>void downloadApiFile(s.download_url,s.title).catch(e=>toast.error(e instanceof Error?e.message:'下载失败'))}>下载原文件</button></details>)}</div>}</article>)}{busy&&<p className="assistant-pending" role="status">正在查阅资料…</p>}<div ref={end}/></div>
+ <form className="assistant-compose" onSubmit={e=>{e.preventDefault();void send();}}><textarea ref={textarea} aria-label="向知识助手提问" placeholder="输入你的问题…" value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();void send();}}}/>{busy?<button type="button" aria-label="停止回答" onClick={()=>{pending.current?.abort();pending.current=null;setBusy(false);}}><Square size={13}/></button>:<button aria-label="发送消息" disabled={!input.trim()}><ArrowUp size={18}/></button>}<small>Enter 发送 · Shift + Enter 换行</small></form>
+ </DialogContent></Dialog></>;
 }

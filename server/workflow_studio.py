@@ -26,6 +26,7 @@ class Parameter(BaseModel):
  purpose:str=Field(default='',max_length=1000)
  @model_validator(mode='after')
  def bounds(self):
+  if any(value is not None and not __import__('math').isfinite(value) for value in (self.min,self.max)):raise ValueError('参数上下限必须是有限数字')
   if self.type not in {'number','text'}:raise ValueError('参数类型无效')
   if self.type=='number':
    if not isinstance(self.default,(int,float)) or not __import__('math').isfinite(self.default):raise ValueError('数字默认值无效')

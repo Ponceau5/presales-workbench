@@ -1,12 +1,11 @@
 """Durable LangGraph execution behind the existing F7 SSE protocol."""
-import fcntl,hashlib,json,sqlite3
+import hashlib,json,os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TypedDict
 from uuid import uuid4
 from fastapi import Depends,HTTPException
 from langgraph.graph import StateGraph,START,END
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.config import get_stream_writer
 from langgraph.types import Command,interrupt
 from access_control import check_owner,role_of
@@ -21,12 +20,14 @@ class State(TypedDict,total=False):
 class Runtime:
  def __init__(self,db,directory):
   self.db=db;self.directory=Path(directory)/'agent-runtime';self.directory.mkdir(exist_ok=True)
+  from database import database_url
+  url=database_url()
+  if not url:raise RuntimeError('PRESALES_TEST_DATABASE_URL / PRESALES_DATABASE_URL 未设置：执行层已强制使用 PostgreSQL，不再回退 SQLite')
+  self.url=url
   with db() as c:c.executescript('''CREATE TABLE IF NOT EXISTS runtime_runs(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,stage_id TEXT NOT NULL,actor TEXT NOT NULL,turn_id TEXT NOT NULL,phase TEXT NOT NULL,recipe_hash TEXT NOT NULL,status TEXT NOT NULL,error TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(project_id,stage_id,actor,turn_id));''')
-  import os
-  if os.getenv('PRESALES_DATABASE_URL'):
-   from langgraph.checkpoint.postgres import PostgresSaver
-   with PostgresSaver.from_conn_string(os.environ['PRESALES_DATABASE_URL']) as saver:
-    saver.setup()
+  from langgraph.checkpoint.postgres import PostgresSaver
+  with PostgresSaver.from_conn_string(url) as saver:
+   saver.setup()
  def stamp(self):
   from datetime import datetime,timezone
   return datetime.now(timezone.utc).isoformat()
@@ -37,34 +38,20 @@ class Runtime:
   return dict(r)
  @contextmanager
  def locked(self,identifier):
-  import os
-  if os.getenv('PRESALES_DATABASE_URL'):
-   from psycopg import Connection
-   key=int.from_bytes(hashlib.sha256(identifier.encode()).digest()[:8],signed=True)
-   with Connection.connect(os.environ['PRESALES_DATABASE_URL'],autocommit=True) as connection:
-    if not connection.execute('SELECT pg_try_advisory_lock(%s)',(key,)).fetchone()[0]:
-     raise HTTPException(409,'此任务正在执行，请稍后查看')
-    try:yield
-    finally:connection.execute('SELECT pg_advisory_unlock(%s)',(key,))
-   return
-  with (self.directory/(identifier+'.lock')).open('a') as lock:
-   try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-   except BlockingIOError:raise HTTPException(409,'此任务正在执行，请稍后查看')
+  from psycopg import Connection
+  key=int.from_bytes(hashlib.sha256(identifier.encode()).digest()[:8],signed=True)
+  with Connection.connect(self.url,autocommit=True) as connection:
+   if not connection.execute('SELECT pg_try_advisory_lock(%s)',(key,)).fetchone()[0]:
+    raise HTTPException(409,'此任务正在执行，请稍后查看')
    try:yield
-   finally:fcntl.flock(lock,fcntl.LOCK_UN)
+   finally:connection.execute('SELECT pg_advisory_unlock(%s)',(key,))
  @contextmanager
  def graph(self,generate=None):
-  import os
-  if os.getenv('PRESALES_DATABASE_URL'):
-   from langgraph.checkpoint.postgres import PostgresSaver
-   from psycopg import Connection
-   from psycopg.rows import dict_row
-   connection=Connection.connect(os.environ['PRESALES_DATABASE_URL'],autocommit=True,prepare_threshold=0,row_factory=dict_row)
-   saver=PostgresSaver(connection)
-  else:
-   connection=sqlite3.connect(self.directory/'checkpoints.sqlite3',check_same_thread=False,timeout=10)
-   connection.execute('PRAGMA journal_mode=WAL')
-   saver=SqliteSaver(connection)
+  from langgraph.checkpoint.postgres import PostgresSaver
+  from psycopg import Connection
+  from psycopg.rows import dict_row
+  connection=Connection.connect(self.url,autocommit=True,prepare_threshold=0,row_factory=dict_row)
+  saver=PostgresSaver(connection)
   def validate(state):
    if state['phase'] not in {'confirm_parameters','review','complete'}:raise ValueError('invalid phase')
    return {}

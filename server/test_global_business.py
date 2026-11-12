@@ -44,6 +44,15 @@ class GlobalBusinessTests(unittest.TestCase):
         self.temp.cleanup()
     def save(self,kind,fields,**extra):return self.client.post('/api/global-business/'+kind+'/batch',headers=self.headers,json={'rows':[{'fields':fields,**extra}]})
     def load(self):return self.client.get('/api/global-business',headers=self.headers).json()
+    def test_sql_payloads_remain_literal_and_table_names_are_whitelisted(self):
+        attack="x'); DROP TABLE global_business_projects; --"
+        result=self.save('projects',{'name':attack})
+        self.assertEqual(result.status_code,200,result.text)
+        self.assertEqual(self.load()['projects'][0]['name'],attack)
+        result=self.client.post('/api/global-business/projects;DROP_TABLE/batch',headers=self.headers,json={'rows':[{'fields':{'name':'x'}}]})
+        self.assertEqual(result.status_code,404)
+        self.assertEqual(len(self.load()['projects']),1)
+
     def test_project_roundtrip_and_revision_conflict(self):
         row=self.save('projects',{'name':'测试','country':'泰国','amount':0,'products':{'BMS':'CET'}}).json()['rows'][0]
         self.assertEqual(self.load()['projects'][0]['products'],{'BMS':'CET'})

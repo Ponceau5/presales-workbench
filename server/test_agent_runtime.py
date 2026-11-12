@@ -4,8 +4,30 @@ from uuid import uuid4
 from fastapi import HTTPException
 root=tempfile.TemporaryDirectory(dir=os.environ.get('PRESALES_TEST_TMP'));os.environ['PRESALES_DATA_DIR']=root.name
 from app import db,now
+from database import database_url,postgres_enabled
+if not postgres_enabled():raise unittest.SkipTest('requires PostgreSQL backend')
+import psycopg
+from psycopg.conninfo import make_conninfo
 from agent_runtime import Runtime
 class RuntimeTests(unittest.TestCase):
+ @classmethod
+ def setUpClass(cls):
+  cls._base=database_url()
+  cls._schema='agent_runtime_test_'+uuid4().hex
+  with psycopg.connect(cls._base,autocommit=True) as c:
+   c.execute('CREATE SCHEMA '+cls._schema)
+   for (_t,) in c.execute("SELECT tablename FROM pg_tables WHERE schemaname='public'").fetchall():
+    c.execute(f'CREATE TABLE {cls._schema}."{_t}" (LIKE public."{_t}" INCLUDING ALL)')
+   c.execute(f'INSERT INTO {cls._schema}.users SELECT * FROM public.users')
+  cls._saved=os.environ.get('PRESALES_TEST_DATABASE_URL')
+  os.environ['PRESALES_TEST_DATABASE_URL']=make_conninfo(cls._base,options='-c search_path='+cls._schema+',public')
+ @classmethod
+ def tearDownClass(cls):
+  if cls._saved is None:os.environ.pop('PRESALES_TEST_DATABASE_URL',None)
+  else:os.environ['PRESALES_TEST_DATABASE_URL']=cls._saved
+  try:
+   with psycopg.connect(cls._base,autocommit=True) as c:c.execute('DROP SCHEMA IF EXISTS '+cls._schema+' CASCADE')
+  except Exception:pass
  def setUp(self):self.runtime=Runtime(db,root.name);self.turn=uuid4().hex;self.calls=0
  def generate(self):
   self.calls+=1

@@ -70,7 +70,20 @@ DEMO_PASSWORD = os.environ.get("PRESALES_DEMO_PASSWORD", "demo2026")
 if object_storage.enabled() and (DEMO_PASSWORD == "demo2026" or DEMO_PASSWORD == "CHANGE_TO_A_LONG_PASSWORD" or len(DEMO_PASSWORD) < 16):
     raise RuntimeError("云部署必须设置至少 16 位的 PRESALES_DEMO_PASSWORD")
 SESSIONS: dict[str, str] = {}
-app = FastAPI(title="售前工作台 · 本机测试 API", version="0.1.0")
+app = FastAPI(title="售前工作台 · 本机测试 API", version="0.3.1")
+
+# Return only field locations and messages: invalid numeric payloads and secrets
+# must not be serialized back through Pydantic's raw `input`/`ctx` values.
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(RequestValidationError)
+async def invalid_request(_request: Request, error: RequestValidationError):
+    return JSONResponse(status_code=422, content={'detail':[
+        {'loc':list(item['loc']), 'msg':item['msg'], 'type':item['type']}
+        for item in error.errors()
+    ]})
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:3000", "http://localhost:3000", "http://127.0.0.1:7100", "http://localhost:7100", "http://localhost:7101", "http://127.0.0.1:7101"],
@@ -487,8 +500,8 @@ def download_document(identifier: str, account: str = Depends(actor)):
     return object_storage.download(row["path"], row["filename"])
 
 
-def sync_project_sources():
-    manifest_path = FILES_DIR / "GSA02/materials.json"
+def sync_project_sources(project_id: str):
+    manifest_path = FILES_DIR / project_id / "materials.json"
     if not manifest_path.exists(): return
     manifest = json.loads(manifest_path.read_text()).get("manifest", [])
     for entry in manifest:
@@ -496,24 +509,24 @@ def sync_project_sources():
         identifier = "gsa-source-" + entry["id"] + "-" + entry["sha256"][:12]
         with db() as c:
             if c.execute("SELECT 1 FROM documents WHERE id=?", (identifier,)).fetchone(): continue
-        original = FILES_DIR / "GSA02" / entry["snapshot_name"]
+        original = FILES_DIR / project_id / entry["snapshot_name"]
         if not original.exists(): continue
         try:
             parsed=pages(original) if original.suffix.lower() in {'.pdf','.txt','.md','.docx','.pptx','.xlsx','.xls','.csv','.json','.xml','.yaml','.yml','.log'} else []
         except HTTPException:
             parsed=[]
         with db() as c:
-            c.execute("INSERT OR IGNORE INTO documents VALUES (?,?,?,?,?,?,?,?,?)", (identifier,"GSA02",entry["title"],"SHA-"+entry["sha256"][:8],entry["title"],str(original),entry["sha256"],"system",now()))
+            c.execute("INSERT OR IGNORE INTO documents VALUES (?,?,?,?,?,?,?,?,?)", (identifier,project_id,entry["title"],"SHA-"+entry["sha256"][:8],entry["title"],str(original),entry["sha256"],"system",now()))
             c.executemany("INSERT OR IGNORE INTO document_pages VALUES (?,?,?)", [(identifier,i+1,text) for i,text in enumerate(parsed)])
 
     # Register the exact solution handover/merged file as a project document too.
     with db() as c:
-        try:flow=c.execute("SELECT * FROM sizing_workflow WHERE project_id='GSA02'").fetchone()
+        try:flow=c.execute("SELECT * FROM sizing_workflow WHERE project_id=?",(project_id,)).fetchone()
         except sqlite3.OperationalError:flow=None
     if flow:
         for field,label in [("equipment_file","解决方案配置清单"),("merged_file","解决方案完整配置清单")]:
             if not flow[field]:continue
-            path=FILES_DIR/"GSA02"/flow[field]
+            path=FILES_DIR/project_id/flow[field]
             if not path.exists():continue
             digest=hashlib.sha256(path.read_bytes()).hexdigest();identifier="gsa-handover-"+field+"-"+str(flow["equipment_revision"])+"-"+digest[:12]
             with db() as c:
@@ -521,7 +534,7 @@ def sync_project_sources():
                 # Reuse registered snapshot; don't duplicate the original file.
                 try:content=pages(path)
                 except HTTPException:content=[]
-                c.execute("INSERT INTO documents VALUES (?,?,?,?,?,?,?,?,?)",(identifier,"GSA02",label,"清单 V"+str(flow['equipment_revision']),path.name,str(path),digest,"solution",now()))
+                c.execute("INSERT INTO documents VALUES (?,?,?,?,?,?,?,?,?)",(identifier,project_id,label,"清单 V"+str(flow['equipment_revision']),path.name,str(path),digest,"solution",now()))
                 c.executemany("INSERT INTO document_pages VALUES (?,?,?)",[(identifier,i+1,text) for i,text in enumerate(content)])
 
 
@@ -535,7 +548,7 @@ def document_download_link(identifier: str, account: str = Depends(actor)):
 
 @app.get("/api/projects/{project_id}/documents")
 def list_documents(project_id: str, account: str = Depends(actor)):
-    if project_id == "GSA02": sync_project_sources()
+    sync_project_sources(project_id)
     with db() as connection:
         return [dict(row) for row in connection.execute(
             "SELECT d.id, d.title, d.version, d.filename, d.sha256, d.actor, d.created_at, COALESCE(r.category, 'input') AS category, CASE WHEN d.id LIKE 'gsa-f7-reference-%' THEN 'F7' ELSE NULL END AS stage_id, "
@@ -1156,18 +1169,19 @@ install_workflow_studio(app,db,actor,FILES_DIR)
 
 from role_config import install as install_role_config
 install_role_config(app, db, actor, now, FILES_DIR)
-sync_project_sources()
-
 def register_f7_demo_reference():
-    path=FILES_DIR/"GSA02/F7-演示参考资料.xlsx"
-    if not path.exists():return
-    digest=hashlib.sha256(path.read_bytes()).hexdigest();identifier="gsa-f7-reference-"+digest[:12]
-    with db() as c:
-        if c.execute("SELECT 1 FROM documents WHERE id=?",(identifier,)).fetchone():return
-    content=pages(path)
-    with db() as c:
-        c.execute("INSERT INTO documents VALUES (?,?,?,?,?,?,?,?,?)",(identifier,"GSA02","F7 演示参考资料：CRM、国家标准及默认参数","演示 V1",path.name,str(path),digest,"system",now()))
-        c.executemany("INSERT INTO document_pages VALUES (?,?,?)",[(identifier,i+1,t) for i,t in enumerate(content)])
+    if not FILES_DIR.exists():return
+    for directory in FILES_DIR.iterdir():
+        path=directory/"F7-演示参考资料.xlsx"
+        if not path.exists():continue
+        project_id=directory.name
+        digest=hashlib.sha256(path.read_bytes()).hexdigest();identifier="f7-reference-"+project_id+"-"+digest[:12]
+        with db() as c:
+            if c.execute("SELECT 1 FROM documents WHERE id=?",(identifier,)).fetchone():continue
+        content=pages(path)
+        with db() as c:
+            c.execute("INSERT INTO documents VALUES (?,?,?,?,?,?,?,?,?)",(identifier,project_id,"F7 演示参考资料：CRM、国家标准及默认参数","演示 V1",path.name,str(path),digest,"system",now()))
+            c.executemany("INSERT INTO document_pages VALUES (?,?,?)",[(identifier,i+1,t) for i,t in enumerate(content)])
 register_f7_demo_reference()
 
 
@@ -1225,3 +1239,6 @@ skill_learning.install(app, db, actor)
 
 import global_business
 global_business.install(app, actor)
+
+import knowledge_assistant
+knowledge_assistant.install(app, db, actor, store_document)

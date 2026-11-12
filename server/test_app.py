@@ -138,7 +138,8 @@ class WorkflowApiTest(unittest.TestCase):
         self.assertIn("测试设备 | 2 | 待采购确认", page["text"])
 
     def test_server_model_connection_uses_no_project_source(self):
-        without_key = self.client.post("/api/model/test", headers=self.auth("software"))
+        with patch.dict(os.environ, {"PRESALES_MODEL_PROVIDER":"kimi", "MOONSHOT_API_KEY":""}):
+            without_key = self.client.post("/api/model/test", headers=self.auth("software"))
         self.assertEqual(without_key.status_code, 502)
         with patch("app.test_connection") as probe:
             result = self.client.post("/api/model/test", headers=self.auth("software"))
@@ -160,9 +161,10 @@ class WorkflowApiTest(unittest.TestCase):
         self.assertEqual(self.client.post(
             endpoint, headers=self.auth("dev"), json={"pages": [1]},
         ).status_code, 403)
-        self.assertEqual(self.client.post(
-            endpoint, headers=self.auth("software"), json={"pages": [1]},
-        ).status_code, 503)
+        with patch.dict(os.environ, {"PRESALES_MODEL_PROVIDER":"kimi", "MOONSHOT_API_KEY":""}):
+            self.assertEqual(self.client.post(
+                endpoint, headers=self.auth("software"), json={"pages": [1]},
+            ).status_code, 503)
         quote = source.strip()
         with patch.dict(os.environ, {"MOONSHOT_API_KEY": "test-placeholder", "PRESALES_MODEL_PROVIDER": "kimi"}), patch(
             "app.extract_requirements", return_value=[
