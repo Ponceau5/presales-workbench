@@ -47,11 +47,14 @@ RELEASE="$BASE/releases/$SHA"
 BACKUP="$BASE/backups/deploy-$(date +%Y%m%d-%H%M%S)-${SHA:0:8}"
 mkdir -m 700 -p "$BACKUP"
 cp /etc/systemd/system/salesworkbench.service "$BACKUP/salesworkbench.service"
+cp /etc/nginx/sites-available/salesworkbench "$BACKUP/nginx.conf"
 cp /etc/systemd/system/salesworkbench-backup.service "$BACKUP/backup.service"
 cp "$BASE/web/index.html" "$BACKUP/index.html"
 [[ ! -e "$BASE/web/version.json" ]] || cp "$BASE/web/version.json" "$BACKUP/version.json"
 systemctl start salesworkbench-backup.service
 rollback() {
+  cp "$BACKUP/nginx.conf" /etc/nginx/sites-available/salesworkbench
+  nginx -t && systemctl reload nginx
   cp "$BACKUP/salesworkbench.service" /etc/systemd/system/salesworkbench.service
   cp "$BACKUP/backup.service" /etc/systemd/system/salesworkbench-backup.service
   cp "$BACKUP/index.html" "$BASE/web/index.html"
@@ -64,6 +67,11 @@ python3 - "$RELEASE" <<'PY'
 from pathlib import Path
 import sys
 release=Path(sys.argv[1])
+p=Path('/etc/nginx/sites-available/salesworkbench')
+text=p.read_text()
+if 'location = /brand-promotion ' not in text:
+    text=text.replace(' location / {',' location = /brand-promotion { try_files /index.html =404; }\n location = /brand-promotion/ { try_files /index.html =404; }\n location / {')
+    p.write_text(text)
 p=Path('/etc/systemd/system/salesworkbench.service')
 lines=p.read_text().splitlines();lines=[('ExecStart='+str(release/'venv/bin/uvicorn')+' app:app --app-dir '+str(release/'server')+' --host 127.0.0.1 --port 8000 --no-access-log') if line.startswith('ExecStart=') else line for line in lines];p.write_text('\n'.join(lines)+'\n')
 p=Path('/etc/systemd/system/salesworkbench-backup.service');lines=p.read_text().splitlines();lines=[('ExecStart='+str(release/'venv/bin/python')+' '+str(release/'server/backup_state.py')) if line.startswith('ExecStart=') else line for line in lines];p.write_text('\n'.join(lines)+'\n')
@@ -77,6 +85,8 @@ p=Path(sys.argv[1]);value=json.loads(p.read_text());value.update(commit=sys.argv
 PY
 systemctl daemon-reload
 systemctl restart salesworkbench
+nginx -t
+systemctl reload nginx
 curl --fail --silent --retry 10 --retry-delay 1 --retry-connrefused http://127.0.0.1:8000/openapi.json > /dev/null
 systemctl is-active salesworkbench nginx postgresql
 ln -sfn "$RELEASE" "$BASE/current"
