@@ -1,0 +1,20 @@
+/* Shared palette. Pages use semantic variables; only this file owns theme colors. */
+:root {
+ color-scheme:light;
+ --app-bg:#f5f5f7;--surface:#fff;--surface-soft:#f3f4f6;--surface-hover:#eef4f2;
+ --text:#1d1d1f;--text-secondary:#5d626a;--text-muted:#757b84;--line:#dde7e3;
+ --accent-blue:#29ad7d;--accent-soft:#ecfaf5;--accent-green:#218364;
+ --chart-info:#50bcd0;--chart-success:#45b98e;--chart-warning:#d5a34a;--chart-purple:#a18adc;
+ --text-primary:var(--text);--accent:var(--accent-blue);--surface-muted:var(--surface-soft);
+ --chart-track:var(--surface-soft);--map-land:color-mix(in srgb,var(--surface-soft) 70%,var(--line));
+ --chart-fill:var(--accent-blue);--chart-fill-soft:color-mix(in srgb,var(--accent-blue) 25%,var(--surface));
+ --status-warning-bg:color-mix(in srgb,var(--chart-warning) 16%,var(--surface));
+ --status-info-bg:color-mix(in srgb,var(--chart-info) 14%,var(--surface));
+ --status-purple-bg:color-mix(in srgb,var(--chart-purple) 16%,var(--surface));
+}
+:root[data-theme="dark"] {
+ color-scheme:dark;
+ --app-bg:#111113;--surface:#1c1c1e;--surface-soft:#242426;--surface-hover:#303034;
+ --text:#f5f5f7;--text-secondary:#a1a1a6;--text-muted:#8e8e93;--line:#38383a;
+ --accent-blue:#80ceb0;--accent-soft:#203b30;--accent-green:#80ceb0;
+}
